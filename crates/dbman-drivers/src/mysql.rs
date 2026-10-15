@@ -63,6 +63,8 @@ async fn open(cfg: &ConnectionConfig, ssl: Option<SslOpts>) -> DbResult<Conn> {
         .pass(Some(cfg.password.clone()).filter(|p| !p.is_empty()))
         .db_name(Some(cfg.database.clone()).filter(|d| !d.is_empty()))
         .prefer_socket(false)
+        // Report matched rather than changed rows, so an UPDATE that keeps a value still counts.
+        .client_found_rows(true)
         .ssl_opts(ssl);
     match tokio::time::timeout(Duration::from_secs(10), Conn::new(opts)).await {
         Ok(r) => r.map_err(my_err),

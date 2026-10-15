@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, ObjectKind, StatementOutcome};
+use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, ObjectKind, StatementOutcome, dml};
 
 fn from_url(kind: DbKind, var: &str) -> Option<ConnectionConfig> {
     let url = std::env::var(var).ok().filter(|u| !u.is_empty())?;
@@ -90,6 +90,29 @@ async fn check_engine(c: Arc<dyn Connection>, db: &str, schema: &str, setup: &[&
         StatementOutcome::Rows(r) => assert!(r.truncated && r.rows.len() == 1),
         other => panic!("{other:?}"),
     }
+    // Statements built for grid edits round-trip tricky values.
+    let d = dbman_core::sql::Dialect(c.kind());
+    let tricky = Cell::Text("O'Brien \\ \"q\" ;".into());
+    let two = Cell::Text("2".into());
+    let set = [dml::Value::new("name", &tricky, false)];
+    let key = [dml::Value::new("id", &two, true)];
+    match exec(&c, db, &dml::update(d, &items.path, &set, &key)).await {
+        StatementOutcome::Done { affected } => assert_eq!(affected, Some(1)),
+        other => panic!("{other:?}"),
+    }
+    let r = rows(&c, db, &format!("SELECT name FROM {q} WHERE id = 2")).await;
+    assert_eq!(r[0][0], tricky);
+    // An UPDATE that keeps the value still reports the matched row.
+    match exec(&c, db, &dml::update(d, &items.path, &set, &key)).await {
+        StatementOutcome::Done { affected } => assert_eq!(affected, Some(1)),
+        other => panic!("{other:?}"),
+    }
+    // Rolled back deletes leave the row.
+    exec(&c, db, dml::begin(c.kind())).await;
+    exec(&c, db, &dml::delete(d, &items.path, &key)).await;
+    exec(&c, db, "ROLLBACK").await;
+    assert_eq!(rows(&c, db, &format!("SELECT id FROM {q} WHERE id = 2")).await.len(), 1);
+
     assert!(c.execute(Some(db), "SELECT * FROM no_such_table_xyz", 10).await.is_err());
     // The session still works after an error.
     assert_eq!(rows(&c, db, "SELECT 1").await.len(), 1);

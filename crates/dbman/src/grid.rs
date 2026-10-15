@@ -1,16 +1,21 @@
 //! Result grid: a shadcn `DataTable` over a `QueryResult`, with NULLs shown
 //! muted and a horizontal scroll bar for wide results.
 
-use dbman_core::{Cell, QueryResult};
+use dbman_core::export::{Format, export};
+use dbman_core::sql::Dialect;
+use dbman_core::{Cell, DbKind, ObjectPath, QueryResult};
 use egui::{RichText, Ui};
-use shadcn_egui::{Column, DataTable, Theme};
+use shadcn_egui::{
+    Button, ButtonSize, Column, DataTable, Theme, dropdown_menu, menu_item, menu_label, menu_separator, toast,
+    toast_error,
+};
 
 pub struct Grid {
     pub result: QueryResult,
     text: Vec<Vec<String>>,
 }
 
-const MIN_COLUMN_WIDTH: f32 = 140.0;
+pub const MIN_COLUMN_WIDTH: f32 = 140.0;
 
 impl Grid {
     pub fn new(result: QueryResult) -> Self {
@@ -52,4 +57,36 @@ impl Grid {
                 .show(ui, &self.text);
         });
     }
+}
+
+/// "Export" button with a menu: copy the rows to the clipboard or save them to
+/// a file as CSV, TSV, JSON, SQL INSERTs or Markdown. `table` is the target of
+/// the INSERT statements.
+pub fn export_menu(ui: &mut Ui, result: &QueryResult, kind: DbKind, table: Option<&ObjectPath>) {
+    let trigger = ui.add(Button::outline("Export").size(ButtonSize::Sm));
+    let render = |f: Format| export(result, f, Dialect(kind), table);
+    dropdown_menu(&trigger, 240.0, |ui| {
+        menu_label(ui, "Copy to clipboard");
+        for f in Format::ALL {
+            if menu_item(ui, f.label(), None).clicked() {
+                ui.ctx().copy_text(render(f));
+                toast(ui.ctx(), format!("Copied {} rows as {}", result.rows.len(), f.label()), None);
+            }
+        }
+        menu_separator(ui);
+        menu_label(ui, "Save to file");
+        for f in Format::ALL {
+            if menu_item(ui, &format!("{}…", f.label()), None).clicked() {
+                let name = format!("{}.{}", table.map_or("result", |t| t.name.as_str()), f.extension());
+                if let Some(path) =
+                    rfd::FileDialog::new().set_file_name(name).add_filter(f.label(), &[f.extension()]).save_file()
+                {
+                    match std::fs::write(&path, render(f)) {
+                        Ok(()) => toast(ui.ctx(), "Saved", Some(&path.to_string_lossy())),
+                        Err(e) => toast_error(ui.ctx(), "Could not save the file", Some(&e.to_string())),
+                    }
+                }
+            }
+        }
+    });
 }

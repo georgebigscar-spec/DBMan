@@ -8,11 +8,12 @@ use shadcn_egui::{Button, ButtonSize, Switch, Theme, Toaster, TooltipExt, alert_
 use uuid::Uuid;
 
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
+use crate::data_view::DataView;
 use crate::events::{Event, TabId, Tasks};
 use crate::explorer::{self, Action, ConnState, Load, Node};
 use crate::icons::{self, Icon};
 use crate::store::Settings;
-use crate::tabs::{Console, DataView, ObjectView, Tab, TabCtx, TabKind};
+use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
 
 pub struct DbManApp {
     settings: Settings,
@@ -120,7 +121,7 @@ impl DbManApp {
                 }
                 Event::Tab { tab, event } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                        t.on_event(event);
+                        t.on_event(event, ctx);
                     }
                 }
             }
@@ -193,7 +194,7 @@ impl DbManApp {
                     .find(|t| t.conn == id && matches!(&t.kind, TabKind::Data(d) if d.object == object));
                 match existing {
                     Some(t) => self.active = Some(t.id),
-                    None => self.add_tab(id, TabKind::Data(DataView::new(object, kind))),
+                    None => self.add_tab(id, TabKind::Data(Box::new(DataView::new(object, kind)))),
                 }
             }
             Action::OpenObject(id, object) => {
@@ -304,6 +305,15 @@ impl DbManApp {
     /// Titles of the open tabs, in order.
     pub fn tab_titles(&self) -> Vec<String> {
         self.tabs.iter().map(Tab::title).collect()
+    }
+
+    /// The data tab on screen, if the active tab is one.
+    pub fn active_data_view(&mut self) -> Option<&mut DataView> {
+        let active = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
+            TabKind::Data(d) => Some(d.as_mut()),
+            _ => None,
+        }
     }
 
     /// Result summaries of every console ("4 rows in 1 ms"…).

@@ -7,7 +7,7 @@
 use dbman::app::DbManApp;
 use dbman::explorer::Action;
 use dbman::store::Settings;
-use dbman_core::{ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath};
+use dbman_core::{Cell, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath};
 use egui::{Key, Modifiers};
 use egui_kittest::{Harness, kittest::Queryable as _};
 
@@ -59,6 +59,7 @@ fn browse_sqlite_database() {
     let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
     cfg.name = "shop".into();
     cfg.database = sample_db(dir.path());
+    let db_path = cfg.database.clone();
     let conn_id = cfg.id;
     let settings = Settings { connections: vec![cfg], dark: true, page_size: 500 };
 
@@ -88,6 +89,39 @@ fn browse_sqlite_database() {
     settle(&mut h);
     snapshot(&mut h, "table_data");
     assert_eq!(h.state().tab_titles(), ["orders"]);
+
+    // Edit: change two cells, delete a row, add a row, then submit.
+    {
+        let dv = h.state_mut().active_data_view().expect("data tab");
+        dv.set_cell(0, 2, Cell::Text("130.00".into()));
+        dv.set_cell(1, 4, Cell::Text("updated note".into()));
+        dv.delete_rows(&[3]);
+        dv.add_row();
+        dv.set_cell(4, 1, Cell::Text("3".into()));
+        dv.set_cell(4, 2, Cell::Text("99.99".into()));
+        assert_eq!(dv.statements().len(), 4, "{:?}", dv.statements());
+    }
+    settle(&mut h);
+    snapshot(&mut h, "data_editing");
+    h.get_by_label("Submit (4)").click();
+    settle(&mut h);
+    let check = rusqlite::Connection::open(&db_path).unwrap();
+    let rows: Vec<(i64, i64, f64, Option<String>)> = check
+        .prepare("SELECT id, customer_id, total, note FROM orders ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (1, 1, 130.0, Some("gift".into())),
+            (2, 1, 15.0, Some("updated note".into())),
+            (3, 2, 310.0, Some("express".into())),
+            (4, 3, 99.99, None),
+        ]
+    );
 
     h.state_mut().handle(Action::OpenObject(conn_id, orders), &ctx);
     settle(&mut h);
