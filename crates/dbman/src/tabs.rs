@@ -12,6 +12,7 @@ use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
 use crate::grid::{self, Grid};
 use crate::sql_editor;
+use crate::table_editor::TableEditor;
 
 pub struct Tab {
     pub id: TabId,
@@ -23,6 +24,7 @@ pub enum TabKind {
     Console(Console),
     Data(Box<DataView>),
     Object(ObjectView),
+    TableEditor(Box<TableEditor>),
 }
 
 /// What a tab can reach while drawing.
@@ -41,15 +43,19 @@ impl Tab {
             TabKind::Console(c) => c.title.clone(),
             TabKind::Data(d) => d.object.path.name.clone(),
             TabKind::Object(o) => format!("{} ({})", o.object.path.name, o.object.kind.label()),
+            TabKind::TableEditor(e) => e.title(),
         }
     }
 
-    pub fn on_event(&mut self, ev: TabEvent, ctx: &egui::Context) {
+    /// Applies a background result; may ask the app to do something (refresh the explorer).
+    pub fn on_event(&mut self, ev: TabEvent, ctx: &egui::Context) -> Vec<Action> {
         match &mut self.kind {
             TabKind::Console(c) => c.on_event(ev),
             TabKind::Data(d) => d.on_event(ev, ctx),
             TabKind::Object(o) => o.on_event(ev),
+            TabKind::TableEditor(e) => return e.on_event(ev, ctx),
         }
+        Vec::new()
     }
 
     pub fn ui(&mut self, ui: &mut Ui, cx: TabCtx<'_>) {
@@ -58,6 +64,7 @@ impl Tab {
             TabKind::Console(c) => c.ui(ui, id, cx),
             TabKind::Data(d) => d.ui(ui, id, cx),
             TabKind::Object(o) => o.ui(ui, id, cx),
+            TabKind::TableEditor(e) => e.ui(ui, id, cx),
         }
     }
 }
@@ -295,7 +302,7 @@ impl Console {
                 .outputs
                 .iter()
                 .enumerate()
-                .map(|(i, o)| if o.error.is_some() { format!("{} ✕", i + 1) } else { format!("{}", i + 1) })
+                .map(|(i, o)| if o.error.is_some() { format!("{} ×", i + 1) } else { format!("{}", i + 1) })
                 .collect();
             let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
             self.shown_output = self.shown_output.min(refs.len() - 1);

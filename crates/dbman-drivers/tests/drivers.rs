@@ -6,7 +6,11 @@
 
 use std::sync::Arc;
 
-use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, ObjectKind, StatementOutcome, dml};
+use dbman_core::ddl::{self, ColumnDef, TableDef};
+use dbman_core::{
+    Cell, ColumnInfo, Connection, ConnectionConfig, DbKind, ForeignKeyInfo, IndexInfo, ObjectKind, ObjectPath,
+    StatementOutcome, dml,
+};
 
 fn from_url(kind: DbKind, var: &str) -> Option<ConnectionConfig> {
     let url = std::env::var(var).ok().filter(|u| !u.is_empty())?;
@@ -118,12 +122,131 @@ async fn check_engine(c: Arc<dyn Connection>, db: &str, schema: &str, setup: &[&
     assert_eq!(rows(&c, db, "SELECT 1").await.len(), 1);
 }
 
+async fn run_plan(c: &Arc<dyn Connection>, db: &str, plan: &ddl::Plan) {
+    for s in &plan.statements {
+        exec(c, db, s).await;
+    }
+}
+
+/// Creates tables with the DDL builders, reads them back, alters them and
+/// checks the result; also that an unchanged table yields no statements.
+async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
+    let kind = c.kind();
+    let path = |n: &str| ObjectPath::new(db, schema, n);
+    let int = if kind == DbKind::Sqlite { "INTEGER" } else { "integer" };
+    let col = |name: &str, ty: &str| ColumnDef {
+        col: ColumnInfo { name: name.into(), data_type: ty.into(), nullable: true, ..Default::default() },
+        original: None,
+    };
+    for t in ["ddl_members", "ddl_teams"] {
+        let _ = c
+            .execute(
+                Some(db),
+                &format!("DROP TABLE IF EXISTS {}", dbman_core::sql::Dialect(kind).qualified(&path(t))),
+                0,
+            )
+            .await;
+    }
+
+    let mut teams = TableDef::new(path("ddl_teams"));
+    let mut id = col("id", int);
+    id.col.primary_key = true;
+    id.col.nullable = false;
+    id.col.auto_increment = true;
+    teams.columns = vec![id.clone(), col("title", "varchar(40)")];
+    run_plan(&c, db, &ddl::create_table(kind, &teams)).await;
+
+    let mut members = TableDef::new(path("ddl_members"));
+    let mut email = col("email", "varchar(100)");
+    email.col.nullable = false;
+    email.col.comment = Some("login".into());
+    let mut team = col("team_id", int);
+    team.col.default = Some("1".into());
+    members.columns = vec![id, email, team];
+    members.indexes.push(IndexInfo {
+        name: "ddl_members_email".into(),
+        columns: vec!["email".into()],
+        unique: true,
+        ..Default::default()
+    });
+    members.foreign_keys.push(ForeignKeyInfo {
+        name: "ddl_members_team_fk".into(),
+        columns: vec!["team_id".into()],
+        ref_schema: schema.into(),
+        ref_table: "ddl_teams".into(),
+        ref_columns: vec!["id".into()],
+        on_update: "NO ACTION".into(),
+        on_delete: "CASCADE".into(),
+    });
+    run_plan(&c, db, &ddl::create_table(kind, &members)).await;
+    let q = dbman_core::sql::Dialect(kind).qualified(&path("ddl_members"));
+    exec(
+        &c,
+        db,
+        &format!(
+            "INSERT INTO {} (title) VALUES ('core')",
+            dbman_core::sql::Dialect(kind).qualified(&path("ddl_teams"))
+        ),
+    )
+    .await;
+    exec(&c, db, &format!("INSERT INTO {q} (email) VALUES ('a@x.io')")).await;
+
+    let details = c.table_details(&path("ddl_members")).await.unwrap();
+    assert_eq!(details.primary_key(), ["id"]);
+    assert!(details.columns[0].auto_increment, "{:?}", details.columns[0]);
+    assert_eq!(details.columns[2].default.as_deref().map(|d| d.trim_matches('\'')), Some("1"));
+    assert!(details.indexes.iter().any(|i| i.name == "ddl_members_email" && i.unique));
+    assert_eq!(details.foreign_keys.len(), 1);
+    assert_eq!(details.foreign_keys[0].on_delete.to_ascii_uppercase(), "CASCADE");
+
+    let old = TableDef::from_details(path("ddl_members"), &details);
+    let unchanged = ddl::alter_table(kind, &old, &old);
+    assert!(unchanged.statements.is_empty(), "{:?}", unchanged.statements);
+
+    // Rename a column, change a type, make one NOT NULL, add one, swap the index.
+    let mut new = old.clone();
+    new.columns[1].col.name = "mail".into();
+    new.columns[1].col.data_type = "varchar(200)".into();
+    new.columns[2].col.nullable = false;
+    new.columns.push(col("nick", "varchar(20)"));
+    new.indexes =
+        vec![IndexInfo { name: "ddl_members_nick".into(), columns: vec!["nick".into()], ..Default::default() }];
+    let plan = ddl::alter_table(kind, &old, &new);
+    run_plan(&c, db, &plan).await;
+
+    let after = c.table_details(&path("ddl_members")).await.unwrap();
+    let names: Vec<&str> = after.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "mail", "team_id", "nick"], "{}", plan.script());
+    assert!(after.columns[1].data_type.to_ascii_lowercase().contains("200"), "{:?}", after.columns[1]);
+    assert!(!after.columns[2].nullable);
+    assert!(after.indexes.iter().any(|i| i.name == "ddl_members_nick"));
+    assert!(!after.indexes.iter().any(|i| i.name == "ddl_members_email"));
+    assert_eq!(after.foreign_keys.len(), 1, "{}", plan.script());
+    // The row survived (SQLite rebuilds the table).
+    assert_eq!(rows(&c, db, &format!("SELECT mail FROM {q}")).await[0][0], Cell::Text("a@x.io".into()));
+    let again = TableDef::from_details(path("ddl_members"), &after);
+    assert!(ddl::alter_table(kind, &again, &again).statements.is_empty());
+
+    let members_obj =
+        dbman_core::DbObject { kind: ObjectKind::Table, path: path("ddl_members"), detail: None, comment: None };
+    exec(&c, db, &ddl::rename(kind, &members_obj, "ddl_people").unwrap()).await;
+    let people = dbman_core::DbObject { path: path("ddl_people"), ..members_obj };
+    exec(&c, db, &ddl::truncate(kind, &people.path)).await;
+    exec(&c, db, &ddl::drop_object(kind, &people, false)).await;
+    let teams_obj =
+        dbman_core::DbObject { kind: ObjectKind::Table, path: path("ddl_teams"), detail: None, comment: None };
+    exec(&c, db, &ddl::drop_object(kind, &teams_obj, false)).await;
+    let left = c.objects(db, schema).await.unwrap();
+    assert!(!left.iter().any(|o| o.path.name.starts_with("ddl_")));
+}
+
 #[tokio::test]
 async fn sqlite() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
     cfg.database = dir.path().join("test.db").to_string_lossy().into_owned();
     let c = dbman_drivers::connect(&cfg).await.unwrap();
+    check_ddl(c.clone(), "main", "main").await;
     check_engine(
         c,
         "main",
@@ -171,6 +294,7 @@ async fn postgres() {
     assert_eq!(f.detail.as_deref(), Some("a integer, b integer"));
     assert!(objects.iter().any(|o| o.kind == ObjectKind::Type && o.path.name == "mood"));
     assert!(objects.iter().any(|o| o.kind == ObjectKind::Sequence && o.path.name == "counter"));
+    check_ddl(c.clone(), &db, "dbman_test").await;
     exec(&c, &db, "DROP SCHEMA dbman_test CASCADE").await;
 }
 
@@ -204,6 +328,7 @@ async fn mysql() {
         assert!(ddl.contains("CREATE"), "{ddl}");
     }
     assert!(objects.iter().any(|o| o.kind == ObjectKind::Function && o.path.name == "add_two"));
+    check_ddl(c.clone(), &db, &db).await;
     let blob = rows(&c, &db, "SELECT CAST('ab' AS BINARY) AS b, 'x' AS t").await;
     assert_eq!(blob[0][0], Cell::Bytes(b"ab".to_vec()));
     assert_eq!(blob[0][1], Cell::Text("x".into()));
