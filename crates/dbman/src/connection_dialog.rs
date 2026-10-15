@@ -5,12 +5,15 @@ use egui::{Context, RichText, Ui};
 use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label};
 
 use crate::explorer::Load;
+use crate::files;
 
 pub struct ConnectionDialog {
     pub cfg: ConnectionConfig,
     pub is_new: bool,
     port: String,
     pub test: Load<String>,
+    /// The file dialog of "Browse…", while it is open.
+    browsing: Option<files::PendingPath>,
 }
 
 pub enum DialogOutcome {
@@ -32,7 +35,7 @@ fn field(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui)) {
 impl ConnectionDialog {
     pub fn new(cfg: ConnectionConfig, is_new: bool) -> Self {
         let port = if cfg.port == 0 { String::new() } else { cfg.port.to_string() };
-        Self { cfg, is_new, port, test: Load::Idle }
+        Self { cfg, is_new, port, test: Load::Idle, browsing: None }
     }
 
     fn config(&self) -> ConnectionConfig {
@@ -76,13 +79,17 @@ impl ConnectionDialog {
                                     .placeholder("/path/to/database.db")
                                     .width(full - 110.0),
                             );
-                            if ui.add(Button::outline("Browse…")).clicked()
-                                && let Some(p) = rfd::FileDialog::new()
+                            if let Some(answer) = self.browsing.as_ref().and_then(files::PendingPath::poll) {
+                                self.browsing = None;
+                                if let Some(p) = answer {
+                                    self.cfg.database = p.to_string_lossy().into_owned();
+                                }
+                            }
+                            if ui.add_enabled(self.browsing.is_none(), Button::outline("Browse…")).clicked() {
+                                let dialog = rfd::AsyncFileDialog::new()
                                     .add_filter("SQLite", &["db", "sqlite", "sqlite3", "db3"])
-                                    .add_filter("All files", &["*"])
-                                    .pick_file()
-                            {
-                                self.cfg.database = p.to_string_lossy().into_owned();
+                                    .add_filter("All files", &["*"]);
+                                self.browsing = Some(files::pick_file(ui.ctx(), dialog));
                             }
                         });
                     });

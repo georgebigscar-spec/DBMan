@@ -25,6 +25,8 @@ struct Session {
 pub struct MySqlConnection {
     cfg: ConnectionConfig,
     session: Mutex<Session>,
+    /// Server thread id of the session, for `KILL QUERY` from a second connection.
+    thread_id: u32,
 }
 
 /// System databases hidden from the explorer.
@@ -32,22 +34,27 @@ const HIDDEN: [&str; 3] = ["information_schema", "performance_schema", "sys"];
 
 impl MySqlConnection {
     pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Self> {
-        let conn = match cfg.ssl_mode {
-            SslMode::Disable => open(cfg, None).await?,
-            SslMode::Prefer => match open(cfg, Some(insecure_tls())).await {
-                Ok(c) => c,
-                Err(_) => open(cfg, None).await?,
-            },
-            SslMode::Require => open(cfg, Some(insecure_tls())).await?,
-            SslMode::VerifyFull => open(cfg, Some(SslOpts::default())).await?,
-        };
+        let conn = open_with_ssl(cfg).await?;
+        let thread_id = conn.id();
         let current_db = Some(cfg.database.clone()).filter(|d| !d.is_empty());
-        Ok(Self { cfg: cfg.clone(), session: Mutex::new(Session { conn, current_db }) })
+        Ok(Self { cfg: cfg.clone(), session: Mutex::new(Session { conn, current_db }), thread_id })
     }
 
     async fn rows<P: Into<mysql_async::Params> + Send>(&self, sql: &str, params: P) -> DbResult<Vec<Row>> {
         let mut s = self.session.lock().await;
         s.conn.exec(sql, params).await.map_err(my_err)
+    }
+}
+
+async fn open_with_ssl(cfg: &ConnectionConfig) -> DbResult<Conn> {
+    match cfg.ssl_mode {
+        SslMode::Disable => open(cfg, None).await,
+        SslMode::Prefer => match open(cfg, Some(insecure_tls())).await {
+            Ok(c) => Ok(c),
+            Err(_) => open(cfg, None).await,
+        },
+        SslMode::Require => open(cfg, Some(insecure_tls())).await,
+        SslMode::VerifyFull => open(cfg, Some(SslOpts::default())).await,
     }
 }
 
@@ -357,5 +364,13 @@ impl Connection for MySqlConnection {
             s.current_db = None;
         }
         Ok(out)
+    }
+
+    async fn cancel(&self) -> DbResult<()> {
+        // The session is busy, so the KILL goes through a short-lived second connection.
+        let mut killer = open_with_ssl(&self.cfg).await?;
+        let r = killer.query_drop(format!("KILL QUERY {}", self.thread_id)).await.map_err(my_err);
+        let _ = killer.disconnect().await;
+        r
     }
 }

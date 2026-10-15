@@ -15,18 +15,25 @@ use dbman_core::{
 };
 use futures_util::{TryStreamExt, pin_mut};
 use tokio::sync::Mutex;
-use tokio_postgres::{Client, SimpleQueryMessage};
+use tokio_postgres::{CancelToken, Client, SimpleQueryMessage};
 
 pub struct PgConnection {
     cfg: ConnectionConfig,
     default_db: String,
     clients: Mutex<HashMap<String, Arc<Client>>>,
+    /// Cancel tokens of the clients, reachable while a query holds a client.
+    cancel_tokens: std::sync::Mutex<HashMap<String, CancelToken>>,
 }
 
 impl PgConnection {
     pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Self> {
         let default_db = if cfg.database.trim().is_empty() { "postgres".to_string() } else { cfg.database.clone() };
-        let me = Self { cfg: cfg.clone(), default_db, clients: Mutex::new(HashMap::new()) };
+        let me = Self {
+            cfg: cfg.clone(),
+            default_db,
+            clients: Mutex::new(HashMap::new()),
+            cancel_tokens: Default::default(),
+        };
         me.client(None).await?;
         Ok(me)
     }
@@ -40,6 +47,9 @@ impl PgConnection {
             return Ok(c.clone());
         }
         let client = Arc::new(open_client(&self.cfg, &db).await?);
+        if let Ok(mut t) = self.cancel_tokens.lock() {
+            t.insert(db.clone(), client.cancel_token());
+        }
         clients.insert(db, client.clone());
         Ok(client)
     }
@@ -74,15 +84,19 @@ async fn open_client(cfg: &ConnectionConfig, db: &str) -> DbResult<Client> {
         SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
         _ => tokio_postgres::config::SslMode::Require,
     });
+    let (client, conn) = pg.connect(make_tls(cfg)?).await.map_err(pg_err)?;
+    tokio::spawn(conn);
+    Ok(client)
+}
+
+fn make_tls(cfg: &ConnectionConfig) -> DbResult<postgres_native_tls::MakeTlsConnector> {
     let verify = cfg.ssl_mode == SslMode::VerifyFull;
     let tls = native_tls::TlsConnector::builder()
         .danger_accept_invalid_certs(!verify)
         .danger_accept_invalid_hostnames(!verify)
         .build()
         .map_err(DbError::from_display)?;
-    let (client, conn) = pg.connect(postgres_native_tls::MakeTlsConnector::new(tls)).await.map_err(pg_err)?;
-    tokio::spawn(conn);
-    Ok(client)
+    Ok(postgres_native_tls::MakeTlsConnector::new(tls))
 }
 
 /// The server's message, with detail and hint when present.
@@ -493,6 +507,20 @@ impl Connection for PgConnection {
                 one(rows)
             }
         }
+    }
+
+    async fn cancel(&self) -> DbResult<()> {
+        // A session runs one statement at a time, so cancelling every client stops it.
+        let tokens: Vec<CancelToken> =
+            self.cancel_tokens.lock().map(|t| t.values().cloned().collect()).unwrap_or_default();
+        for token in tokens {
+            if self.cfg.ssl_mode == SslMode::Disable {
+                token.cancel_query(tokio_postgres::NoTls).await.map_err(pg_err)?;
+            } else {
+                token.cancel_query(make_tls(&self.cfg)?).await.map_err(pg_err)?;
+            }
+        }
+        Ok(())
     }
 
     async fn execute(&self, database: Option<&str>, sql: &str, max_rows: usize) -> DbResult<StatementOutcome> {

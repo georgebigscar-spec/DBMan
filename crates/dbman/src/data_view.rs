@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dbman_core::sql::Dialect;
 use dbman_core::{
@@ -19,7 +20,8 @@ use crate::exec;
 use crate::explorer::{ConnState, Load};
 use crate::grid;
 use crate::sql_editor;
-use crate::tabs::{TabCtx, error_alert, not_connected, toolbar_button};
+use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, toolbar_button};
+use tokio::sync::OnceCell;
 
 /// Pending changes to the rows on screen.
 #[derive(Default)]
@@ -68,6 +70,12 @@ pub struct DataView {
     order_by: String,
     page: usize,
     rows: Load<QueryResult>,
+    /// The tab's own session, so a slow page never holds up the explorer and
+    /// Stop can cancel it without touching other queries. Opened on first load.
+    session: Arc<OnceCell<Arc<dyn Connection>>>,
+    /// Numbers page loads, so a stopped or superseded load's late answer is dropped.
+    page_seq: u64,
+    load_started: Option<Instant>,
     summary: String,
     loaded_once: bool,
     details: Load<TableDetails>,
@@ -91,6 +99,9 @@ impl DataView {
             order_by: String::new(),
             page: 0,
             rows: Load::Idle,
+            session: Arc::new(OnceCell::new()),
+            page_seq: 0,
+            load_started: None,
             summary: String::new(),
             loaded_once: false,
             details: Load::Idle,
@@ -107,7 +118,11 @@ impl DataView {
 
     pub fn on_event(&mut self, ev: TabEvent, ctx: &egui::Context) {
         match ev {
-            TabEvent::Page { elapsed, result } => {
+            TabEvent::Page { seq, elapsed, result } => {
+                if seq != self.page_seq {
+                    return;
+                }
+                self.load_started = None;
                 match result {
                     Ok(StatementOutcome::Rows(r)) => {
                         self.summary = StatementOutcome::Rows(r.clone()).summary(elapsed);
@@ -238,7 +253,14 @@ impl DataView {
         out
     }
 
-    fn load(&mut self, tasks: &Tasks, tab: TabId, session: Arc<dyn Connection>, page_size: usize) {
+    fn load(
+        &mut self,
+        tasks: &Tasks,
+        tab: TabId,
+        cfg: &ConnectionConfig,
+        session: Arc<dyn Connection>,
+        page_size: usize,
+    ) {
         // One row more than a page tells whether there is a next page.
         let sql = Dialect(self.kind).select_page(
             &self.object.path,
@@ -250,17 +272,40 @@ impl DataView {
         let db = self.object.path.database.clone();
         self.rows = Load::Loading;
         self.loaded_once = true;
-        let s = session.clone();
+        self.page_seq += 1;
+        self.load_started = Some(Instant::now());
+        let seq = self.page_seq;
+        let own = self.session.clone();
+        let mut cfg = cfg.clone();
+        if cfg.kind == DbKind::MySql {
+            cfg.database = db.clone();
+        }
         tasks.spawn(async move {
-            let session = s;
-            let (elapsed, result) = timed(session.execute(Some(&db), &sql, page_size)).await;
-            Event::Tab { tab, event: TabEvent::Page { elapsed, result } }
+            let (elapsed, result) = timed(async {
+                let s = own.get_or_try_init(|| dbman_drivers::connect(&cfg)).await?;
+                s.execute(Some(&db), &sql, page_size).await
+            })
+            .await;
+            Event::Tab { tab, event: TabEvent::Page { seq, elapsed, result } }
         });
         if self.object.kind == ObjectKind::Table && !matches!(self.details, Load::Ready(_) | Load::Loading) {
             self.details = Load::Loading;
             let path = self.object.path.clone();
             let s = session.clone();
             tasks.spawn(async move { Event::Tab { tab, event: TabEvent::Details(s.table_details(&path).await) } });
+        }
+    }
+
+    /// Cancels the page being loaded; the grid shows the previous page state as failed.
+    fn stop(&mut self, tasks: &Tasks) {
+        self.page_seq += 1;
+        self.load_started = None;
+        self.rows = Load::Failed("Cancelled.".into());
+        if let Some(s) = self.session.get().cloned() {
+            // Best effort: the load's own answer is ignored because page_seq moved on.
+            tasks.runtime().spawn(async move {
+                let _ = s.cancel().await;
+            });
         }
     }
 
@@ -348,8 +393,9 @@ impl DataView {
             not_connected(ui, &mut cx);
             return;
         };
+        let cfg = cx.conn.map(|c| c.cfg.clone()).expect("a session implies a connection");
         if !self.loaded_once {
-            self.load(cx.tasks, tab, session.clone(), cx.page_size);
+            self.load(cx.tasks, tab, &cfg, session.clone(), cx.page_size);
         }
         let dirty = !self.edits.is_empty();
         let mut reload = false;
@@ -445,14 +491,27 @@ impl DataView {
             ui.add_space(6.0);
         }
         if reload {
-            self.load(cx.tasks, tab, session, cx.page_size);
+            self.load(cx.tasks, tab, &cfg, session, cx.page_size);
         }
+        let mut stop = false;
         match &self.rows {
             Load::Idle | Load::Loading => {
-                ui.add(egui::Spinner::new());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    if let Some(t0) = self.load_started {
+                        ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
+                        ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    }
+                    if ui.add(Button::destructive("Stop").size(ButtonSize::Sm)).clicked() {
+                        stop = true;
+                    }
+                });
             }
             Load::Failed(e) => error_alert(ui, "Query failed", e),
             Load::Ready(_) => self.grid(ui, tab, editable),
+        }
+        if stop {
+            self.stop(cx.tasks);
         }
         self.preview_dialog(ui.ctx());
     }
