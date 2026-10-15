@@ -13,13 +13,41 @@ pub type TabId = u64;
 
 /// Results of background work.
 pub enum Event {
-    Connected { conn: Uuid, result: DbResult<(Arc<dyn Connection>, String)> },
-    Databases { conn: Uuid, result: DbResult<Vec<String>> },
-    Schemas { conn: Uuid, db: String, result: DbResult<Vec<String>> },
-    Objects { conn: Uuid, db: String, schema: String, result: DbResult<Vec<DbObject>> },
-    Details { conn: Uuid, path: ObjectPath, result: DbResult<TableDetails> },
-    TestedConnection { result: DbResult<String> },
-    Tab { tab: TabId, event: TabEvent },
+    Connected {
+        conn: Uuid,
+        result: DbResult<(Arc<dyn Connection>, String)>,
+    },
+    Databases {
+        conn: Uuid,
+        result: DbResult<Vec<String>>,
+    },
+    Schemas {
+        conn: Uuid,
+        db: String,
+        result: DbResult<Vec<String>>,
+    },
+    Objects {
+        conn: Uuid,
+        db: String,
+        schema: String,
+        result: DbResult<Vec<DbObject>>,
+    },
+    Details {
+        conn: Uuid,
+        path: ObjectPath,
+        result: DbResult<TableDetails>,
+    },
+    TestedConnection {
+        result: DbResult<String>,
+    },
+    /// Statements of a confirm dialog ran.
+    PromptDone {
+        result: DbResult<usize>,
+    },
+    Tab {
+        tab: TabId,
+        event: TabEvent,
+    },
 }
 
 pub enum TabEvent {
@@ -40,6 +68,8 @@ pub enum TabEvent {
     Ddl(DbResult<String>),
     /// Grid edits were written; the number of statements run.
     Submitted(DbResult<usize>),
+    /// DDL from the table editor ran.
+    Executed(DbResult<usize>),
     Details(DbResult<TableDetails>),
 }
 

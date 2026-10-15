@@ -55,7 +55,7 @@ impl ObjectKind {
 
 /// Where an object lives. For engines without schemas (MySQL, SQLite) the
 /// schema equals the database.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectPath {
     pub database: String,
     pub schema: String,

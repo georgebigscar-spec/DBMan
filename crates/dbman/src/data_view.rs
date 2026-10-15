@@ -15,6 +15,7 @@ use shadcn_egui::{
 };
 
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
+use crate::exec;
 use crate::explorer::{ConnState, Load};
 use crate::grid;
 use crate::sql_editor;
@@ -271,9 +272,8 @@ impl DataView {
         self.submitting = true;
         self.submit_error = None;
         let db = self.object.path.database.clone();
-        let kind = self.kind;
         tasks.spawn(async move {
-            let result = write_in_transaction(cfg, db, kind, stmts).await;
+            let result = exec::run(cfg, db, stmts, exec::Mode::RowEdits).await;
             Event::Tab { tab, event: TabEvent::Submitted(result) }
         });
     }
@@ -609,37 +609,4 @@ impl DataView {
             self.preview = None;
         }
     }
-}
-
-/// Runs `stmts` in a transaction on a fresh session, so other tabs sharing a
-/// connection never see a half-written state. Every UPDATE and DELETE must
-/// touch exactly one row, otherwise everything is rolled back.
-async fn write_in_transaction(
-    cfg: ConnectionConfig,
-    db: String,
-    kind: DbKind,
-    stmts: Vec<String>,
-) -> dbman_core::DbResult<usize> {
-    let mut cfg = cfg;
-    if kind == DbKind::MySql {
-        cfg.database = db.clone();
-    }
-    let s = dbman_drivers::connect(&cfg).await?;
-    s.execute(Some(&db), dml::begin(kind), 0).await?;
-    for sql in &stmts {
-        let outcome = s.execute(Some(&db), sql, 0).await;
-        let err = match outcome {
-            Ok(StatementOutcome::Done { affected: Some(n) }) if n != 1 && !sql.starts_with("INSERT") => Some(format!(
-                "{n} rows matched instead of 1, so nothing was saved. The row may have been changed by someone else; refresh and try again.\n\n{sql}"
-            )),
-            Ok(_) => None,
-            Err(e) => Some(format!("{}\n\n{sql}", e.message)),
-        };
-        if let Some(e) = err {
-            let _ = s.execute(Some(&db), "ROLLBACK", 0).await;
-            return Err(dbman_core::DbError::new(e));
-        }
-    }
-    s.execute(Some(&db), "COMMIT", 0).await?;
-    Ok(stmts.len())
 }

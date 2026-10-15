@@ -143,7 +143,7 @@ impl ConnectionDialog {
                         });
                     }
                     Load::Ready(v) => {
-                        Alert::new("Connection succeeded").icon("✓").description(v.as_str()).show(ui);
+                        Alert::new("Connection succeeded").icon("✔").description(v.as_str()).show(ui);
                     }
                     Load::Failed(e) => {
                         Alert::new("Connection failed").icon("!").description(e.as_str()).destructive().show(ui);

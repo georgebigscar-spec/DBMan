@@ -10,9 +10,12 @@ use uuid::Uuid;
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
 use crate::data_view::DataView;
 use crate::events::{Event, TabId, Tasks};
+use crate::exec;
 use crate::explorer::{self, Action, ConnState, Load, Node};
 use crate::icons::{self, Icon};
+use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::store::Settings;
+use crate::table_editor::TableEditor;
 use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
 
 pub struct DbManApp {
@@ -26,6 +29,7 @@ pub struct DbManApp {
     selected: Option<Node>,
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<Uuid>,
+    prompt: Option<Prompt>,
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
     _runtime: tokio::runtime::Runtime,
@@ -50,6 +54,7 @@ impl DbManApp {
             selected: None,
             dialog: None,
             confirm_delete: None,
+            prompt: None,
             status: "Ready".into(),
             _runtime: runtime,
         }
@@ -73,6 +78,7 @@ impl DbManApp {
     // --- background results -------------------------------------------------
 
     fn drain_events(&mut self, ctx: &egui::Context) {
+        let mut follow_up = Vec::new();
         while let Ok(ev) = self.events.try_recv() {
             match ev {
                 Event::Connected { conn, result } => {
@@ -121,10 +127,26 @@ impl DbManApp {
                 }
                 Event::Tab { tab, event } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                        t.on_event(event, ctx);
+                        follow_up.extend(t.on_event(event, ctx));
+                    }
+                }
+                Event::PromptDone { result } => {
+                    let Some(p) = &mut self.prompt else { continue };
+                    p.running = false;
+                    match result {
+                        Ok(_) => {
+                            toast(ctx, p.done_message(), None);
+                            self.status = p.done_message();
+                            follow_up.push(p.refresh());
+                            self.prompt = None;
+                        }
+                        Err(e) => p.error = Some(e.message),
                     }
                 }
             }
+        }
+        for a in follow_up {
+            self.handle(a, ctx);
         }
     }
 
@@ -173,6 +195,35 @@ impl DbManApp {
                     c.details.retain(|p, _| !(p.database == db && p.schema == schema));
                 }
             }
+            Action::RefreshSchemas(id, db) => {
+                if let Some(c) = self.conn_mut(id) {
+                    c.schemas.remove(&db);
+                    c.objects.retain(|(d, _), _| *d != db);
+                    c.details.retain(|p, _| p.database != db);
+                }
+            }
+            Action::NewTable(id, db, schema) => {
+                let Some(c) = self.conn(id) else { return };
+                let kind = c.cfg.kind;
+                self.add_tab(id, TabKind::TableEditor(Box::new(TableEditor::create(id, kind, &db, &schema))));
+            }
+            Action::EditTable(id, path) => {
+                let Some(c) = self.conn(id) else { return };
+                let kind = c.cfg.kind;
+                self.add_tab(id, TabKind::TableEditor(Box::new(TableEditor::edit(id, kind, path))));
+            }
+            Action::NewFromTemplate(id, db, schema, what) => {
+                let Some(c) = self.conn(id) else { return };
+                let sql = dbman_core::ddl::template(c.cfg.kind, what, &db, &schema);
+                self.open_console(id, Some(db), Some(sql));
+            }
+            Action::NewDatabase(id) => self.open_prompt(id, PromptKind::CreateDatabase),
+            Action::NewSchema(id, db) => self.open_prompt(id, PromptKind::CreateSchema { db }),
+            Action::DropDatabase(id, db) => self.open_prompt(id, PromptKind::DropDatabase { db }),
+            Action::DropSchema(id, db, schema) => self.open_prompt(id, PromptKind::DropSchema { db, schema }),
+            Action::DropObject(id, o) => self.open_prompt(id, PromptKind::DropObject(o)),
+            Action::RenameObject(id, o) => self.open_prompt(id, PromptKind::Rename(o)),
+            Action::Truncate(id, o) => self.open_prompt(id, PromptKind::Truncate(o)),
             Action::Refresh(id) => {
                 if let Some(c) = self.conn_mut(id) {
                     c.clear_cache();
@@ -184,7 +235,7 @@ impl DbManApp {
                     self.status = format!("Disconnected from {}", c.cfg.display_name());
                 }
             }
-            Action::OpenConsole(id, db) => self.open_console(id, db),
+            Action::OpenConsole(id, db) => self.open_console(id, db, None),
             Action::OpenData(id, object) => {
                 let Some(c) = self.conn(id) else { return };
                 let kind = c.cfg.kind;
@@ -259,7 +310,13 @@ impl DbManApp {
         self.active = Some(id);
     }
 
-    fn open_console(&mut self, id: Uuid, db: Option<String>) {
+    fn open_prompt(&mut self, id: Uuid, kind: PromptKind) {
+        if let Some(c) = self.conn(id) {
+            self.prompt = Some(Prompt::new(id, c.cfg.kind, kind));
+        }
+    }
+
+    fn open_console(&mut self, id: Uuid, db: Option<String>, sql: Option<String>) {
         let Some(c) = self.conn(id) else { return };
         let n = self.tabs.iter().filter(|t| t.conn == id && matches!(t.kind, TabKind::Console(_))).count();
         let mut title = c.cfg.display_name();
@@ -267,6 +324,9 @@ impl DbManApp {
             title.push_str(&format!(" [{}]", n + 1));
         }
         let mut console = Console::new(title, c.cfg.clone(), db);
+        if let Some(sql) = sql {
+            console.sql = sql;
+        }
         let tab = self.next_tab;
         console.open_session(&self.tasks, tab);
         if c.session.is_idle() {
@@ -457,6 +517,7 @@ impl DbManApp {
                                     TabKind::Console(_) => Icon::Console,
                                     TabKind::Data(_) => Icon::Table,
                                     TabKind::Object(_) => Icon::Info,
+                                    TabKind::TableEditor(_) => Icon::Table,
                                 };
                                 let color = if active { t.foreground } else { t.muted_foreground };
                                 icons::icon(ui, icon, color);
@@ -549,6 +610,22 @@ impl DbManApp {
                     }
                     self.dialog = None;
                     self.save_settings();
+                }
+                None => {}
+            }
+        }
+        if let Some(p) = &mut self.prompt {
+            match p.show(ctx) {
+                Some(PromptOutcome::Close) => self.prompt = None,
+                Some(PromptOutcome::Run { db, statements }) => {
+                    if let Some(cfg) = self.conns.iter().find(|c| c.cfg.id == p.conn).map(|c| c.cfg.clone()) {
+                        p.running = true;
+                        p.error = None;
+                        self.tasks.spawn(async move {
+                            let result = exec::run(cfg, db, statements, exec::Mode::Sequential).await;
+                            Event::PromptDone { result }
+                        });
+                    }
                 }
                 None => {}
             }

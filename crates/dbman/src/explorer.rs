@@ -121,7 +121,19 @@ pub enum Action {
     Disconnect(Uuid),
     Refresh(Uuid),
     RefreshObjects(Uuid, String, String),
+    RefreshSchemas(Uuid, String),
     CopyText(String),
+    NewTable(Uuid, String, String),
+    EditTable(Uuid, ObjectPath),
+    /// Opens a console with a CREATE template for this kind of object.
+    NewFromTemplate(Uuid, String, String, ObjectKind),
+    NewDatabase(Uuid),
+    NewSchema(Uuid, String),
+    DropDatabase(Uuid, String),
+    DropSchema(Uuid, String, String),
+    DropObject(Uuid, DbObject),
+    RenameObject(Uuid, DbObject),
+    Truncate(Uuid, DbObject),
 }
 
 pub fn kind_color(kind: DbKind) -> Color32 {
@@ -251,6 +263,9 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             actions.push(Action::OpenConsole(id, None));
         }
         if connected {
+            if kind != DbKind::Sqlite && menu_item(ui, "New database…", None).clicked() {
+                actions.push(Action::NewDatabase(id));
+            }
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::Refresh(id));
             }
@@ -304,11 +319,27 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             if menu_item(ui, "New console", None).clicked() {
                 actions.push(Action::OpenConsole(id, Some(db.clone())));
             }
-            if !c.has_schemas() && menu_item(ui, "Refresh", None).clicked() {
-                actions.push(Action::RefreshObjects(id, db.clone(), db.clone()));
+            if c.has_schemas() {
+                if menu_item(ui, "New schema…", None).clicked() {
+                    actions.push(Action::NewSchema(id, db.clone()));
+                }
+                if menu_item(ui, "Refresh", None).clicked() {
+                    actions.push(Action::RefreshSchemas(id, db.clone()));
+                }
+            } else {
+                new_object_items(ui, c, db, db, actions);
+                if menu_item(ui, "Refresh", None).clicked() {
+                    actions.push(Action::RefreshObjects(id, db.clone(), db.clone()));
+                }
             }
             if menu_item(ui, "Copy name", None).clicked() {
                 actions.push(Action::CopyText(db.clone()));
+            }
+            if c.cfg.kind != DbKind::Sqlite {
+                menu_separator(ui);
+                if menu_item(ui, "Drop database…", None).clicked() {
+                    actions.push(Action::DropDatabase(id, db.clone()));
+                }
             }
         });
     }
@@ -341,14 +372,51 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
             if menu_item(ui, "New console", None).clicked() {
                 actions.push(Action::OpenConsole(id, Some(db.to_string())));
             }
+            new_object_items(ui, c, db, s, actions);
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::RefreshObjects(id, db.to_string(), s.clone()));
             }
             if menu_item(ui, "Copy name", None).clicked() {
                 actions.push(Action::CopyText(s.clone()));
             }
+            menu_separator(ui);
+            if menu_item(ui, "Drop schema…", None).clicked() {
+                actions.push(Action::DropSchema(id, db.to_string(), s.clone()));
+            }
         });
     }
+}
+
+/// "New table / view / routine…" menu entries for a schema.
+fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions: &mut Vec<Action>) {
+    let id = c.cfg.id;
+    if menu_item(ui, "New table…", None).clicked() {
+        actions.push(Action::NewTable(id, db.to_string(), schema.to_string()));
+    }
+    let kinds: &[(ObjectKind, &str)] = match c.cfg.kind {
+        DbKind::Postgres => &[
+            (ObjectKind::View, "New view…"),
+            (ObjectKind::MaterializedView, "New materialized view…"),
+            (ObjectKind::Function, "New function…"),
+            (ObjectKind::Procedure, "New procedure…"),
+            (ObjectKind::Trigger, "New trigger…"),
+            (ObjectKind::Sequence, "New sequence…"),
+            (ObjectKind::Type, "New type…"),
+        ],
+        DbKind::MySql => &[
+            (ObjectKind::View, "New view…"),
+            (ObjectKind::Function, "New function…"),
+            (ObjectKind::Procedure, "New procedure…"),
+            (ObjectKind::Trigger, "New trigger…"),
+        ],
+        DbKind::Sqlite => &[(ObjectKind::View, "New view…"), (ObjectKind::Trigger, "New trigger…")],
+    };
+    for (k, text) in kinds {
+        if menu_item(ui, text, None).clicked() {
+            actions.push(Action::NewFromTemplate(id, db.to_string(), schema.to_string(), *k));
+        }
+    }
+    menu_separator(ui);
 }
 
 fn objects(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, schema: &str, actions: &mut Vec<Action>) {
@@ -383,7 +451,7 @@ fn objects(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, schema: &str, a
     for (kind, items) in groups {
         let label = kind.group_label();
         let count = items.len().to_string();
-        tree.folder_ui(
+        let r = tree.folder_ui(
             Node::Group(id, db.to_string(), schema.to_string(), kind),
             label,
             |ui| row(ui, None, t.muted_foreground, label, Some(&count)),
@@ -393,6 +461,13 @@ fn objects(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, schema: &str, a
                 }
             },
         );
+        r.context_menu(|ui| {
+            ui.set_min_width(200.0);
+            new_object_items(ui, c, db, schema, actions);
+            if menu_item(ui, "Refresh", None).clicked() {
+                actions.push(Action::RefreshObjects(id, db.to_string(), schema.to_string()));
+            }
+        });
     }
 }
 
@@ -449,12 +524,25 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if menu_item(ui, "Structure & DDL", None).clicked() {
             actions.push(Action::OpenObject(id, o.clone()));
         }
+        if o.kind == ObjectKind::Table && menu_item(ui, "Edit table…", None).clicked() {
+            actions.push(Action::EditTable(id, o.path.clone()));
+        }
         menu_separator(ui);
         if menu_item(ui, "Copy name", None).clicked() {
             actions.push(Action::CopyText(o.path.name.clone()));
         }
         if menu_item(ui, "Copy qualified name", None).clicked() {
             actions.push(Action::CopyText(dbman_core::sql::Dialect(c.cfg.kind).qualified(&o.path)));
+        }
+        menu_separator(ui);
+        if dbman_core::ddl::rename(c.cfg.kind, o, "x").is_some() && menu_item(ui, "Rename…", None).clicked() {
+            actions.push(Action::RenameObject(id, o.clone()));
+        }
+        if o.kind == ObjectKind::Table && menu_item(ui, "Truncate…", None).clicked() {
+            actions.push(Action::Truncate(id, o.clone()));
+        }
+        if menu_item(ui, "Drop…", None).clicked() {
+            actions.push(Action::DropObject(id, o.clone()));
         }
     });
 }
@@ -521,7 +609,7 @@ fn table_children(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, acti
             |ui| row(ui, None, t.muted_foreground, "foreign keys", Some(&d.foreign_keys.len().to_string())),
             |tree| {
                 for f in &d.foreign_keys {
-                    let extra = format!("({}) → {}({})", f.columns.join(", "), f.ref_table, f.ref_columns.join(", "));
+                    let extra = format!("({}) -> {}({})", f.columns.join(", "), f.ref_table, f.ref_columns.join(", "));
                     tree.leaf_ui(Node::Info(format!("{:?}:fk:{}", o.path, f.name)), &format!("fk:{}", f.name), |ui| {
                         row(ui, Some(Icon::ForeignKey), t.muted_foreground, &f.name, Some(&extra))
                     });
