@@ -1,0 +1,668 @@
+//! Backup and restore options for every engine, and the command lines they
+//! turn into. PostgreSQL and MySQL use the server's own dump tools
+//! (`pg_dump` / `pg_restore` / `psql`, `mysqldump` / `mariadb-dump` /
+//! `mysql`); SQLite copies pages with its online backup API. Running the jobs
+//! lives in `dbman-drivers::backup`; this module only builds them, so it can
+//! be tested without the tools installed.
+
+use std::path::{Path, PathBuf};
+
+use crate::{ConnectionConfig, DbKind, SslMode};
+
+/// What a dump or restore contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Content {
+    #[default]
+    SchemaAndData,
+    SchemaOnly,
+    DataOnly,
+}
+
+impl Content {
+    pub const ALL: [Content; 3] = [Content::SchemaAndData, Content::SchemaOnly, Content::DataOnly];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Content::SchemaAndData => "Schema and data",
+            Content::SchemaOnly => "Schema only",
+            Content::DataOnly => "Data only",
+        }
+    }
+}
+
+/// `pg_dump --format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PgFormat {
+    /// A SQL script, restored with `psql`.
+    Plain,
+    /// Compressed archive for `pg_restore`; the usual choice.
+    #[default]
+    Custom,
+    /// One file per table; the only format dumped in parallel.
+    Directory,
+    Tar,
+}
+
+impl PgFormat {
+    pub const ALL: [PgFormat; 4] = [PgFormat::Custom, PgFormat::Plain, PgFormat::Directory, PgFormat::Tar];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            PgFormat::Plain => "Plain SQL",
+            PgFormat::Custom => "Custom archive",
+            PgFormat::Directory => "Directory",
+            PgFormat::Tar => "Tar",
+        }
+    }
+
+    const fn flag(self) -> &'static str {
+        match self {
+            PgFormat::Plain => "p",
+            PgFormat::Custom => "c",
+            PgFormat::Directory => "d",
+            PgFormat::Tar => "t",
+        }
+    }
+
+    /// File extension, or `None` for a directory.
+    pub const fn extension(self) -> Option<&'static str> {
+        match self {
+            PgFormat::Plain => Some("sql"),
+            PgFormat::Custom => Some("dump"),
+            PgFormat::Directory => None,
+            PgFormat::Tar => Some("tar"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PgDumpOptions {
+    pub format: PgFormat,
+    pub content: Content,
+    /// Only these schemas (`--schema`); empty for all.
+    pub schemas: Vec<String>,
+    /// Only these tables (`--table`, `schema.table`); empty for all.
+    pub tables: Vec<String>,
+    /// `--exclude-table-data`: keep the definition, skip the rows.
+    pub exclude_data: Vec<String>,
+    /// Emit `DROP` before every `CREATE` (plain format only; archives choose at restore).
+    pub clean: bool,
+    /// Include `CREATE DATABASE` (plain format only).
+    pub create: bool,
+    pub no_owner: bool,
+    pub no_privileges: bool,
+    /// Rows as `INSERT` statements instead of `COPY` (plain format).
+    pub inserts: bool,
+    /// Parallel jobs (directory format).
+    pub jobs: u32,
+    /// Compression level 0–9; `None` keeps the tool's default.
+    pub compress: Option<u8>,
+}
+
+impl Default for PgDumpOptions {
+    fn default() -> Self {
+        Self {
+            format: PgFormat::Custom,
+            content: Content::SchemaAndData,
+            schemas: Vec::new(),
+            tables: Vec::new(),
+            exclude_data: Vec::new(),
+            clean: false,
+            create: false,
+            no_owner: false,
+            no_privileges: false,
+            inserts: false,
+            jobs: 1,
+            compress: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PgRestoreOptions {
+    pub content: Content,
+    /// Drop objects before recreating them.
+    pub clean: bool,
+    /// Create the database first (connects to `postgres` and runs `CREATE DATABASE`).
+    pub create: bool,
+    pub no_owner: bool,
+    pub no_privileges: bool,
+    /// All or nothing: roll back everything on the first error.
+    pub single_transaction: bool,
+    /// Stop at the first error instead of reporting and going on.
+    pub exit_on_error: bool,
+    /// Parallel jobs (archives only, not with a single transaction).
+    pub jobs: u32,
+    pub schemas: Vec<String>,
+    pub tables: Vec<String>,
+}
+
+impl Default for PgRestoreOptions {
+    fn default() -> Self {
+        Self {
+            content: Content::SchemaAndData,
+            clean: false,
+            create: false,
+            no_owner: true,
+            no_privileges: false,
+            single_transaction: false,
+            exit_on_error: true,
+            jobs: 1,
+            schemas: Vec::new(),
+            tables: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MyDumpOptions {
+    pub content: Content,
+    /// Only these tables; empty for the whole database.
+    pub tables: Vec<String>,
+    /// Consistent snapshot without locking InnoDB tables.
+    pub single_transaction: bool,
+    pub routines: bool,
+    pub triggers: bool,
+    pub events: bool,
+    pub add_drop_table: bool,
+    /// Include `CREATE DATABASE` and `USE`.
+    pub create_database: bool,
+    /// Binary columns as hex literals, safe for any client charset.
+    pub hex_blob: bool,
+    /// Many rows per `INSERT` (smaller and faster); off gives one row per line.
+    pub extended_insert: bool,
+}
+
+impl Default for MyDumpOptions {
+    fn default() -> Self {
+        Self {
+            content: Content::SchemaAndData,
+            tables: Vec::new(),
+            single_transaction: true,
+            routines: true,
+            triggers: true,
+            events: true,
+            add_drop_table: true,
+            create_database: false,
+            hex_blob: true,
+            extended_insert: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MyRestoreOptions {
+    /// Keep going after a failing statement.
+    pub force: bool,
+}
+
+/// How to back up an SQLite file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SqliteMethod {
+    /// Page-by-page copy that other connections can keep using meanwhile.
+    #[default]
+    OnlineBackup,
+    /// `VACUUM INTO`: a compacted copy without free pages.
+    VacuumInto,
+}
+
+impl SqliteMethod {
+    pub const ALL: [SqliteMethod; 2] = [SqliteMethod::OnlineBackup, SqliteMethod::VacuumInto];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SqliteMethod::OnlineBackup => "Online backup (page copy)",
+            SqliteMethod::VacuumInto => "VACUUM INTO (compacted copy)",
+        }
+    }
+}
+
+/// The external programs DBMan drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    PgDump,
+    PgRestore,
+    Psql,
+    MySqlDump,
+    MariaDbDump,
+    MySql,
+    MariaDb,
+}
+
+impl Tool {
+    pub const fn program(self) -> &'static str {
+        match self {
+            Tool::PgDump => "pg_dump",
+            Tool::PgRestore => "pg_restore",
+            Tool::Psql => "psql",
+            Tool::MySqlDump => "mysqldump",
+            Tool::MariaDbDump => "mariadb-dump",
+            Tool::MySql => "mysql",
+            Tool::MariaDb => "mariadb",
+        }
+    }
+
+    const fn is_mariadb(self) -> bool {
+        matches!(self, Tool::MariaDbDump | Tool::MariaDb)
+    }
+}
+
+/// A command line to run, with secrets passed through the environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCommand {
+    pub tool: Tool,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// Feed this file to the tool's standard input.
+    pub stdin: Option<PathBuf>,
+    /// Write the tool's standard output to this file.
+    pub stdout: Option<PathBuf>,
+}
+
+impl ToolCommand {
+    fn new(tool: Tool) -> Self {
+        Self { tool, args: Vec::new(), env: Vec::new(), stdin: None, stdout: None }
+    }
+
+    fn arg(&mut self, a: impl Into<String>) -> &mut Self {
+        self.args.push(a.into());
+        self
+    }
+
+    fn flag(&mut self, on: bool, a: &str) -> &mut Self {
+        if on {
+            self.args.push(a.to_string());
+        }
+        self
+    }
+
+    /// The command as a shell line, for the log. Passwords are never part of it.
+    pub fn display(&self) -> String {
+        let quote = |s: &str| {
+            if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_=./:@,".contains(c)) {
+                s.to_string()
+            } else {
+                format!("'{}'", s.replace('\'', r"'\''"))
+            }
+        };
+        let mut line = self.tool.program().to_string();
+        for a in &self.args {
+            line.push(' ');
+            line.push_str(&quote(a));
+        }
+        if let Some(p) = &self.stdin {
+            line.push_str(&format!(" < {}", quote(&p.to_string_lossy())));
+        }
+        if let Some(p) = &self.stdout {
+            line.push_str(&format!(" > {}", quote(&p.to_string_lossy())));
+        }
+        line
+    }
+}
+
+fn pg_connection(cmd: &mut ToolCommand, cfg: &ConnectionConfig) {
+    cmd.arg("--host").arg(&cfg.host).arg("--port").arg(cfg.port.to_string()).arg("--username").arg(&cfg.user);
+    cmd.arg("--no-password");
+    if !cfg.password.is_empty() {
+        cmd.env.push(("PGPASSWORD".into(), cfg.password.clone()));
+    }
+    let mode = match cfg.ssl_mode {
+        SslMode::Disable => "disable",
+        SslMode::Prefer => "prefer",
+        SslMode::Require => "require",
+        SslMode::VerifyFull => "verify-full",
+    };
+    cmd.env.push(("PGSSLMODE".into(), mode.into()));
+    cmd.env.push(("PGAPPNAME".into(), "DBMan".into()));
+}
+
+fn pg_content(cmd: &mut ToolCommand, content: Content) {
+    match content {
+        Content::SchemaAndData => {}
+        Content::SchemaOnly => {
+            cmd.arg("--schema-only");
+        }
+        Content::DataOnly => {
+            cmd.arg("--data-only");
+        }
+    }
+}
+
+/// `pg_dump` of `database` into `target` (a file, or a directory for that format).
+pub fn pg_dump(cfg: &ConnectionConfig, database: &str, o: &PgDumpOptions, target: &Path) -> ToolCommand {
+    let mut c = ToolCommand::new(Tool::PgDump);
+    pg_connection(&mut c, cfg);
+    c.arg("--dbname").arg(database).arg("--format").arg(o.format.flag()).arg("--verbose");
+    c.arg("--file").arg(target.to_string_lossy());
+    pg_content(&mut c, o.content);
+    for s in &o.schemas {
+        c.arg("--schema").arg(s);
+    }
+    for t in &o.tables {
+        c.arg("--table").arg(t);
+    }
+    for t in &o.exclude_data {
+        c.arg("--exclude-table-data").arg(t);
+    }
+    let plain = o.format == PgFormat::Plain;
+    c.flag(plain && o.clean, "--clean").flag(plain && o.clean, "--if-exists");
+    c.flag(plain && o.create, "--create");
+    c.flag(o.no_owner, "--no-owner").flag(o.no_privileges, "--no-privileges");
+    c.flag(plain && o.inserts, "--column-inserts");
+    if o.format == PgFormat::Directory && o.jobs > 1 {
+        c.arg("--jobs").arg(o.jobs.to_string());
+    }
+    if let Some(level) = o.compress.filter(|_| o.format != PgFormat::Tar) {
+        c.arg("--compress").arg(level.min(9).to_string());
+    }
+    c
+}
+
+/// Restores `source` into `database`: `psql` for a SQL script, `pg_restore` for archives.
+pub fn pg_restore(
+    cfg: &ConnectionConfig,
+    database: &str,
+    o: &PgRestoreOptions,
+    source: &Path,
+    format: PgFormat,
+) -> ToolCommand {
+    if format == PgFormat::Plain {
+        let mut c = ToolCommand::new(Tool::Psql);
+        pg_connection(&mut c, cfg);
+        c.arg("--dbname").arg(database).arg("--file").arg(source.to_string_lossy());
+        c.arg("--echo-errors").arg("--no-psqlrc");
+        if o.exit_on_error {
+            c.arg("--set").arg("ON_ERROR_STOP=1");
+        }
+        c.flag(o.single_transaction, "--single-transaction");
+        return c;
+    }
+    let mut c = ToolCommand::new(Tool::PgRestore);
+    pg_connection(&mut c, cfg);
+    // With --create pg_restore connects to another database and creates the target from the archive.
+    c.arg("--dbname").arg(if o.create { "postgres" } else { database }).arg("--verbose");
+    pg_content(&mut c, o.content);
+    c.flag(o.clean, "--clean").flag(o.clean, "--if-exists").flag(o.create, "--create");
+    c.flag(o.no_owner, "--no-owner").flag(o.no_privileges, "--no-privileges");
+    c.flag(o.single_transaction, "--single-transaction");
+    c.flag(o.exit_on_error, "--exit-on-error");
+    if o.jobs > 1 && !o.single_transaction {
+        c.arg("--jobs").arg(o.jobs.to_string());
+    }
+    for s in &o.schemas {
+        c.arg("--schema").arg(s);
+    }
+    for t in &o.tables {
+        c.arg("--table").arg(t);
+    }
+    c.arg(source.to_string_lossy());
+    c
+}
+
+fn my_connection(cmd: &mut ToolCommand, cfg: &ConnectionConfig) {
+    cmd.arg(format!("--host={}", cfg.host)).arg(format!("--port={}", cfg.port)).arg(format!("--user={}", cfg.user));
+    cmd.arg("--protocol=TCP");
+    if !cfg.password.is_empty() {
+        cmd.env.push(("MYSQL_PWD".into(), cfg.password.clone()));
+    }
+    // MySQL and MariaDB clients spell the TLS switches differently.
+    let mariadb = cmd.tool.is_mariadb();
+    match (cfg.ssl_mode, mariadb) {
+        (SslMode::Prefer, _) => {}
+        (SslMode::Disable, true) => {
+            cmd.arg("--skip-ssl");
+        }
+        (SslMode::Disable, false) => {
+            cmd.arg("--ssl-mode=DISABLED");
+        }
+        (SslMode::Require, true) => {
+            cmd.arg("--ssl");
+        }
+        (SslMode::Require, false) => {
+            cmd.arg("--ssl-mode=REQUIRED");
+        }
+        (SslMode::VerifyFull, true) => {
+            cmd.arg("--ssl").arg("--ssl-verify-server-cert");
+        }
+        (SslMode::VerifyFull, false) => {
+            cmd.arg("--ssl-mode=VERIFY_IDENTITY");
+        }
+    }
+}
+
+/// `mysqldump` (or `mariadb-dump`) of `database` into the file `target`.
+/// `against_mariadb` tells whether the server is MariaDB: MySQL 8's mysqldump
+/// then needs `--column-statistics=0`.
+pub fn my_dump(
+    cfg: &ConnectionConfig,
+    tool: Tool,
+    against_mariadb: bool,
+    database: &str,
+    o: &MyDumpOptions,
+    target: &Path,
+) -> ToolCommand {
+    let mut c = ToolCommand::new(tool);
+    my_connection(&mut c, cfg);
+    c.arg("--verbose").arg("--default-character-set=utf8mb4");
+    if tool == Tool::MySqlDump && against_mariadb {
+        c.arg("--column-statistics=0");
+    }
+    match o.content {
+        Content::SchemaAndData => {}
+        Content::SchemaOnly => {
+            c.arg("--no-data");
+        }
+        Content::DataOnly => {
+            c.arg("--no-create-info");
+        }
+    }
+    let with_schema = o.content != Content::DataOnly;
+    c.flag(o.single_transaction, "--single-transaction");
+    c.flag(with_schema && o.routines, "--routines");
+    c.flag(with_schema && o.events, "--events");
+    c.arg(if o.triggers && with_schema { "--triggers" } else { "--skip-triggers" });
+    c.arg(if o.add_drop_table && with_schema { "--add-drop-table" } else { "--skip-add-drop-table" });
+    c.flag(o.hex_blob, "--hex-blob");
+    if !o.extended_insert {
+        c.arg("--skip-extended-insert");
+    }
+    c.arg(format!("--result-file={}", target.to_string_lossy()));
+    if o.create_database && o.tables.is_empty() {
+        c.arg("--databases").arg(database);
+    } else {
+        c.arg(database);
+        for t in &o.tables {
+            c.arg(t);
+        }
+    }
+    c
+}
+
+/// Runs the SQL script `source` in `database` with the `mysql` client.
+pub fn my_restore(
+    cfg: &ConnectionConfig,
+    tool: Tool,
+    database: &str,
+    o: &MyRestoreOptions,
+    source: &Path,
+) -> ToolCommand {
+    let mut c = ToolCommand::new(tool);
+    my_connection(&mut c, cfg);
+    c.arg("--default-character-set=utf8mb4").arg("--verbose");
+    c.flag(o.force, "--force");
+    if !database.is_empty() {
+        c.arg(format!("--database={database}"));
+    }
+    c.stdin = Some(source.to_path_buf());
+    c
+}
+
+/// Which PostgreSQL dump `path` holds, from its first bytes (or a directory).
+pub fn detect_pg_format(path: &Path) -> std::io::Result<PgFormat> {
+    if path.is_dir() {
+        return Ok(PgFormat::Directory);
+    }
+    use std::io::Read;
+    let mut head = [0u8; 512];
+    let mut f = std::fs::File::open(path)?;
+    let mut n = 0;
+    while n < head.len() {
+        let r = f.read(&mut head[n..])?;
+        if r == 0 {
+            break;
+        }
+        n += r;
+    }
+    let head = &head[..n];
+    Ok(if head.starts_with(b"PGDMP") {
+        PgFormat::Custom
+    } else if head.len() >= 262 && &head[257..262] == b"ustar" {
+        PgFormat::Tar
+    } else {
+        PgFormat::Plain
+    })
+}
+
+/// The default file name for a backup: `<database>_<date>-<time>.<ext>`.
+pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: PgFormat) -> String {
+    let base: String = database
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(database)
+        .trim_end_matches(".sqlite3")
+        .trim_end_matches(".sqlite")
+        .trim_end_matches(".db")
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    let base = if base.is_empty() { "backup".to_string() } else { base };
+    match kind {
+        DbKind::Postgres => match pg_format.extension() {
+            Some(ext) => format!("{base}_{stamp}.{ext}"),
+            None => format!("{base}_{stamp}"),
+        },
+        DbKind::MySql => format!("{base}_{stamp}.sql"),
+        DbKind::Sqlite => format!("{base}_{stamp}.db"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pg() -> ConnectionConfig {
+        let mut c = ConnectionConfig::new(DbKind::Postgres);
+        c.host = "db.local".into();
+        c.port = 5433;
+        c.user = "admin".into();
+        c.password = "s3cret".into();
+        c
+    }
+
+    #[test]
+    fn pg_dump_command() {
+        let o = PgDumpOptions {
+            schemas: vec!["public".into()],
+            exclude_data: vec!["public.logs".into()],
+            no_owner: true,
+            compress: Some(6),
+            ..Default::default()
+        };
+        let c = pg_dump(&pg(), "shop", &o, Path::new("/tmp/shop.dump"));
+        assert_eq!(
+            c.display(),
+            "pg_dump --host db.local --port 5433 --username admin --no-password --dbname shop --format c --verbose \
+             --file /tmp/shop.dump --schema public --exclude-table-data public.logs --no-owner --compress 6"
+        );
+        assert!(c.env.contains(&("PGPASSWORD".into(), "s3cret".into())));
+        assert!(!c.display().contains("s3cret"));
+    }
+
+    #[test]
+    fn pg_plain_only_flags() {
+        let o =
+            PgDumpOptions { format: PgFormat::Plain, clean: true, create: true, inserts: true, ..Default::default() };
+        let c = pg_dump(&pg(), "shop", &o, Path::new("a b.sql"));
+        assert!(c.args.iter().any(|a| a == "--clean"));
+        assert!(c.args.iter().any(|a| a == "--column-inserts"));
+        assert!(c.display().contains("'a b.sql'"));
+        let o = PgDumpOptions { format: PgFormat::Custom, clean: true, ..o };
+        assert!(!pg_dump(&pg(), "shop", &o, Path::new("x")).args.iter().any(|a| a == "--clean"));
+        let o = PgDumpOptions { format: PgFormat::Directory, jobs: 4, ..Default::default() };
+        assert!(pg_dump(&pg(), "shop", &o, Path::new("x")).display().contains("--jobs 4"));
+    }
+
+    #[test]
+    fn pg_restore_commands() {
+        let o = PgRestoreOptions { clean: true, jobs: 3, ..Default::default() };
+        let c = pg_restore(&pg(), "shop", &o, Path::new("/b/shop.dump"), PgFormat::Custom);
+        assert_eq!(c.tool, Tool::PgRestore);
+        assert!(c.display().ends_with("--clean --if-exists --no-owner --exit-on-error --jobs 3 /b/shop.dump"));
+        let o = PgRestoreOptions { create: true, ..Default::default() };
+        assert!(pg_restore(&pg(), "shop", &o, Path::new("x"), PgFormat::Tar).display().contains("--dbname postgres"));
+        let c = pg_restore(&pg(), "shop", &PgRestoreOptions::default(), Path::new("/b/s.sql"), PgFormat::Plain);
+        assert_eq!(c.tool, Tool::Psql);
+        assert!(c.display().contains("--set ON_ERROR_STOP=1"));
+    }
+
+    #[test]
+    fn mysql_commands() {
+        let mut cfg = ConnectionConfig::new(DbKind::MySql);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 3306;
+        cfg.user = "root".into();
+        cfg.password = "pw".into();
+        let o = MyDumpOptions { tables: vec!["orders".into()], ..Default::default() };
+        let c = my_dump(&cfg, Tool::MySqlDump, true, "shop", &o, Path::new("/b/shop.sql"));
+        assert_eq!(
+            c.display(),
+            "mysqldump --host=127.0.0.1 --port=3306 --user=root --protocol=TCP --verbose \
+             --default-character-set=utf8mb4 --column-statistics=0 --single-transaction --routines --events \
+             --triggers --add-drop-table --hex-blob --result-file=/b/shop.sql shop orders"
+        );
+        assert_eq!(c.env, vec![("MYSQL_PWD".into(), "pw".into())]);
+        let o = MyDumpOptions { content: Content::DataOnly, create_database: true, ..Default::default() };
+        let c = my_dump(&cfg, Tool::MariaDbDump, true, "shop", &o, Path::new("x"));
+        assert!(c.display().ends_with("--databases shop"));
+        assert!(c.args.iter().any(|a| a == "--skip-triggers"));
+        assert!(!c.args.iter().any(|a| a == "--routines" || a.starts_with("--column-statistics")));
+        let c = my_restore(&cfg, Tool::MySql, "shop", &MyRestoreOptions { force: true }, Path::new("/b/shop.sql"));
+        assert!(c.display().ends_with("--force --database=shop < /b/shop.sql"));
+        cfg.ssl_mode = SslMode::Require;
+        assert!(
+            my_restore(&cfg, Tool::MariaDb, "", &MyRestoreOptions::default(), Path::new("x"))
+                .args
+                .contains(&"--ssl".into())
+        );
+    }
+
+    #[test]
+    fn detects_dump_formats() {
+        let dir = std::env::temp_dir().join(format!("dbman-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let custom = dir.join("a.dump");
+        std::fs::write(&custom, b"PGDMP\x01\x0e\x00").unwrap();
+        let plain = dir.join("a.sql");
+        std::fs::write(&plain, b"--\n-- PostgreSQL database dump\n").unwrap();
+        let mut tar = vec![0u8; 600];
+        tar[257..262].copy_from_slice(b"ustar");
+        let tar_path = dir.join("a.tar");
+        std::fs::write(&tar_path, tar).unwrap();
+        assert_eq!(detect_pg_format(&custom).unwrap(), PgFormat::Custom);
+        assert_eq!(detect_pg_format(&plain).unwrap(), PgFormat::Plain);
+        assert_eq!(detect_pg_format(&tar_path).unwrap(), PgFormat::Tar);
+        assert_eq!(detect_pg_format(&dir).unwrap(), PgFormat::Directory);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn file_names() {
+        assert_eq!(
+            default_file_name(DbKind::Postgres, "shop", "20261015-1200", PgFormat::Custom),
+            "shop_20261015-1200.dump"
+        );
+        assert_eq!(default_file_name(DbKind::Postgres, "shop", "s", PgFormat::Directory), "shop_s");
+        assert_eq!(default_file_name(DbKind::Sqlite, "/home/me/my app.sqlite3", "s", PgFormat::Custom), "my_app_s.db");
+        assert_eq!(default_file_name(DbKind::MySql, "", "s", PgFormat::Custom), "backup_s.sql");
+    }
+}
