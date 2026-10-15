@@ -523,12 +523,83 @@ pub fn detect_pg_format(path: &Path) -> std::io::Result<PgFormat> {
     })
 }
 
+/// How to back up a DuckDB database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DuckMethod {
+    /// `EXPORT DATABASE` to a folder: schema.sql, load.sql and a Parquet file per table.
+    #[default]
+    Parquet,
+    /// `EXPORT DATABASE` with CSV files, readable by anything.
+    Csv,
+    /// A new database file: `ATTACH` it and `COPY FROM DATABASE`.
+    DatabaseFile,
+}
+
+impl DuckMethod {
+    pub const ALL: [DuckMethod; 3] = [DuckMethod::Parquet, DuckMethod::Csv, DuckMethod::DatabaseFile];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            DuckMethod::Parquet => "Export folder (Parquet)",
+            DuckMethod::Csv => "Export folder (CSV)",
+            DuckMethod::DatabaseFile => "Database file copy",
+        }
+    }
+
+    pub const fn writes_folder(self) -> bool {
+        !matches!(self, DuckMethod::DatabaseFile)
+    }
+}
+
+/// Alias of the backup or restore file while it is attached.
+const DUCK_ALIAS: &str = "dbman_backup_file";
+
+/// Statements that back up the DuckDB catalog `db` to `target`, run on a
+/// session of that database. The last statement is cleanup that also runs
+/// after a failure.
+pub fn duck_backup(db: &str, method: DuckMethod, target: &Path) -> Vec<String> {
+    let d = crate::sql::Dialect(DbKind::DuckDb);
+    let to = d.string(&target.to_string_lossy());
+    match method {
+        DuckMethod::Parquet | DuckMethod::Csv => {
+            let options = if method == DuckMethod::Parquet {
+                "FORMAT parquet, COMPRESSION zstd"
+            } else {
+                "FORMAT csv, HEADER true"
+            };
+            vec![format!("USE {}", d.ident(db)), format!("EXPORT DATABASE {to} ({options})")]
+        }
+        DuckMethod::DatabaseFile => vec![
+            format!("ATTACH {to} AS {DUCK_ALIAS}"),
+            format!("COPY FROM DATABASE {} TO {DUCK_ALIAS}", d.ident(db)),
+            format!("DETACH DATABASE IF EXISTS {DUCK_ALIAS}"),
+        ],
+    }
+}
+
+/// Statements that load the backup `source` (an export folder or a database
+/// file) into the DuckDB catalog `db`. The last statement is cleanup.
+pub fn duck_restore(db: &str, source: &Path) -> Vec<String> {
+    let d = crate::sql::Dialect(DbKind::DuckDb);
+    let from = d.string(&source.to_string_lossy());
+    if source.is_dir() {
+        vec![format!("USE {}", d.ident(db)), format!("IMPORT DATABASE {from}")]
+    } else {
+        vec![
+            format!("ATTACH {from} AS {DUCK_ALIAS} (READ_ONLY)"),
+            format!("COPY FROM DATABASE {DUCK_ALIAS} TO {}", d.ident(db)),
+            format!("DETACH DATABASE IF EXISTS {DUCK_ALIAS}"),
+        ]
+    }
+}
+
 /// The default file name for a backup: `<database>_<date>-<time>.<ext>`.
 pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: PgFormat) -> String {
     let base: String = database
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or(database)
+        .trim_end_matches(".duckdb")
         .trim_end_matches(".sqlite3")
         .trim_end_matches(".sqlite")
         .trim_end_matches(".db")
@@ -543,7 +614,14 @@ pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: P
         },
         DbKind::MySql => format!("{base}_{stamp}.sql"),
         DbKind::Sqlite => format!("{base}_{stamp}.db"),
+        DbKind::DuckDb => format!("{base}_{stamp}"),
     }
+}
+
+/// [`default_file_name`] for a DuckDB backup made with `method`.
+pub fn duck_file_name(database: &str, stamp: &str, method: DuckMethod) -> String {
+    let name = default_file_name(DbKind::DuckDb, database, stamp, PgFormat::default());
+    if method.writes_folder() { name } else { format!("{name}.duckdb") }
 }
 
 #[cfg(test)]
@@ -664,5 +742,15 @@ mod tests {
         assert_eq!(default_file_name(DbKind::Postgres, "shop", "s", PgFormat::Directory), "shop_s");
         assert_eq!(default_file_name(DbKind::Sqlite, "/home/me/my app.sqlite3", "s", PgFormat::Custom), "my_app_s.db");
         assert_eq!(default_file_name(DbKind::MySql, "", "s", PgFormat::Custom), "backup_s.sql");
+    }
+
+    #[test]
+    fn duck_statements() {
+        let b = duck_backup("shop", DuckMethod::Parquet, Path::new("/tmp/it's"));
+        assert_eq!(b, ["USE \"shop\"", "EXPORT DATABASE '/tmp/it''s' (FORMAT parquet, COMPRESSION zstd)"]);
+        let b = duck_backup("shop", DuckMethod::DatabaseFile, Path::new("/tmp/b.duckdb"));
+        assert_eq!(b[1], "COPY FROM DATABASE \"shop\" TO dbman_backup_file");
+        assert_eq!(duck_file_name("/data/shop.duckdb", "s", DuckMethod::DatabaseFile), "shop_s.duckdb");
+        assert_eq!(duck_file_name("/data/shop.duckdb", "s", DuckMethod::Csv), "shop_s");
     }
 }

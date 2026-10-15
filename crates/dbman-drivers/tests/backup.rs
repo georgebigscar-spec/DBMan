@@ -1,4 +1,4 @@
-//! Backup → damage → restore round trips. SQLite always runs; PostgreSQL and
+//! Backup → damage → restore round trips. SQLite and DuckDB always run; PostgreSQL and
 //! MySQL need `DBMAN_TEST_POSTGRES` / `DBMAN_TEST_MYSQL` and the dump tools on
 //! `PATH` (skipped with a note otherwise).
 
@@ -6,10 +6,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use dbman_core::backup::{
-    self, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
+    self, DuckMethod, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
 };
 use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, StatementOutcome};
-use dbman_drivers::backup::{Progress, Report, find_tool, run_tool, sqlite_backup, sqlite_restore};
+use dbman_drivers::backup::{Progress, Report, duckdb_run, find_tool, run_tool, sqlite_backup, sqlite_restore};
 
 fn collect() -> (Report, Arc<Mutex<Vec<Progress>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -196,4 +196,47 @@ async fn mysql_round_trip() {
     assert_eq!(count(&c, &db, "SELECT name FROM bk_items WHERE id = 1").await, "один");
     assert_eq!(count(&c, &db, "SELECT hex(data) FROM bk_items WHERE id = 1").await, "00FF");
     c.execute(Some(&db), "DROP TABLE bk_items", 0).await.unwrap();
+}
+
+#[tokio::test]
+async fn duckdb_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("shop.duckdb");
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.database = db.to_string_lossy().into_owned();
+    // The session stays open during the backup: the job shares its database.
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    for sql in [
+        "CREATE SCHEMA sales",
+        "CREATE SEQUENCE sales.ids",
+        "CREATE TABLE sales.orders (id INTEGER PRIMARY KEY DEFAULT nextval('sales.ids'), note VARCHAR, tags VARCHAR[])",
+        "INSERT INTO sales.orders (note, tags) SELECT 'order ' || i, ['a', 'b'] FROM range(5000) t(i)",
+        "CREATE VIEW sales.big AS SELECT * FROM sales.orders WHERE id > 100",
+    ] {
+        c.execute(Some("shop"), sql, 0).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    for method in DuckMethod::ALL {
+        let target = dir.path().join(backup::duck_file_name("shop", "t", method) + &format!("-{method:?}"));
+        let (report, seen) = collect();
+        let statements = backup::duck_backup("shop", method, &target);
+        duckdb_run(cfg.database.clone(), statements, Some(target.clone()), report, no_cancel())
+            .await
+            .unwrap_or_else(|e| panic!("{method:?}: {e}"));
+        assert_eq!(target.is_dir(), method.writes_folder(), "{method:?}");
+        assert!(seen.lock().unwrap().iter().any(|p| matches!(p, Progress::Bytes(n) if *n > 0)));
+
+        // Restore into a new, empty database file.
+        let restored = dir.path().join(format!("restored{method:?}.duckdb"));
+        let mut cfg2 = cfg.clone();
+        cfg2.database = restored.to_string_lossy().into_owned();
+        let c2 = dbman_drivers::connect(&cfg2).await.unwrap();
+        let name = format!("restored{method:?}");
+        let (report, _) = collect();
+        duckdb_run(cfg2.database.clone(), backup::duck_restore(&name, &target), None, report, no_cancel())
+            .await
+            .unwrap_or_else(|e| panic!("{method:?}: {e}"));
+        assert_eq!(count(&c2, &name, "SELECT count(*) FROM sales.big").await, "4900", "{method:?}");
+        assert_eq!(count(&c2, &name, "SELECT tags[2] FROM sales.orders LIMIT 1").await, "b", "{method:?}");
+    }
 }

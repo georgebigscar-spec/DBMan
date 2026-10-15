@@ -74,9 +74,17 @@ async fn check_engine(c: Arc<dyn Connection>, db: &str, schema: &str, setup: &[&
     assert!(view_ddl.to_ascii_uppercase().contains("VIEW"), "{view_ddl}");
 
     let q = dbman_core::sql::Dialect(c.kind()).qualified(&items.path);
-    match exec(&c, db, &format!("INSERT INTO {q} (id, name, parent) VALUES (1, 'root', NULL), (2, 'child', 1)")).await {
-        StatementOutcome::Done { affected } => assert_eq!(affected, Some(2)),
-        other => panic!("{other:?}"),
+    // DuckDB checks a foreign key against the table as it was before the statement.
+    let inserts: &[(&str, u64)] = if c.kind() == DbKind::DuckDb {
+        &[("(1, 'root', NULL)", 1), ("(2, 'child', 1)", 1)]
+    } else {
+        &[("(1, 'root', NULL), (2, 'child', 1)", 2)]
+    };
+    for (values, n) in inserts {
+        match exec(&c, db, &format!("INSERT INTO {q} (id, name, parent) VALUES {values}")).await {
+            StatementOutcome::Done { affected } => assert_eq!(affected, Some(*n)),
+            other => panic!("{other:?}"),
+        }
     }
     let r = rows(&c, db, &format!("SELECT id, name, parent FROM {q} ORDER BY id")).await;
     assert_eq!(r.len(), 2);
@@ -152,7 +160,9 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
     let mut id = col("id", int);
     id.col.primary_key = true;
     id.col.nullable = false;
-    id.col.auto_increment = true;
+    // DuckDB has no auto-increment columns, nor FK actions.
+    let duck = kind == DbKind::DuckDb;
+    id.col.auto_increment = !duck;
     teams.columns = vec![id.clone(), col("title", "varchar(40)")];
     run_plan(&c, db, &ddl::create_table(kind, &teams)).await;
 
@@ -176,7 +186,7 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
         ref_table: "ddl_teams".into(),
         ref_columns: vec!["id".into()],
         on_update: "NO ACTION".into(),
-        on_delete: "CASCADE".into(),
+        on_delete: if duck { "NO ACTION" } else { "CASCADE" }.into(),
     });
     run_plan(&c, db, &ddl::create_table(kind, &members)).await;
     let q = dbman_core::sql::Dialect(kind).qualified(&path("ddl_members"));
@@ -184,20 +194,25 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
         &c,
         db,
         &format!(
-            "INSERT INTO {} (title) VALUES ('core')",
-            dbman_core::sql::Dialect(kind).qualified(&path("ddl_teams"))
+            "INSERT INTO {} ({}title) VALUES ({}'core')",
+            dbman_core::sql::Dialect(kind).qualified(&path("ddl_teams")),
+            if duck { "id, " } else { "" },
+            if duck { "1, " } else { "" },
         ),
     )
     .await;
-    exec(&c, db, &format!("INSERT INTO {q} (email) VALUES ('a@x.io')")).await;
+    let insert = if duck { "(id, email) VALUES (1, 'a@x.io')" } else { "(email) VALUES ('a@x.io')" };
+    exec(&c, db, &format!("INSERT INTO {q} {insert}")).await;
 
     let details = c.table_details(&path("ddl_members")).await.unwrap();
     assert_eq!(details.primary_key(), ["id"]);
-    assert!(details.columns[0].auto_increment, "{:?}", details.columns[0]);
+    assert_eq!(details.columns[0].auto_increment, !duck, "{:?}", details.columns[0]);
     assert_eq!(details.columns[2].default.as_deref().map(|d| d.trim_matches('\'')), Some("1"));
     assert!(details.indexes.iter().any(|i| i.name == "ddl_members_email" && i.unique));
     assert_eq!(details.foreign_keys.len(), 1);
-    assert_eq!(details.foreign_keys[0].on_delete.to_ascii_uppercase(), "CASCADE");
+    if !duck {
+        assert_eq!(details.foreign_keys[0].on_delete.to_ascii_uppercase(), "CASCADE");
+    }
 
     let old = TableDef::from_details(path("ddl_members"), &details);
     let unchanged = ddl::alter_table(kind, &old, &old);
@@ -217,7 +232,9 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
     let after = c.table_details(&path("ddl_members")).await.unwrap();
     let names: Vec<&str> = after.columns.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["id", "mail", "team_id", "nick"], "{}", plan.script());
-    assert!(after.columns[1].data_type.to_ascii_lowercase().contains("200"), "{:?}", after.columns[1]);
+    // DuckDB's VARCHAR has no length.
+    let mail_type = after.columns[1].data_type.to_ascii_lowercase();
+    assert!(mail_type.contains("200") || (duck && mail_type == "varchar"), "{:?}", after.columns[1]);
     assert!(!after.columns[2].nullable);
     assert!(after.indexes.iter().any(|i| i.name == "ddl_members_nick"));
     assert!(!after.indexes.iter().any(|i| i.name == "ddl_members_email"));
@@ -229,8 +246,13 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
 
     let members_obj =
         dbman_core::DbObject { kind: ObjectKind::Table, path: path("ddl_members"), detail: None, comment: None };
-    exec(&c, db, &ddl::rename(kind, &members_obj, "ddl_people").unwrap()).await;
-    let people = dbman_core::DbObject { path: path("ddl_people"), ..members_obj };
+    // DuckDB cannot rename a table that has indexes or foreign keys.
+    let people = if duck {
+        members_obj
+    } else {
+        exec(&c, db, &ddl::rename(kind, &members_obj, "ddl_people").unwrap()).await;
+        dbman_core::DbObject { path: path("ddl_people"), ..members_obj }
+    };
     exec(&c, db, &ddl::truncate(kind, &people.path)).await;
     exec(&c, db, &ddl::drop_object(kind, &people, false)).await;
     let teams_obj =
@@ -356,4 +378,49 @@ async fn mysql() {
     assert_eq!(blob[0][0], Cell::Bytes(b"ab".to_vec()));
     assert_eq!(blob[0][1], Cell::Text("x".into()));
     check_cancel(c, &db, "SELECT SLEEP(30)").await;
+}
+
+#[tokio::test]
+async fn duckdb() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.database = dir.path().join("test.duckdb").to_string_lossy().into_owned();
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    assert_eq!(c.databases().await.unwrap(), ["test"]);
+    // A second session on the same file shares the open database.
+    let other = dbman_drivers::connect(&cfg).await.unwrap();
+    exec(&other, "test", "CREATE SCHEMA app").await;
+    check_ddl(c.clone(), "test", "app").await;
+    check_cancel(c.clone(), "test", "SELECT count(*) FROM range(100000000000) a").await;
+    check_engine(
+        c.clone(),
+        "test",
+        "app",
+        &[
+            "CREATE TABLE app.items (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, parent INTEGER REFERENCES app.items(id))",
+            "CREATE INDEX items_name_idx ON app.items(name)",
+            "CREATE VIEW app.item_names AS SELECT name FROM app.items",
+        ],
+    )
+    .await;
+    // Nested values come back as DuckDB prints them.
+    let r = rows(
+        &c,
+        "test",
+        "SELECT [1, 2] AS l, {'a': 1, 'b': 'x'} AS s, DATE '2024-02-29' AS d, INTERVAL 90 MINUTE AS i",
+    )
+    .await;
+    assert_eq!(
+        r[0],
+        [
+            Cell::Text("[1, 2]".into()),
+            Cell::Text("{'a': 1, 'b': 'x'}".into()),
+            Cell::Text("2024-02-29".into()),
+            Cell::Text("01:30:00".into()),
+        ]
+    );
+    drop((c, other));
+    // Both sessions closed: the file is released and opens again.
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    assert!(c.objects("test", "app").await.unwrap().iter().any(|o| o.path.name == "items"));
 }

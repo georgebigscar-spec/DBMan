@@ -69,7 +69,8 @@ impl TableEditor {
             data_type: int.into(),
             nullable: false,
             primary_key: true,
-            auto_increment: true,
+            // DuckDB has no auto-increment columns.
+            auto_increment: kind != DbKind::DuckDb,
             ..Default::default()
         };
         Self {
@@ -351,7 +352,11 @@ impl TableEditor {
     fn columns_ui(&mut self, ui: &mut Ui, t: &Theme) {
         if Self::section_header(ui, "Columns", "+ Column") {
             let n = self.columns.len() + 1;
-            let ty = ddl::common_types(self.kind)[if self.kind == DbKind::Sqlite { 2 } else { 7 }];
+            let ty = ddl::common_types(self.kind)[match self.kind {
+                DbKind::Sqlite => 2,
+                DbKind::DuckDb => 8,
+                _ => 7,
+            }];
             self.columns.push(ColumnDef {
                 col: ColumnInfo {
                     name: format!("column_{n}"),

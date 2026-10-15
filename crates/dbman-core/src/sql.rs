@@ -53,7 +53,10 @@ pub fn tokenize(sql: &str, kind: DbKind) -> Vec<Token> {
                 if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
                     depth -= 1;
                     i += 2;
-                } else if kind == DbKind::Postgres && b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                } else if matches!(kind, DbKind::Postgres | DbKind::DuckDb)
+                    && b[i] == b'/'
+                    && b.get(i + 1) == Some(&b'*')
+                {
                     depth += 1;
                     i += 2;
                 } else {
@@ -77,7 +80,7 @@ pub fn tokenize(sql: &str, kind: DbKind) -> Vec<Token> {
             }
             i = (i + 1).min(b.len());
             TokenKind::QuotedIdent
-        } else if c == b'$' && kind == DbKind::Postgres && dollar_tag(b, i).is_some() {
+        } else if c == b'$' && matches!(kind, DbKind::Postgres | DbKind::DuckDb) && dollar_tag(b, i).is_some() {
             let tag_end = dollar_tag(b, i).unwrap();
             let tag = &b[i..tag_end];
             i = tag_end;
@@ -305,7 +308,7 @@ impl Dialect {
     pub fn ident(self, name: &str) -> String {
         match self.0 {
             DbKind::MySql => format!("`{}`", name.replace('`', "``")),
-            DbKind::Postgres | DbKind::Sqlite => format!("\"{}\"", name.replace('"', "\"\"")),
+            DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb => format!("\"{}\"", name.replace('"', "\"\"")),
         }
     }
 
@@ -321,7 +324,7 @@ impl Dialect {
     pub fn string(self, value: &str) -> String {
         match self.0 {
             DbKind::MySql => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
-            DbKind::Postgres | DbKind::Sqlite => format!("'{}'", value.replace('\'', "''")),
+            DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb => format!("'{}'", value.replace('\'', "''")),
         }
     }
 

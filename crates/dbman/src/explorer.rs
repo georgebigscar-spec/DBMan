@@ -144,6 +144,7 @@ pub fn kind_color(kind: DbKind) -> Color32 {
         DbKind::Postgres => Color32::from_rgb(0x33, 0x67, 0x91),
         DbKind::MySql => Color32::from_rgb(0xe4, 0x8e, 0x00),
         DbKind::Sqlite => Color32::from_rgb(0x0f, 0x80, 0xcc),
+        DbKind::DuckDb => Color32::from_rgb(0xb8, 0x9a, 0x00),
     }
 }
 
@@ -153,6 +154,7 @@ pub fn kind_badge(ui: &mut Ui, kind: DbKind) {
         DbKind::Postgres => "PG",
         DbKind::MySql => "MY",
         DbKind::Sqlite => "SL",
+        DbKind::DuckDb => "DK",
     };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 16.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, kind_color(kind));
@@ -266,14 +268,15 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             actions.push(Action::OpenConsole(id, None));
         }
         if connected {
-            if kind != DbKind::Sqlite && menu_item(ui, "New database…", None).clicked() {
+            if !kind.is_file_based() && menu_item(ui, "New database…", None).clicked() {
                 actions.push(Action::NewDatabase(id));
             }
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::Refresh(id));
             }
-            if kind == DbKind::Sqlite {
-                backup_items(ui, id, Scope { database: "main".into(), ..Default::default() }, actions);
+            if kind.is_file_based() {
+                let database = if kind == DbKind::Sqlite { "main".into() } else { String::new() };
+                backup_items(ui, id, Scope { database, ..Default::default() }, actions);
             }
             if menu_item(ui, "Disconnect", None).clicked() {
                 actions.push(Action::Disconnect(id));
@@ -341,11 +344,11 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             if menu_item(ui, "Copy name", None).clicked() {
                 actions.push(Action::CopyText(db.clone()));
             }
-            if c.cfg.kind != DbKind::Sqlite || db == "main" {
+            if !c.cfg.kind.is_file_based() || (c.cfg.kind == DbKind::Sqlite && db == "main") {
                 menu_separator(ui);
                 backup_items(ui, id, Scope { database: db.clone(), ..Default::default() }, actions);
             }
-            if c.cfg.kind != DbKind::Sqlite {
+            if !c.cfg.kind.is_file_based() {
                 menu_separator(ui);
                 if menu_item(ui, "Drop database…", None).clicked() {
                     actions.push(Action::DropDatabase(id, db.clone()));
@@ -434,6 +437,12 @@ fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions:
             (ObjectKind::Trigger, "New trigger…"),
         ],
         DbKind::Sqlite => &[(ObjectKind::View, "New view…"), (ObjectKind::Trigger, "New trigger…")],
+        DbKind::DuckDb => &[
+            (ObjectKind::View, "New view…"),
+            (ObjectKind::Function, "New macro…"),
+            (ObjectKind::Sequence, "New sequence…"),
+            (ObjectKind::Type, "New type…"),
+        ],
     };
     for (k, text) in kinds {
         if menu_item(ui, text, None).clicked() {
@@ -565,9 +574,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if o.kind == ObjectKind::Table && menu_item(ui, "Truncate…", None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));
         }
-        if o.kind == ObjectKind::Table
-            && c.cfg.kind != DbKind::Sqlite
-            && menu_item(ui, "Back up table…", None).clicked()
+        if o.kind == ObjectKind::Table && !c.cfg.kind.is_file_based() && menu_item(ui, "Back up table…", None).clicked()
         {
             let table = match c.cfg.kind {
                 DbKind::Postgres => format!("{}.{}", o.path.schema, o.path.name),

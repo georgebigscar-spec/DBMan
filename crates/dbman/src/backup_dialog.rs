@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use dbman_core::backup::{
-    self, Content, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
+    self, Content, DuckMethod, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions,
+    SqliteMethod, Tool,
 };
 use dbman_core::{ConnectionConfig, DbKind};
 use dbman_drivers::backup::find_tool;
@@ -57,6 +58,7 @@ pub struct BackupDialog {
     my_dump: MyDumpOptions,
     my_restore: MyRestoreOptions,
     sqlite_method: SqliteMethod,
+    duck_method: DuckMethod,
     path: String,
     /// Format of the PostgreSQL file chosen for restore.
     detected: Option<PgFormat>,
@@ -121,6 +123,7 @@ impl BackupDialog {
             my_dump,
             my_restore: MyRestoreOptions::default(),
             sqlite_method: SqliteMethod::default(),
+            duck_method: DuckMethod::default(),
             path: String::new(),
             detected: None,
             detected_for: String::new(),
@@ -152,9 +155,12 @@ impl BackupDialog {
         let base = match (&self.scope.table, &self.scope.schema) {
             (Some(t), _) => format!("{}_{}", self.scope.database, t.rsplit('.').next().unwrap_or(t)),
             (None, Some(s)) => format!("{}_{s}", self.scope.database),
-            _ if self.kind() == DbKind::Sqlite => self.cfg.database.clone(),
+            _ if self.kind().is_file_based() => self.cfg.database.clone(),
             _ => self.scope.database.clone(),
         };
+        if self.kind() == DbKind::DuckDb {
+            return backup::duck_file_name(&base, &timestamp(), self.duck_method);
+        }
         backup::default_file_name(self.kind(), &base, &timestamp(), self.pg_dump.format)
     }
 
@@ -162,13 +168,22 @@ impl BackupDialog {
         let what = match (&self.scope.table, &self.scope.schema) {
             (Some(t), _) => format!("table {t}"),
             (None, Some(s)) => format!("schema {s}"),
-            _ if self.kind() == DbKind::Sqlite => self.cfg.display_name(),
+            _ if self.kind().is_file_based() => self.cfg.display_name(),
             _ => format!("database {}", self.scope.database),
         };
         match self.mode {
             Mode::Backup => format!("Back up {what}"),
             Mode::Restore => format!("Restore into {what}"),
         }
+    }
+
+    /// The DuckDB catalog to back up: the one chosen, else the file's own
+    /// (DuckDB names it after the file).
+    fn duck_database(&self) -> String {
+        if !self.scope.database.is_empty() {
+            return self.scope.database.clone();
+        }
+        Path::new(self.cfg.database.trim()).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     }
 
     fn tool_dir(&self) -> Option<&Path> {
@@ -248,6 +263,24 @@ impl BackupDialog {
                 }
                 Ok(JobSpec::SqliteRestore { source: path, db: PathBuf::from(self.cfg.database.trim()) })
             }
+            (DbKind::DuckDb, Mode::Backup) => {
+                if path.exists() {
+                    return Err(format!(
+                        "{} already exists; DuckDB writes a new {}.",
+                        path.display(),
+                        if self.duck_method.writes_folder() { "folder" } else { "file" }
+                    ));
+                }
+                let statements = backup::duck_backup(&self.duck_database(), self.duck_method, &path);
+                Ok(JobSpec::DuckDb { db: self.cfg.database.trim().to_string(), statements, watch: Some(path) })
+            }
+            (DbKind::DuckDb, Mode::Restore) => {
+                if !path.exists() {
+                    return Err("Choose an export folder or a database file.".into());
+                }
+                let statements = backup::duck_restore(&self.duck_database(), &path);
+                Ok(JobSpec::DuckDb { db: self.cfg.database.trim().to_string(), statements, watch: None })
+            }
         }
     }
 
@@ -262,6 +295,9 @@ impl BackupDialog {
             }
             JobSpec::SqliteRestore { source, db } => {
                 format!("online backup API: copy every page of {} over {}", source.display(), db.display())
+            }
+            JobSpec::DuckDb { statements, .. } => {
+                statements.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n")
             }
         }
     }
@@ -290,6 +326,7 @@ impl BackupDialog {
                 DbKind::Postgres => ("PostgreSQL dumps", &["dump", "backup", "sql", "tar", "pgdump"]),
                 DbKind::MySql => ("SQL scripts", &["sql"]),
                 DbKind::Sqlite => ("SQLite databases", &["db", "sqlite", "sqlite3", "db3", "bak"]),
+                DbKind::DuckDb => ("DuckDB databases", &["duckdb", "ddb", "db"]),
             };
             d = d.add_filter(name, exts).add_filter("All files", &["*"]);
         }
@@ -312,6 +349,8 @@ impl BackupDialog {
             (Mode::Restore, DbKind::Sqlite) => "Replaces the whole database with the backup.",
             (Mode::Restore, DbKind::Postgres) => "Runs pg_restore (or psql for SQL scripts) in the background.",
             (Mode::Restore, DbKind::MySql) => "Runs the SQL file with the mysql client in the background.",
+            (Mode::Backup, DbKind::DuckDb) => "Exports the database in the background; it stays usable meanwhile.",
+            (Mode::Restore, DbKind::DuckDb) => "Loads an export folder or a database file in the background.",
         };
         let r = Dialog::new(("backup-dialog", self.conn), self.title()).description(description).width(620.0).show(
             ctx,
@@ -326,8 +365,10 @@ impl BackupDialog {
                         (DbKind::MySql, Mode::Restore) => self.my_restore_ui(ui),
                         (DbKind::Sqlite, Mode::Backup) => self.sqlite_backup_ui(ui),
                         (DbKind::Sqlite, Mode::Restore) => self.sqlite_restore_ui(ui),
+                        (DbKind::DuckDb, Mode::Backup) => self.duck_backup_ui(ui),
+                        (DbKind::DuckDb, Mode::Restore) => self.duck_restore_ui(ui),
                     }
-                    if self.kind() != DbKind::Sqlite {
+                    if !self.kind().is_file_based() {
                         ui.add_space(10.0);
                         label(ui, "Client tools folder");
                         ui.add(
@@ -373,6 +414,7 @@ impl BackupDialog {
                         let output = (self.mode == Mode::Backup).then(|| PathBuf::from(self.path.trim()));
                         let refresh = (self.mode == Mode::Restore).then(|| match self.kind() {
                             DbKind::Postgres => Action::RefreshSchemas(self.conn, self.scope.database.clone()),
+                            DbKind::DuckDb => Action::RefreshSchemas(self.conn, self.duck_database()),
                             _ => Action::RefreshObjects(
                                 self.conn,
                                 self.scope.database.clone(),
@@ -400,18 +442,20 @@ impl BackupDialog {
     }
 
     fn file_row(&mut self, ui: &mut Ui) {
-        let dir_format = self.kind() == DbKind::Postgres && self.pg_dump.format == PgFormat::Directory;
+        let dir_format = (self.kind() == DbKind::Postgres && self.pg_dump.format == PgFormat::Directory)
+            || (self.kind() == DbKind::DuckDb && self.duck_method.writes_folder());
         label(
             ui,
             match self.mode {
+                Mode::Backup if dir_format && self.kind() == DbKind::DuckDb => "Export folder (created by DuckDB)",
                 Mode::Backup if dir_format => "Backup folder (created by pg_dump)",
                 Mode::Backup => "Backup file",
                 Mode::Restore => "Backup to restore",
             },
         );
         ui.horizontal(|ui| {
-            let browse_width =
-                if self.mode == Mode::Restore && self.kind() == DbKind::Postgres { 200.0 } else { 100.0 };
+            let folders = matches!(self.kind(), DbKind::Postgres | DbKind::DuckDb);
+            let browse_width = if self.mode == Mode::Restore && folders { 200.0 } else { 100.0 };
             ui.add(Input::new(&mut self.path).width(ui.available_width() - browse_width));
             let idle = self.browsing.is_none();
             match self.mode {
@@ -424,7 +468,7 @@ impl BackupDialog {
                     if ui.add_enabled(idle, Button::outline("File…")).clicked() {
                         self.browse(ui.ctx(), Pick::OpenFile);
                     }
-                    if self.kind() == DbKind::Postgres && ui.add_enabled(idle, Button::outline("Folder…")).clicked() {
+                    if folders && ui.add_enabled(idle, Button::outline("Folder…")).clicked() {
                         self.browse(ui.ctx(), Pick::Folder);
                     }
                 }
@@ -571,6 +615,42 @@ impl BackupDialog {
         if let Some(i) = idx {
             self.sqlite_method = SqliteMethod::ALL[i];
         }
+    }
+
+    fn duck_backup_ui(&mut self, ui: &mut Ui) {
+        let before = self.duck_method;
+        label(ui, "Method");
+        let labels: Vec<&str> = DuckMethod::ALL.iter().map(|m| m.label()).collect();
+        let mut idx = DuckMethod::ALL.iter().position(|m| *m == self.duck_method);
+        ui.add(Select::new(&mut idx, &labels).width(280.0));
+        if let Some(i) = idx {
+            self.duck_method = DuckMethod::ALL[i];
+        }
+        if self.duck_method.writes_folder() != before.writes_folder() {
+            // Keep the chosen folder, switch between a folder and a .duckdb file.
+            let p = PathBuf::from(self.path.trim());
+            let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = if self.duck_method.writes_folder() { stem } else { format!("{stem}.duckdb") };
+            self.path = p.with_file_name(name).to_string_lossy().into_owned();
+        }
+        let t = Theme::get(ui.ctx());
+        let note = match self.duck_method {
+            DuckMethod::Parquet | DuckMethod::Csv => {
+                "The folder gets schema.sql, load.sql and one data file per table; IMPORT DATABASE reads it back."
+            }
+            DuckMethod::DatabaseFile => "A new DuckDB file with the same schemas, tables, views and sequences.",
+        };
+        ui.label(RichText::new(note).size(12.0).color(t.muted_foreground));
+    }
+
+    fn duck_restore_ui(&mut self, ui: &mut Ui) {
+        Alert::new("Restore into an empty database")
+            .icon("!")
+            .description(format!(
+                "Objects of the backup are created in {}; it fails if any of them already exist.",
+                self.duck_database()
+            ))
+            .show(ui);
     }
 
     fn sqlite_restore_ui(&mut self, ui: &mut Ui) {
