@@ -430,7 +430,7 @@ pub fn alter_table(kind: DbKind, old: &TableDef, new: &TableDef) -> Plan {
     }
     for f in &new.foreign_keys {
         let unchanged = old.foreign_keys.iter().find(|o| o.name == f.name && same_fk(f, o));
-        if unchanged.is_none_or(&rebuilt) {
+        if unchanged.is_none_or(rebuilt) {
             plan.statements.push(format!("ALTER TABLE {t} ADD {}", fk_sql(kind, &new.path.database, &renamed_fk(f))));
         }
     }
