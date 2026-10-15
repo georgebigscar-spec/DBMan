@@ -100,6 +100,12 @@ pub fn is_numeric_type(type_name: &str) -> bool {
             | "tiny"
             | "int24"
             | "newdecimal"
+            | "hugeint"
+            | "uhugeint"
+            | "utinyint"
+            | "usmallint"
+            | "uinteger"
+            | "ubigint"
     )
 }
 

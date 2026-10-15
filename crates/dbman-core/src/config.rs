@@ -7,16 +7,18 @@ pub enum DbKind {
     Postgres,
     MySql,
     Sqlite,
+    DuckDb,
 }
 
 impl DbKind {
-    pub const ALL: [DbKind; 3] = [DbKind::Postgres, DbKind::MySql, DbKind::Sqlite];
+    pub const ALL: [DbKind; 4] = [DbKind::Postgres, DbKind::MySql, DbKind::Sqlite, DbKind::DuckDb];
 
     pub const fn label(self) -> &'static str {
         match self {
             DbKind::Postgres => "PostgreSQL",
             DbKind::MySql => "MySQL / MariaDB",
             DbKind::Sqlite => "SQLite",
+            DbKind::DuckDb => "DuckDB",
         }
     }
 
@@ -24,7 +26,7 @@ impl DbKind {
         match self {
             DbKind::Postgres => Some(5432),
             DbKind::MySql => Some(3306),
-            DbKind::Sqlite => None,
+            DbKind::Sqlite | DbKind::DuckDb => None,
         }
     }
 
@@ -32,13 +34,13 @@ impl DbKind {
         match self {
             DbKind::Postgres => "postgres",
             DbKind::MySql => "root",
-            DbKind::Sqlite => "",
+            DbKind::Sqlite | DbKind::DuckDb => "",
         }
     }
 
     /// True for engines that open a file instead of talking to a server.
     pub fn is_file_based(self) -> bool {
-        matches!(self, DbKind::Sqlite)
+        matches!(self, DbKind::Sqlite | DbKind::DuckDb)
     }
 }
 

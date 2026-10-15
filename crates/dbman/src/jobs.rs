@@ -35,6 +35,12 @@ pub enum JobSpec {
         source: PathBuf,
         db: PathBuf,
     },
+    /// Backup or restore statements run on a session of a DuckDB file.
+    DuckDb {
+        db: String,
+        statements: Vec<String>,
+        watch: Option<PathBuf>,
+    },
 }
 
 impl JobSpec {
@@ -50,6 +56,9 @@ impl JobSpec {
                 runner::sqlite_backup(db, target, method, report, cancel).await
             }
             JobSpec::SqliteRestore { source, db } => runner::sqlite_restore(source, db, report, cancel).await,
+            JobSpec::DuckDb { db, statements, watch } => {
+                runner::duckdb_run(db, statements, watch, report, cancel).await
+            }
         }
     }
 }

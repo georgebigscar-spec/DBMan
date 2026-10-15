@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1.92"
+duckdb = { version = "1.10506.0", features = ["bundled", "parquet"] }
 dbman-core = { version = "0.1.0", path = "../dbman-core" }
 futures-util = "0.3.34"
 mysql_async = { version = "0.37.1", features = ["native-tls-tls"] }

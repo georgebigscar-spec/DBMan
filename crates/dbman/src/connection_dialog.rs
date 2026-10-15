@@ -22,7 +22,8 @@ pub enum DialogOutcome {
     Close,
 }
 
-const KINDS: [&str; 3] = [DbKind::ALL[0].label(), DbKind::ALL[1].label(), DbKind::ALL[2].label()];
+const KINDS: [&str; 4] =
+    [DbKind::ALL[0].label(), DbKind::ALL[1].label(), DbKind::ALL[2].label(), DbKind::ALL[3].label()];
 const SSL: [&str; 4] =
     [SslMode::ALL[0].label(), SslMode::ALL[1].label(), SslMode::ALL[2].label(), SslMode::ALL[3].label()];
 
@@ -76,7 +77,11 @@ impl ConnectionDialog {
                         ui.horizontal(|ui| {
                             ui.add(
                                 Input::new(&mut self.cfg.database)
-                                    .placeholder("/path/to/database.db")
+                                    .placeholder(if self.cfg.kind == DbKind::DuckDb {
+                                        "/path/to/database.duckdb  (or :memory:)"
+                                    } else {
+                                        "/path/to/database.db"
+                                    })
                                     .width(full - 110.0),
                             );
                             if let Some(answer) = self.browsing.as_ref().and_then(files::PendingPath::poll) {
@@ -86,9 +91,12 @@ impl ConnectionDialog {
                                 }
                             }
                             if ui.add_enabled(self.browsing.is_none(), Button::outline("Browse…")).clicked() {
-                                let dialog = rfd::AsyncFileDialog::new()
-                                    .add_filter("SQLite", &["db", "sqlite", "sqlite3", "db3"])
-                                    .add_filter("All files", &["*"]);
+                                let (name, exts): (&str, &[&str]) = match self.cfg.kind {
+                                    DbKind::DuckDb => ("DuckDB", &["duckdb", "ddb", "db"]),
+                                    _ => ("SQLite", &["db", "sqlite", "sqlite3", "db3"]),
+                                };
+                                let dialog =
+                                    rfd::AsyncFileDialog::new().add_filter(name, exts).add_filter("All files", &["*"]);
                                 self.browsing = Some(files::pick_file(ui.ctx(), dialog));
                             }
                         });

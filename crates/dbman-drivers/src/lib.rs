@@ -9,6 +9,7 @@ use std::sync::Arc;
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbResult};
 
 pub mod backup;
+pub mod duckdb;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -19,5 +20,6 @@ pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {
         DbKind::Postgres => Arc::new(postgres::PgConnection::connect(cfg).await?),
         DbKind::MySql => Arc::new(mysql::MySqlConnection::connect(cfg).await?),
         DbKind::Sqlite => Arc::new(sqlite::SqliteConnection::connect(cfg).await?),
+        DbKind::DuckDb => Arc::new(duckdb::DuckDbConnection::connect(cfg).await?),
     })
 }

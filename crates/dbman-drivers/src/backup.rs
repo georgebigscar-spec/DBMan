@@ -351,3 +351,69 @@ pub async fn sqlite_restore(source: PathBuf, db: PathBuf, report: Report, cancel
     .await
     .map_err(DbError::from_display)?
 }
+
+/// Runs DuckDB backup or restore `statements` (from `dbman_core::backup`) on a
+/// new session of the database file `db`, sharing it with open sessions. The
+/// last statement is cleanup and also runs after a failure. `watch` is the
+/// file or folder being written.
+pub async fn duckdb_run(
+    db: String,
+    statements: Vec<String>,
+    watch: Option<PathBuf>,
+    report: Report,
+    cancel: Cancel,
+) -> DbResult<()> {
+    tokio::task::spawn_blocking(move || {
+        if db == ":memory:" {
+            return Err(DbError::new("an in-memory database cannot be backed up from another session"));
+        }
+        let shared = crate::duckdb::open_shared(&db)?;
+        let conn = &shared.conn;
+        // Statements have no steps to check between, so a watcher interrupts
+        // them and reports how much has been written.
+        let interrupt = conn.interrupt_handle();
+        let done = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (done, cancel, report, watch) = (done.clone(), cancel.clone(), report.clone(), watch.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    if cancel.load(Ordering::Relaxed) {
+                        interrupt.interrupt();
+                        return;
+                    }
+                    if let Some(w) = &watch {
+                        report(Progress::Bytes(size_of(w)));
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            })
+        };
+        let (cleanup, work) = match statements.split_last() {
+            Some((last, rest)) if last.starts_with("DETACH") => (Some(last), rest),
+            _ => (None, &statements[..]),
+        };
+        let mut result = Ok(());
+        for sql in work {
+            report(Progress::Log(sql.clone()));
+            if let Err(e) = conn.execute_batch(sql) {
+                result = Err(if cancel.load(Ordering::Relaxed) { cancelled() } else { DbError::from_display(e) });
+                break;
+            }
+        }
+        if let Some(sql) = cleanup {
+            report(Progress::Log(sql.clone()));
+            let _ = conn.execute_batch(sql);
+        }
+        done.store(true, Ordering::Relaxed);
+        let _ = watcher.join();
+        if let Some(w) = &watch {
+            report(Progress::Bytes(size_of(w)));
+        }
+        if result.is_ok() {
+            report(Progress::Fraction(1.0));
+        }
+        result
+    })
+    .await
+    .map_err(DbError::from_display)?
+}
