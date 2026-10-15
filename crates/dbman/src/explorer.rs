@@ -11,6 +11,7 @@ use egui::{Color32, RichText, Ui};
 use shadcn_egui::{Theme, Tree, TreeUi, menu_item, menu_separator};
 use uuid::Uuid;
 
+use crate::backup_dialog::Scope;
 use crate::icons::{self, Icon};
 
 /// A value that is loaded in the background.
@@ -134,6 +135,8 @@ pub enum Action {
     DropObject(Uuid, DbObject),
     RenameObject(Uuid, DbObject),
     Truncate(Uuid, DbObject),
+    Backup(Uuid, Scope),
+    Restore(Uuid, Scope),
 }
 
 pub fn kind_color(kind: DbKind) -> Color32 {
@@ -269,6 +272,9 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::Refresh(id));
             }
+            if kind == DbKind::Sqlite {
+                backup_items(ui, id, Scope { database: "main".into(), ..Default::default() }, actions);
+            }
             if menu_item(ui, "Disconnect", None).clicked() {
                 actions.push(Action::Disconnect(id));
             }
@@ -335,6 +341,10 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             if menu_item(ui, "Copy name", None).clicked() {
                 actions.push(Action::CopyText(db.clone()));
             }
+            if c.cfg.kind != DbKind::Sqlite || db == "main" {
+                menu_separator(ui);
+                backup_items(ui, id, Scope { database: db.clone(), ..Default::default() }, actions);
+            }
             if c.cfg.kind != DbKind::Sqlite {
                 menu_separator(ui);
                 if menu_item(ui, "Drop database…", None).clicked() {
@@ -380,10 +390,24 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
                 actions.push(Action::CopyText(s.clone()));
             }
             menu_separator(ui);
+            if menu_item(ui, "Back up schema…", None).clicked() {
+                let scope = Scope { database: db.to_string(), schema: Some(s.clone()), table: None };
+                actions.push(Action::Backup(id, scope));
+            }
             if menu_item(ui, "Drop schema…", None).clicked() {
                 actions.push(Action::DropSchema(id, db.to_string(), s.clone()));
             }
         });
+    }
+}
+
+/// "Back up… / Restore…" menu entries.
+fn backup_items(ui: &mut Ui, id: Uuid, scope: Scope, actions: &mut Vec<Action>) {
+    if menu_item(ui, "Back up…", None).clicked() {
+        actions.push(Action::Backup(id, scope.clone()));
+    }
+    if menu_item(ui, "Restore…", None).clicked() {
+        actions.push(Action::Restore(id, scope));
     }
 }
 
@@ -540,6 +564,17 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         }
         if o.kind == ObjectKind::Table && menu_item(ui, "Truncate…", None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));
+        }
+        if o.kind == ObjectKind::Table
+            && c.cfg.kind != DbKind::Sqlite
+            && menu_item(ui, "Back up table…", None).clicked()
+        {
+            let table = match c.cfg.kind {
+                DbKind::Postgres => format!("{}.{}", o.path.schema, o.path.name),
+                _ => o.path.name.clone(),
+            };
+            let scope = Scope { database: o.path.database.clone(), schema: None, table: Some(table) };
+            actions.push(Action::Backup(id, scope));
         }
         if menu_item(ui, "Drop…", None).clicked() {
             actions.push(Action::DropObject(id, o.clone()));

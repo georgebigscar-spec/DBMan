@@ -48,6 +48,18 @@ pub enum Event {
         tab: TabId,
         event: TabEvent,
     },
+    /// Progress or the end of a background job (backup, restore).
+    Job {
+        job: JobId,
+        event: JobEvent,
+    },
+}
+
+pub type JobId = u64;
+
+pub enum JobEvent {
+    Progress(dbman_drivers::backup::Progress),
+    Finished(DbResult<()>),
 }
 
 pub enum TabEvent {

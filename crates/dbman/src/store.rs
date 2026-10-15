@@ -14,6 +14,9 @@ pub struct Settings {
     /// Rows fetched per page in data tabs and per statement in consoles.
     #[serde(default = "page_size")]
     pub page_size: usize,
+    /// Where pg_dump, mysqldump and friends live, when not on `PATH`.
+    #[serde(default)]
+    pub tools_dir: String,
 }
 
 fn yes() -> bool {
@@ -26,7 +29,7 @@ fn page_size() -> usize {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { connections: Vec::new(), dark: true, page_size: page_size() }
+        Self { connections: Vec::new(), dark: true, page_size: page_size(), tools_dir: String::new() }
     }
 }
 

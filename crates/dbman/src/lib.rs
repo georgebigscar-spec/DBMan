@@ -2,6 +2,7 @@
 //! and shadcn_egui.
 
 pub mod app;
+pub mod backup_dialog;
 pub mod connection_dialog;
 pub mod data_view;
 pub mod events;
@@ -10,6 +11,7 @@ pub mod explorer;
 pub mod files;
 pub mod grid;
 pub mod icons;
+pub mod jobs;
 pub mod prompt;
 pub mod sql_editor;
 pub mod store;
