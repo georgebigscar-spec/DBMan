@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbResult};
 
+pub mod backup;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;

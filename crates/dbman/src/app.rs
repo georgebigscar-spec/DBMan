@@ -7,12 +7,14 @@ use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Button, ButtonSize, Switch, Theme, Toaster, TooltipExt, alert_dialog, toast, toast_error};
 use uuid::Uuid;
 
+use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
 use crate::data_view::DataView;
-use crate::events::{Event, TabId, Tasks};
+use crate::events::{Event, JobEvent, TabId, Tasks};
 use crate::exec;
 use crate::explorer::{self, Action, ConnState, Load, Node};
 use crate::icons::{self, Icon};
+use crate::jobs::{JobState, Jobs};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::store::Settings;
 use crate::table_editor::TableEditor;
@@ -30,6 +32,8 @@ pub struct DbManApp {
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<Uuid>,
     prompt: Option<Prompt>,
+    backup: Option<BackupDialog>,
+    pub jobs: Jobs,
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
     runtime: Option<tokio::runtime::Runtime>,
@@ -55,6 +59,8 @@ impl DbManApp {
             dialog: None,
             confirm_delete: None,
             prompt: None,
+            backup: None,
+            jobs: Jobs::default(),
             status: "Ready".into(),
             runtime: Some(runtime),
         }
@@ -128,6 +134,17 @@ impl DbManApp {
                 Event::Tab { tab, event } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
                         follow_up.extend(t.on_event(event, ctx));
+                    }
+                }
+                Event::Job { job, event } => {
+                    let finished = matches!(event, JobEvent::Finished(_));
+                    follow_up.extend(self.jobs.on_event(job, event, ctx));
+                    if finished && let Some(j) = self.jobs.list.iter().find(|j| j.id == job) {
+                        self.status = match &j.state {
+                            JobState::Done => format!("{}: done", j.title),
+                            JobState::Cancelled => format!("{}: cancelled", j.title),
+                            _ => format!("{}: failed", j.title),
+                        };
                     }
                 }
                 Event::PromptDone { result } => {
@@ -277,6 +294,8 @@ impl DbManApp {
                 }
             }
             Action::DeleteConnection(id) => self.confirm_delete = Some(id),
+            Action::Backup(id, scope) => self.open_backup(id, Mode::Backup, scope),
+            Action::Restore(id, scope) => self.open_backup(id, Mode::Restore, scope),
             Action::CopyText(text) => {
                 ctx.copy_text(text.clone());
                 toast(ctx, "Copied", Some(&text));
@@ -313,6 +332,13 @@ impl DbManApp {
     fn open_prompt(&mut self, id: Uuid, kind: PromptKind) {
         if let Some(c) = self.conn(id) {
             self.prompt = Some(Prompt::new(id, c.cfg.kind, kind));
+        }
+    }
+
+    fn open_backup(&mut self, id: Uuid, mode: Mode, scope: crate::backup_dialog::Scope) {
+        if let Some(c) = self.conn(id) {
+            let tools = self.settings.tools_dir.clone();
+            self.backup = Some(BackupDialog::new(id, c.cfg.clone(), &c.version, mode, scope, tools));
         }
     }
 
@@ -360,6 +386,15 @@ impl DbManApp {
         from_tree
             .or_else(|| self.active.and_then(|a| self.tabs.iter().find(|t| t.id == a)).map(|t| t.conn))
             .or_else(|| self.conns.first().map(|c| c.cfg.id))
+    }
+
+    pub fn backup_dialog_open(&self) -> bool {
+        self.backup.is_some()
+    }
+
+    /// The open backup or restore dialog.
+    pub fn backup_dialog(&mut self) -> Option<&mut BackupDialog> {
+        self.backup.as_mut()
     }
 
     /// Titles of the open tabs, in order.
@@ -452,11 +487,26 @@ impl DbManApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&self.status).size(12.0).color(t.muted_foreground));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !self.jobs.list.is_empty() {
+                        let running = self.jobs.running();
+                        let text = if running > 0 { format!("{running} running") } else { "Tasks".to_string() };
+                        if ui.add(Button::ghost(text).size(ButtonSize::Sm)).tooltip("Background tasks").clicked() {
+                            self.jobs.open = !self.jobs.open;
+                        }
+                        if running > 0 {
+                            ui.add(egui::Spinner::new().size(12.0));
+                        }
+                    }
                     let open = self.conns.iter().filter(|c| c.session.ready().is_some()).count();
                     ui.label(RichText::new(format!("{open} connected")).size(12.0).color(t.muted_foreground));
                 });
             });
         });
+
+        if self.jobs.open && !self.jobs.list.is_empty() {
+            let frame = egui::Frame::new().fill(t.background).inner_margin(egui::Margin::symmetric(12, 8));
+            egui::Panel::bottom("jobs").resizable(false).frame(frame).show(ui, |ui| self.jobs.ui(ui));
+        }
 
         let side = egui::Frame::new().fill(t.background).inner_margin(egui::Margin::same(8));
         egui::Panel::left("explorer").resizable(true).default_size(300.0).min_size(200.0).frame(side).show(ui, |ui| {
@@ -630,6 +680,22 @@ impl DbManApp {
                 None => {}
             }
         }
+        if let Some(b) = &mut self.backup {
+            match b.show(ctx) {
+                Some(BackupOutcome::Close) => self.backup = None,
+                Some(BackupOutcome::Start(job)) => {
+                    let StartJob { title, spec, output, refresh, tools_dir } = *job;
+                    if tools_dir != self.settings.tools_dir {
+                        self.settings.tools_dir = tools_dir;
+                        self.save_settings();
+                    }
+                    self.jobs.start(&self.tasks, title.clone(), spec, output, refresh);
+                    self.status = format!("{title}…");
+                    self.backup = None;
+                }
+                None => {}
+            }
+        }
         if let Some(id) = self.confirm_delete {
             let name = self.conn(id).map(|c| c.cfg.display_name()).unwrap_or_default();
             match alert_dialog(
@@ -658,6 +724,7 @@ impl DbManApp {
 impl Drop for DbManApp {
     fn drop(&mut self) {
         // Closing the window must not wait for a query that is still running.
+        self.jobs.cancel_all();
         if let Some(rt) = self.runtime.take() {
             rt.shutdown_background();
         }

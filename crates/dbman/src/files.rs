@@ -21,16 +21,35 @@ impl PendingPath {
     }
 }
 
-/// Shows an open-file dialog without blocking the UI.
-pub fn pick_file(ctx: &Context, dialog: rfd::AsyncFileDialog) -> PendingPath {
+/// Which native dialog to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    OpenFile,
+    Folder,
+    SaveAs,
+}
+
+/// Shows a file dialog without blocking the UI.
+pub fn pick(ctx: &Context, dialog: rfd::AsyncFileDialog, kind: Pick) -> PendingPath {
     let (tx, rx) = channel();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let picked = pollster::block_on(dialog.pick_file()).map(|h| h.path().to_path_buf());
-        let _ = tx.send(picked);
+        let handle = pollster::block_on(async move {
+            match kind {
+                Pick::OpenFile => dialog.pick_file().await,
+                Pick::Folder => dialog.pick_folder().await,
+                Pick::SaveAs => dialog.save_file().await,
+            }
+        });
+        let _ = tx.send(handle.map(|h| h.path().to_path_buf()));
         ctx.request_repaint();
     });
     PendingPath(rx)
+}
+
+/// Shows an open-file dialog without blocking the UI.
+pub fn pick_file(ctx: &Context, dialog: rfd::AsyncFileDialog) -> PendingPath {
+    pick(ctx, dialog, Pick::OpenFile)
 }
 
 /// Asks where to save, then renders and writes the file, all off the UI thread,

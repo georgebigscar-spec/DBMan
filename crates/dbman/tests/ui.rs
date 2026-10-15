@@ -5,7 +5,9 @@
 //! install a software Vulkan driver such as `mesa-vulkan-drivers`).
 
 use dbman::app::DbManApp;
+use dbman::backup_dialog::Scope;
 use dbman::explorer::Action;
+use dbman::jobs::JobState;
 use dbman::store::Settings;
 use dbman_core::{Cell, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath};
 use egui::{Key, Modifiers};
@@ -61,7 +63,7 @@ fn browse_sqlite_database() {
     cfg.database = sample_db(dir.path());
     let db_path = cfg.database.clone();
     let conn_id = cfg.id;
-    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500 };
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, tools_dir: String::new() };
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let ctx = egui::Context::default();
@@ -163,6 +165,32 @@ fn browse_sqlite_database() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert_eq!(h.state().console_summaries(), vec!["cancelled".to_string()]);
     assert!(h.query_by_label("Stop").is_none());
+
+    // Back up the database in the background, damage it, restore it.
+    let backup_file = dir.path().join("shop-backup.db");
+    h.state_mut().handle(Action::Backup(conn_id, Scope { database: "main".into(), ..Default::default() }), &ctx);
+    settle(&mut h);
+    h.state_mut().backup_dialog().expect("backup dialog").set_path(&backup_file);
+    settle(&mut h);
+    snapshot(&mut h, "backup_dialog");
+    click(&mut h, "Start backup");
+    settle(&mut h);
+    assert!(!h.state().backup_dialog_open());
+    assert_eq!(h.state().jobs.list.len(), 1);
+    assert_eq!(h.state().jobs.list[0].state, JobState::Done, "{:?}", h.state().jobs.list[0].log);
+    assert!(backup_file.is_file());
+    snapshot(&mut h, "background_tasks");
+
+    check.execute("DELETE FROM orders", []).unwrap();
+    h.state_mut().handle(Action::Restore(conn_id, Scope { database: "main".into(), ..Default::default() }), &ctx);
+    settle(&mut h);
+    h.state_mut().backup_dialog().expect("restore dialog").set_path(&backup_file);
+    settle(&mut h);
+    click(&mut h, "Start restore");
+    settle(&mut h);
+    assert_eq!(h.state().jobs.list[1].state, JobState::Done, "{:?}", h.state().jobs.list[1].log);
+    let n: i64 = check.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 4);
 
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);

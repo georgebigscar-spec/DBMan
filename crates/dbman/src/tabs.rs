@@ -377,7 +377,7 @@ impl Console {
             });
         });
         if let Some(e) = &o.error {
-            error_alert(ui, "Statement failed", e);
+            error_alert(ui, if o.summary == "cancelled" { "Statement cancelled" } else { "Statement failed" }, e);
         }
         if let Some(g) = &o.grid {
             ui.horizontal(|ui| grid::export_menu(ui, &g.result, self.cfg.kind, None));
