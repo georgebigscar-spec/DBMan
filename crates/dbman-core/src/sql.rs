@@ -67,14 +67,14 @@ pub fn tokenize(sql: &str, kind: DbKind) -> Vec<Token> {
             }
             TokenKind::Comment
         } else if c == b'\'' {
-            let backslash = mysql || (start > 0 && matches!(b[start - 1], b'e' | b'E'));
+            let backslash = mysql || kind == DbKind::ClickHouse || (start > 0 && matches!(b[start - 1], b'e' | b'E'));
             i = skip_quoted(b, i, b'\'', backslash);
             TokenKind::String
         } else if c == b'"' {
-            i = skip_quoted(b, i, b'"', mysql);
+            i = skip_quoted(b, i, b'"', mysql || kind == DbKind::ClickHouse);
             if mysql { TokenKind::String } else { TokenKind::QuotedIdent }
         } else if c == b'`' {
-            i = skip_quoted(b, i, b'`', false);
+            i = skip_quoted(b, i, b'`', kind == DbKind::ClickHouse);
             TokenKind::QuotedIdent
         } else if c == b'[' && matches!(kind, DbKind::Sqlite | DbKind::MsSql) {
             i += 1;
@@ -343,6 +343,7 @@ impl Dialect {
         match self.0 {
             DbKind::MySql => format!("`{}`", name.replace('`', "``")),
             DbKind::MsSql => format!("[{}]", name.replace(']', "]]")),
+            DbKind::ClickHouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
             DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb => format!("\"{}\"", name.replace('"', "\"\"")),
         }
     }
@@ -358,7 +359,7 @@ impl Dialect {
     /// A string literal.
     pub fn string(self, value: &str) -> String {
         match self.0 {
-            DbKind::MySql => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
+            DbKind::MySql | DbKind::ClickHouse => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
             DbKind::MsSql => format!("N'{}'", value.replace('\'', "''")),
             DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb => format!("'{}'", value.replace('\'', "''")),
         }
@@ -467,5 +468,13 @@ mod tests {
             d.select_page(&ObjectPath::new("db", "dbo", "t"), "", "", 10, 20),
             "SELECT * FROM [dbo].[t] ORDER BY (SELECT NULL) OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"
         );
+    }
+
+    #[test]
+    fn clickhouse_quoting() {
+        let d = Dialect(DbKind::ClickHouse);
+        assert_eq!(d.ident("a`b"), "`a\\`b`");
+        assert_eq!(d.string("it's \\"), "'it''s \\\\'");
+        assert_eq!(stmts("SELECT 'a\\';b'; SELECT `x\\`;`", DbKind::ClickHouse), ["SELECT 'a\\';b'", "SELECT `x\\`;`"]);
     }
 }

@@ -146,6 +146,7 @@ pub fn kind_color(kind: DbKind) -> Color32 {
         DbKind::Sqlite => Color32::from_rgb(0x0f, 0x80, 0xcc),
         DbKind::DuckDb => Color32::from_rgb(0xb8, 0x9a, 0x00),
         DbKind::MsSql => Color32::from_rgb(0xa9, 0x1d, 0x22),
+        DbKind::ClickHouse => Color32::from_rgb(0xc8, 0x9b, 0x00),
     }
 }
 
@@ -157,6 +158,7 @@ pub fn kind_badge(ui: &mut Ui, kind: DbKind) {
         DbKind::Sqlite => "SL",
         DbKind::DuckDb => "DK",
         DbKind::MsSql => "MS",
+        DbKind::ClickHouse => "CH",
     };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 16.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, kind_color(kind));
@@ -440,6 +442,11 @@ fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions:
             (ObjectKind::Trigger, "New trigger…"),
         ],
         DbKind::Sqlite => &[(ObjectKind::View, "New view…"), (ObjectKind::Trigger, "New trigger…")],
+        DbKind::ClickHouse => &[
+            (ObjectKind::View, "New view…"),
+            (ObjectKind::MaterializedView, "New materialized view…"),
+            (ObjectKind::Function, "New function…"),
+        ],
         DbKind::MsSql => &[
             (ObjectKind::View, "New view…"),
             (ObjectKind::Function, "New function…"),
@@ -586,7 +593,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
             actions.push(Action::Truncate(id, o.clone()));
         }
         if o.kind == ObjectKind::Table
-            && matches!(c.cfg.kind, DbKind::Postgres | DbKind::MySql)
+            && matches!(c.cfg.kind, DbKind::Postgres | DbKind::MySql | DbKind::ClickHouse)
             && menu_item(ui, "Back up table…", None).clicked()
         {
             let table = match c.cfg.kind {

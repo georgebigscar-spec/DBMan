@@ -51,10 +51,24 @@ jobs:
       DBMAN_TEST_POSTGRES: postgres://postgres:dbman@127.0.0.1:5432/postgres
       DBMAN_TEST_MYSQL: mysql://root:dbman@127.0.0.1:3306/dbman_test
       DBMAN_TEST_MSSQL: mssql://sa:DbMan_Pass1@127.0.0.1:1433/dbman_test
+      DBMAN_TEST_CLICKHOUSE: clickhouse://default:dbman@127.0.0.1:8123/dbman_test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Started here rather than as a service: it needs the backups disk config from the repository.
+      - name: Start ClickHouse
+        run: |
+          docker run -d --name clickhouse -p 8123:8123 \
+            -e CLICKHOUSE_PASSWORD=dbman -e CLICKHOUSE_DB=dbman_test \
+            -v "$GITHUB_WORKSPACE/ci/clickhouse-backups.xml:/etc/clickhouse-server/config.d/backups.xml" \
+            clickhouse/clickhouse-server:24.8
+          for i in $(seq 60); do
+            curl -sf "http://default:dbman@127.0.0.1:8123/?query=SELECT%201" && exit 0
+            sleep 1
+          done
+          docker logs clickhouse
+          exit 1
       - run: cargo test --workspace
 
   build:

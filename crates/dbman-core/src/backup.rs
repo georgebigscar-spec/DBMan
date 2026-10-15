@@ -725,6 +725,137 @@ pub fn ms_restore(
     (out, cleanup)
 }
 
+/// Where ClickHouse writes or reads a backup (on the server's side).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChDestination {
+    /// A disk from the server's `storage_configuration`, allowed in `backups.allowed_disk`.
+    Disk {
+        disk: String,
+        path: String,
+    },
+    /// A path under the server's `backups.allowed_path`.
+    File {
+        path: String,
+    },
+    S3 {
+        url: String,
+        access_key: String,
+        secret: String,
+    },
+}
+
+impl Default for ChDestination {
+    fn default() -> Self {
+        ChDestination::Disk { disk: "backups".into(), path: String::new() }
+    }
+}
+
+impl ChDestination {
+    pub const LABELS: [&'static str; 3] = ["Disk", "File", "S3"];
+
+    pub fn index(&self) -> usize {
+        match self {
+            ChDestination::Disk { .. } => 0,
+            ChDestination::File { .. } => 1,
+            ChDestination::S3 { .. } => 2,
+        }
+    }
+
+    /// The same destination with `name` as the file (or the last part of the S3 URL).
+    pub fn with_name(&self, name: &str) -> Self {
+        let swap = |p: &str| match p.rsplit_once('/') {
+            Some((dir, _)) => format!("{dir}/{name}"),
+            None => name.to_string(),
+        };
+        match self {
+            ChDestination::Disk { disk, path } => ChDestination::Disk { disk: disk.clone(), path: swap(path) },
+            ChDestination::File { path } => ChDestination::File { path: swap(path) },
+            ChDestination::S3 { url, access_key, secret } => {
+                ChDestination::S3 { url: swap(url), access_key: access_key.clone(), secret: secret.clone() }
+            }
+        }
+    }
+
+    /// `Disk('backups', 'x.zip')`; with `mask`, the S3 secret is hidden.
+    pub fn sql(&self, mask: bool) -> String {
+        let d = crate::sql::Dialect(DbKind::ClickHouse);
+        match self {
+            ChDestination::Disk { disk, path } => format!("Disk({}, {})", d.string(disk), d.string(path)),
+            ChDestination::File { path } => format!("File({})", d.string(path)),
+            ChDestination::S3 { url, access_key, .. } if access_key.is_empty() => format!("S3({})", d.string(url)),
+            ChDestination::S3 { url, access_key, secret } => format!(
+                "S3({}, {}, {})",
+                d.string(url),
+                d.string(access_key),
+                if mask { "'******'".to_string() } else { d.string(secret) }
+            ),
+        }
+    }
+}
+
+/// `BACKUP` options for ClickHouse.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChBackupOptions {
+    pub destination: ChDestination,
+    /// An earlier backup (file name at the same destination) to make an incremental one on.
+    pub base_backup: String,
+    /// Only the table definitions.
+    pub structure_only: bool,
+}
+
+/// `RESTORE` options for ClickHouse.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChRestoreOptions {
+    pub source: ChDestination,
+    /// Restore under another name (`AS`); empty keeps the original one.
+    pub rename_to: String,
+    /// Add the rows to tables that already exist instead of failing.
+    pub allow_non_empty_tables: bool,
+    pub structure_only: bool,
+}
+
+/// What a ClickHouse backup covers: `` DATABASE `db` `` or `` TABLE `db`.`t` ``.
+fn ch_target(database: &str, table: Option<&str>) -> String {
+    let d = crate::sql::Dialect(DbKind::ClickHouse);
+    match table {
+        Some(t) => format!("TABLE {}.{}", d.ident(database), d.ident(t)),
+        None => format!("DATABASE {}", d.ident(database)),
+    }
+}
+
+/// `BACKUP … TO … ASYNC`; with `mask`, for showing (the S3 secret is hidden).
+pub fn ch_backup(database: &str, table: Option<&str>, o: &ChBackupOptions, mask: bool) -> String {
+    let mut settings = Vec::new();
+    if !o.base_backup.trim().is_empty() {
+        settings.push(format!("base_backup = {}", o.destination.with_name(o.base_backup.trim()).sql(mask)));
+    }
+    if o.structure_only {
+        settings.push("structure_only = true".into());
+    }
+    let settings = if settings.is_empty() { String::new() } else { format!(" SETTINGS {}", settings.join(", ")) };
+    format!("BACKUP {} TO {}{settings} ASYNC", ch_target(database, table), o.destination.sql(mask))
+}
+
+/// `RESTORE … FROM … ASYNC`.
+pub fn ch_restore(database: &str, table: Option<&str>, o: &ChRestoreOptions, mask: bool) -> String {
+    let d = crate::sql::Dialect(DbKind::ClickHouse);
+    let rename = o.rename_to.trim();
+    let alias = match (rename.is_empty(), table) {
+        (true, _) => String::new(),
+        (false, Some(_)) => format!(" AS {}.{}", d.ident(database), d.ident(rename)),
+        (false, None) => format!(" AS {}", d.ident(rename)),
+    };
+    let mut settings = Vec::new();
+    if o.allow_non_empty_tables {
+        settings.push("allow_non_empty_tables = true");
+    }
+    if o.structure_only {
+        settings.push("structure_only = true");
+    }
+    let settings = if settings.is_empty() { String::new() } else { format!(" SETTINGS {}", settings.join(", ")) };
+    format!("RESTORE {}{alias} FROM {}{settings} ASYNC", ch_target(database, table), o.source.sql(mask))
+}
+
 /// The default file name for a backup: `<database>_<date>-<time>.<ext>`.
 pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: PgFormat) -> String {
     let base: String = database
@@ -748,6 +879,7 @@ pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: P
         DbKind::Sqlite => format!("{base}_{stamp}.db"),
         DbKind::DuckDb => format!("{base}_{stamp}"),
         DbKind::MsSql => format!("{base}_{stamp}.bak"),
+        DbKind::ClickHouse => format!("{base}_{stamp}.zip"),
     }
 }
 
@@ -908,5 +1040,39 @@ mod tests {
             "RESTORE DATABASE [copy] FROM DISK = N'shop.bak' WITH REPLACE, RECOVERY, MOVE N'shop' TO N'/var/opt/mssql/data/copy.mdf', STATS = 5"
         );
         assert!(cleanup.unwrap().ends_with("ALTER DATABASE [copy] SET MULTI_USER"));
+    }
+
+    #[test]
+    fn ch_statements() {
+        let o = ChBackupOptions {
+            destination: ChDestination::Disk { disk: "backups".into(), path: "shop_2.zip".into() },
+            base_backup: "shop_1.zip".into(),
+            structure_only: false,
+        };
+        assert_eq!(
+            ch_backup("shop", None, &o, false),
+            "BACKUP DATABASE `shop` TO Disk('backups', 'shop_2.zip') SETTINGS base_backup = Disk('backups', 'shop_1.zip') ASYNC"
+        );
+        let s3 = ChDestination::S3 {
+            url: "https://b.s3.amazonaws.com/x/a.zip".into(),
+            access_key: "K".into(),
+            secret: "S".into(),
+        };
+        let o = ChBackupOptions { destination: s3.clone(), ..Default::default() };
+        assert_eq!(
+            ch_backup("shop", Some("orders"), &o, true),
+            "BACKUP TABLE `shop`.`orders` TO S3('https://b.s3.amazonaws.com/x/a.zip', 'K', '******') ASYNC"
+        );
+        assert_eq!(s3.with_name("b.zip").sql(false), "S3('https://b.s3.amazonaws.com/x/b.zip', 'K', 'S')");
+        let r = ChRestoreOptions {
+            source: ChDestination::File { path: "/backups/a.zip".into() },
+            rename_to: "shop_copy".into(),
+            allow_non_empty_tables: true,
+            structure_only: false,
+        };
+        assert_eq!(
+            ch_restore("shop", None, &r, false),
+            "RESTORE DATABASE `shop` AS `shop_copy` FROM File('/backups/a.zip') SETTINGS allow_non_empty_tables = true ASYNC"
+        );
     }
 }

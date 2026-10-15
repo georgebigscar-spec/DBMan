@@ -556,3 +556,74 @@ pub async fn mssql_run(cfg: dbman_core::ConnectionConfig, job: MsJob, report: Re
     report(Progress::Fraction(1.0));
     Ok(())
 }
+
+/// Runs a ClickHouse `BACKUP … ASYNC` or `RESTORE … ASYNC` statement and
+/// follows it in `system.backups`; `shown` is the statement for the log (with
+/// secrets hidden). Cancel kills the operation's query.
+pub async fn clickhouse_run(
+    cfg: dbman_core::ConnectionConfig,
+    sql: String,
+    shown: String,
+    report: Report,
+    cancel: Cancel,
+) -> DbResult<()> {
+    use crate::clickhouse::Client;
+    let text = |v: &serde_json::Value| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let num = |v: &serde_json::Value| text(v).parse::<u64>().unwrap_or(0);
+    let client = Client::new(&cfg)?;
+    report(Progress::Log(format!("{shown};")));
+    let started = client.rows(&sql, &[]).await?;
+    let id = started.first().and_then(|r| r.first()).map(text).ok_or_else(|| DbError::new("no backup id returned"))?;
+    report(Progress::Log(format!("id {id}")));
+    let restore = sql.trim_start().starts_with("RESTORE");
+    let mut killed = false;
+    loop {
+        let rows = client
+            .rows(
+                "SELECT status, error, num_files, total_size, files_read, query_id, compressed_size
+                 FROM system.backups WHERE id = {id:String}",
+                &[("param_id", id.as_str())],
+            )
+            .await?;
+        let Some(r) = rows.first() else {
+            return Err(DbError::new(format!("backup {id} is not in system.backups")));
+        };
+        let status = text(&r[0]);
+        let (files, size, read) = (num(&r[2]), num(&r[3]), num(&r[4]));
+        match status.as_str() {
+            "BACKUP_CREATED" | "RESTORED" => {
+                report(Progress::Log(format!("{status}: {files} files, {size} bytes")));
+                if !restore {
+                    report(Progress::Bytes(num(&r[6]).max(size)));
+                }
+                report(Progress::Fraction(1.0));
+                return Ok(());
+            }
+            s if s.ends_with("_CANCELLED") => return Err(cancelled()),
+            s if s.ends_with("_FAILED") => {
+                if killed {
+                    return Err(cancelled());
+                }
+                return Err(DbError::new(text(&r[1]).trim().to_string()));
+            }
+            _ => {}
+        }
+        if restore && files > 0 {
+            report(Progress::Fraction(read as f32 / files as f32));
+        } else if !restore {
+            report(Progress::Bytes(size));
+        }
+        if cancel.load(Ordering::Relaxed) && !killed {
+            killed = true;
+            let kill = format!(
+                "KILL QUERY WHERE query_id = {} ASYNC",
+                dbman_core::sql::Dialect(dbman_core::DbKind::ClickHouse).string(&text(&r[5]))
+            );
+            client.exec(&kill, &[]).await?;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
