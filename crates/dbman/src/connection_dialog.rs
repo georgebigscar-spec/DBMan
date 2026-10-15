@@ -22,8 +22,15 @@ pub enum DialogOutcome {
     Close,
 }
 
-const KINDS: [&str; 4] =
-    [DbKind::ALL[0].label(), DbKind::ALL[1].label(), DbKind::ALL[2].label(), DbKind::ALL[3].label()];
+const KINDS: [&str; DbKind::ALL.len()] = {
+    let mut labels = [""; DbKind::ALL.len()];
+    let mut i = 0;
+    while i < labels.len() {
+        labels[i] = DbKind::ALL[i].label();
+        i += 1;
+    }
+    labels
+};
 const SSL: [&str; 4] =
     [SslMode::ALL[0].label(), SslMode::ALL[1].label(), SslMode::ALL[2].label(), SslMode::ALL[3].label()];
 

@@ -1,6 +1,6 @@
 //! Backup → damage → restore round trips. SQLite and DuckDB always run; PostgreSQL and
 //! MySQL need `DBMAN_TEST_POSTGRES` / `DBMAN_TEST_MYSQL` and the dump tools on
-//! `PATH` (skipped with a note otherwise).
+//! `PATH`, SQL Server needs `DBMAN_TEST_MSSQL` (skipped with a note otherwise).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,9 @@ use dbman_core::backup::{
     self, DuckMethod, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
 };
 use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, StatementOutcome};
-use dbman_drivers::backup::{Progress, Report, duckdb_run, find_tool, run_tool, sqlite_backup, sqlite_restore};
+use dbman_drivers::backup::{
+    MsJob, Progress, Report, duckdb_run, find_tool, mssql_run, run_tool, sqlite_backup, sqlite_restore,
+};
 
 fn collect() -> (Report, Arc<Mutex<Vec<Progress>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -239,4 +241,62 @@ async fn duckdb_round_trip() {
         assert_eq!(count(&c2, &name, "SELECT count(*) FROM sales.big").await, "4900", "{method:?}");
         assert_eq!(count(&c2, &name, "SELECT tags[2] FROM sales.orders LIMIT 1").await, "b", "{method:?}");
     }
+}
+
+#[tokio::test]
+async fn mssql_round_trip() {
+    let Some(mut cfg) = from_url(DbKind::MsSql, "DBMAN_TEST_MSSQL") else {
+        eprintln!("DBMAN_TEST_MSSQL not set, skipping");
+        return;
+    };
+    cfg.ssl_mode = dbman_core::SslMode::Prefer;
+    cfg.database = "master".into();
+    let master = dbman_drivers::connect(&cfg).await.unwrap();
+    let run = |sql: String| {
+        let m = master.clone();
+        async move { m.execute(Some("master"), &sql, 0).await.unwrap_or_else(|e| panic!("{sql}: {e}")) }
+    };
+    for db in ["dbman_bk", "dbman_bk_copy"] {
+        run(format!(
+            "IF DB_ID(N'{db}') IS NOT NULL BEGIN ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}]; END"
+        ))
+        .await;
+    }
+    run("CREATE DATABASE dbman_bk".into()).await;
+    run("CREATE TABLE dbman_bk.dbo.t (id int IDENTITY PRIMARY KEY, v nvarchar(20))".into()).await;
+    run("INSERT INTO dbman_bk.dbo.t (v) SELECT TOP 3000 N'row' FROM sys.all_objects a CROSS JOIN sys.all_objects b"
+        .into())
+    .await;
+
+    // A relative path lands in the server's default backup folder.
+    let file = "dbman_bk_test.bak".to_string();
+    let (report, seen) = collect();
+    let backup = MsJob::Backup { database: "dbman_bk".into(), options: Default::default(), path: file.clone() };
+    mssql_run(cfg.clone(), backup, report, no_cancel()).await.unwrap();
+    assert!(seen.lock().unwrap().iter().any(|p| matches!(p, Progress::Bytes(n) if *n > 0)));
+    assert!(seen.lock().unwrap().iter().any(|p| matches!(p, Progress::Log(l) if l.contains("VERIFYONLY"))));
+
+    run("DELETE FROM dbman_bk.dbo.t WHERE id > 10".into()).await;
+    // A session inside the database is disconnected by the restore.
+    let mut inside = cfg.clone();
+    inside.database = "dbman_bk".into();
+    let other = dbman_drivers::connect(&inside).await.unwrap();
+    let (report, _) = collect();
+    let restore = MsJob::Restore { database: "dbman_bk".into(), options: Default::default(), path: file.clone() };
+    mssql_run(cfg.clone(), restore, report, no_cancel()).await.unwrap();
+    assert_eq!(count(&master, "master", "SELECT count(*) FROM dbman_bk.dbo.t").await, "3000");
+    drop(other);
+
+    // A copy next to the original needs its files moved.
+    let (report, seen) = collect();
+    let options = dbman_core::backup::MsRestoreOptions { relocate: true, ..Default::default() };
+    let copy = MsJob::Restore { database: "dbman_bk_copy".into(), options, path: file };
+    mssql_run(cfg.clone(), copy, report, no_cancel()).await.unwrap();
+    assert!(seen.lock().unwrap().iter().any(|p| matches!(p, Progress::Log(l) if l.contains("dbman_bk_copy_log.ldf"))));
+    assert_eq!(count(&master, "master", "SELECT count(*) FROM dbman_bk_copy.dbo.t").await, "3000");
+    assert_eq!(
+        count(&master, "master", "SELECT CAST(DATABASEPROPERTYEX(N'dbman_bk_copy', 'UserAccess') AS nvarchar(20))")
+            .await,
+        "MULTI_USER"
+    );
 }

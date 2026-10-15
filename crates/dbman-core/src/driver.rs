@@ -13,7 +13,7 @@ pub struct Capabilities {
 
 impl Capabilities {
     pub fn for_kind(kind: DbKind) -> Self {
-        Self { schemas: matches!(kind, DbKind::Postgres | DbKind::DuckDb) }
+        Self { schemas: matches!(kind, DbKind::Postgres | DbKind::DuckDb | DbKind::MsSql) }
     }
 }
 

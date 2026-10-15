@@ -38,9 +38,19 @@ jobs:
         ports: ["3306:3306"]
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 -pdbman" --health-interval 5s --health-timeout 5s --health-retries 20
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: DbMan_Pass1
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P DbMan_Pass1 -Q 'SELECT 1' || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30
     env:
       DBMAN_TEST_POSTGRES: postgres://postgres:dbman@127.0.0.1:5432/postgres
       DBMAN_TEST_MYSQL: mysql://root:dbman@127.0.0.1:3306/dbman_test
+      DBMAN_TEST_MSSQL: mssql://sa:DbMan_Pass1@127.0.0.1:1433/dbman_test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

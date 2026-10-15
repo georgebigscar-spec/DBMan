@@ -8,10 +8,11 @@ pub enum DbKind {
     MySql,
     Sqlite,
     DuckDb,
+    MsSql,
 }
 
 impl DbKind {
-    pub const ALL: [DbKind; 4] = [DbKind::Postgres, DbKind::MySql, DbKind::Sqlite, DbKind::DuckDb];
+    pub const ALL: [DbKind; 5] = [DbKind::Postgres, DbKind::MySql, DbKind::MsSql, DbKind::Sqlite, DbKind::DuckDb];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -19,6 +20,7 @@ impl DbKind {
             DbKind::MySql => "MySQL / MariaDB",
             DbKind::Sqlite => "SQLite",
             DbKind::DuckDb => "DuckDB",
+            DbKind::MsSql => "SQL Server",
         }
     }
 
@@ -26,6 +28,7 @@ impl DbKind {
         match self {
             DbKind::Postgres => Some(5432),
             DbKind::MySql => Some(3306),
+            DbKind::MsSql => Some(1433),
             DbKind::Sqlite | DbKind::DuckDb => None,
         }
     }
@@ -34,6 +37,7 @@ impl DbKind {
         match self {
             DbKind::Postgres => "postgres",
             DbKind::MySql => "root",
+            DbKind::MsSql => "sa",
             DbKind::Sqlite | DbKind::DuckDb => "",
         }
     }

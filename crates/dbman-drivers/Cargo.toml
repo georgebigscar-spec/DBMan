@@ -15,6 +15,9 @@ postgres-native-tls = "0.5.3"
 rusqlite = { version = "0.40.2", features = ["bundled", "backup", "column_decltype"] }
 tokio = { version = "1.53.3", features = ["full"] }
 tokio-postgres = "0.7.18"
+tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "chrono"] }
+tokio-util = { version = "0.7.20", features = ["compat"] }
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

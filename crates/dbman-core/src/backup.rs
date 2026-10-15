@@ -593,6 +593,138 @@ pub fn duck_restore(db: &str, source: &Path) -> Vec<String> {
     }
 }
 
+/// What a SQL Server backup contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MsBackupType {
+    #[default]
+    Full,
+    /// Changes since the last full backup.
+    Differential,
+    /// The transaction log (full or bulk-logged recovery model).
+    Log,
+}
+
+impl MsBackupType {
+    pub const ALL: [MsBackupType; 3] = [MsBackupType::Full, MsBackupType::Differential, MsBackupType::Log];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            MsBackupType::Full => "Full",
+            MsBackupType::Differential => "Differential",
+            MsBackupType::Log => "Transaction log",
+        }
+    }
+}
+
+/// `BACKUP DATABASE` options.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MsBackupOptions {
+    pub kind: MsBackupType,
+    /// Leaves the backup chain alone, so scheduled backups are not affected.
+    pub copy_only: bool,
+    /// Not available in SQL Server Express.
+    pub compression: bool,
+    pub checksum: bool,
+    /// Overwrite the backup sets already in the file instead of appending.
+    pub init: bool,
+    /// Run `RESTORE VERIFYONLY` afterwards.
+    pub verify: bool,
+}
+
+impl Default for MsBackupOptions {
+    fn default() -> Self {
+        Self { kind: MsBackupType::Full, copy_only: true, compression: false, checksum: true, init: true, verify: true }
+    }
+}
+
+/// `RESTORE DATABASE` options.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MsRestoreOptions {
+    /// Overwrite an existing database (`WITH REPLACE`).
+    pub replace: bool,
+    /// Disconnect other sessions first (`SET SINGLE_USER WITH ROLLBACK IMMEDIATE`).
+    pub close_connections: bool,
+    /// Put the data and log files in the server's default folders, named
+    /// after the target database (needed to restore a copy next to the original).
+    pub relocate: bool,
+    /// Bring the database online; off to apply differential or log backups next.
+    pub recovery: bool,
+}
+
+impl Default for MsRestoreOptions {
+    fn default() -> Self {
+        Self { replace: true, close_connections: true, relocate: false, recovery: true }
+    }
+}
+
+/// `BACKUP` statements for database `db` to the file `path` on the server.
+pub fn ms_backup(db: &str, o: &MsBackupOptions, path: &str) -> Vec<String> {
+    let d = crate::sql::Dialect(DbKind::MsSql);
+    let what = if o.kind == MsBackupType::Log { "LOG" } else { "DATABASE" };
+    let mut with = Vec::new();
+    if o.kind == MsBackupType::Differential {
+        with.push("DIFFERENTIAL");
+    } else if o.copy_only {
+        with.push("COPY_ONLY");
+    }
+    with.push(if o.init { "INIT" } else { "NOINIT" });
+    if o.compression {
+        with.push("COMPRESSION");
+    }
+    if o.checksum {
+        with.push("CHECKSUM");
+    }
+    with.push("STATS = 5");
+    let file = d.string(path);
+    let mut out = vec![format!("BACKUP {what} {} TO DISK = {file} WITH {}", d.ident(db), with.join(", "))];
+    if o.verify {
+        let check = if o.checksum { " WITH CHECKSUM" } else { "" };
+        // The last backup set in the file is the one just written.
+        out.push(format!(
+            "DECLARE @pos int = (SELECT TOP 1 position FROM msdb.dbo.backupset WHERE database_name = {} ORDER BY backup_set_id DESC); RESTORE VERIFYONLY FROM DISK = {file} WITH FILE = @pos{}",
+            d.string(db),
+            check.replace(" WITH", ",")
+        ));
+    }
+    out
+}
+
+/// `RESTORE` statements for database `db` from the file `path` on the server.
+/// `moves` relocates files (`logical name`, `new physical path`). The second
+/// value is cleanup to run even if the restore fails.
+pub fn ms_restore(
+    db: &str,
+    o: &MsRestoreOptions,
+    path: &str,
+    moves: &[(String, String)],
+) -> (Vec<String>, Option<String>) {
+    let d = crate::sql::Dialect(DbKind::MsSql);
+    let exists = format!("IF DB_ID({}) IS NOT NULL", d.string(db));
+    let mut out = Vec::new();
+    if o.close_connections {
+        out.push(format!("{exists} ALTER DATABASE {} SET SINGLE_USER WITH ROLLBACK IMMEDIATE", d.ident(db)));
+    }
+    let mut with = Vec::new();
+    if o.replace {
+        with.push("REPLACE".to_string());
+    }
+    with.push(if o.recovery { "RECOVERY" } else { "NORECOVERY" }.to_string());
+    for (logical, physical) in moves {
+        with.push(format!("MOVE {} TO {}", d.string(logical), d.string(physical)));
+    }
+    with.push("STATS = 5".into());
+    out.push(format!("RESTORE DATABASE {} FROM DISK = {} WITH {}", d.ident(db), d.string(path), with.join(", ")));
+    // A database left restoring (NORECOVERY) cannot be altered.
+    let cleanup = (o.close_connections && o.recovery).then(|| {
+        format!(
+            "{exists} AND DATABASEPROPERTYEX({}, 'Status') = 'ONLINE' ALTER DATABASE {} SET MULTI_USER",
+            d.string(db),
+            d.ident(db)
+        )
+    });
+    (out, cleanup)
+}
+
 /// The default file name for a backup: `<database>_<date>-<time>.<ext>`.
 pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: PgFormat) -> String {
     let base: String = database
@@ -615,6 +747,7 @@ pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: P
         DbKind::MySql => format!("{base}_{stamp}.sql"),
         DbKind::Sqlite => format!("{base}_{stamp}.db"),
         DbKind::DuckDb => format!("{base}_{stamp}"),
+        DbKind::MsSql => format!("{base}_{stamp}.bak"),
     }
 }
 
@@ -752,5 +885,28 @@ mod tests {
         assert_eq!(b[1], "COPY FROM DATABASE \"shop\" TO dbman_backup_file");
         assert_eq!(duck_file_name("/data/shop.duckdb", "s", DuckMethod::DatabaseFile), "shop_s.duckdb");
         assert_eq!(duck_file_name("/data/shop.duckdb", "s", DuckMethod::Csv), "shop_s");
+    }
+
+    #[test]
+    fn ms_statements() {
+        let b = ms_backup("shop", &MsBackupOptions::default(), "shop.bak");
+        assert_eq!(b[0], "BACKUP DATABASE [shop] TO DISK = N'shop.bak' WITH COPY_ONLY, INIT, CHECKSUM, STATS = 5");
+        assert!(b[1].contains("RESTORE VERIFYONLY FROM DISK = N'shop.bak' WITH FILE = @pos, CHECKSUM"), "{}", b[1]);
+        let o = MsBackupOptions { kind: MsBackupType::Differential, verify: false, ..Default::default() };
+        assert_eq!(
+            ms_backup("shop", &o, "d.bak"),
+            ["BACKUP DATABASE [shop] TO DISK = N'd.bak' WITH DIFFERENTIAL, INIT, CHECKSUM, STATS = 5"]
+        );
+        let o = MsBackupOptions { kind: MsBackupType::Log, verify: false, ..Default::default() };
+        assert!(ms_backup("shop", &o, "l.trn")[0].starts_with("BACKUP LOG [shop]"));
+
+        let moves = [("shop".to_string(), "/var/opt/mssql/data/copy.mdf".to_string())];
+        let (r, cleanup) = ms_restore("copy", &MsRestoreOptions::default(), "shop.bak", &moves);
+        assert_eq!(r[0], "IF DB_ID(N'copy') IS NOT NULL ALTER DATABASE [copy] SET SINGLE_USER WITH ROLLBACK IMMEDIATE");
+        assert_eq!(
+            r[1],
+            "RESTORE DATABASE [copy] FROM DISK = N'shop.bak' WITH REPLACE, RECOVERY, MOVE N'shop' TO N'/var/opt/mssql/data/copy.mdf', STATS = 5"
+        );
+        assert!(cleanup.unwrap().ends_with("ALTER DATABASE [copy] SET MULTI_USER"));
     }
 }

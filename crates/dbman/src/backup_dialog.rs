@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use dbman_core::backup::{
-    self, Content, DuckMethod, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions,
-    SqliteMethod, Tool,
+    self, Content, DuckMethod, MsBackupOptions, MsBackupType, MsRestoreOptions, MyDumpOptions, MyRestoreOptions,
+    PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
 };
 use dbman_core::{ConnectionConfig, DbKind};
 use dbman_drivers::backup::find_tool;
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::explorer::Action;
 use crate::files::{self, PendingPath, Pick};
 use crate::jobs::JobSpec;
+use dbman_drivers::backup::MsJob;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -59,6 +60,8 @@ pub struct BackupDialog {
     my_restore: MyRestoreOptions,
     sqlite_method: SqliteMethod,
     duck_method: DuckMethod,
+    ms_backup: MsBackupOptions,
+    ms_restore: MsRestoreOptions,
     path: String,
     /// Format of the PostgreSQL file chosen for restore.
     detected: Option<PgFormat>,
@@ -124,6 +127,8 @@ impl BackupDialog {
             my_restore: MyRestoreOptions::default(),
             sqlite_method: SqliteMethod::default(),
             duck_method: DuckMethod::default(),
+            ms_backup: MsBackupOptions::default(),
+            ms_restore: MsRestoreOptions::default(),
             path: String::new(),
             detected: None,
             detected_for: String::new(),
@@ -137,7 +142,12 @@ impl BackupDialog {
             scope,
         };
         if mode == Mode::Backup {
-            me.path = default_dir().join(me.file_name()).to_string_lossy().into_owned();
+            // SQL Server writes on its own machine; a bare name goes to its default backup folder.
+            me.path = if me.kind() == DbKind::MsSql {
+                me.file_name()
+            } else {
+                default_dir().join(me.file_name()).to_string_lossy().into_owned()
+            };
         }
         me
     }
@@ -263,6 +273,27 @@ impl BackupDialog {
                 }
                 Ok(JobSpec::SqliteRestore { source: path, db: PathBuf::from(self.cfg.database.trim()) })
             }
+            (DbKind::MsSql, Mode::Backup) => Ok(JobSpec::MsSql {
+                cfg: Box::new(self.cfg.clone()),
+                job: MsJob::Backup {
+                    database: db.clone(),
+                    options: self.ms_backup.clone(),
+                    path: self.path.trim().into(),
+                },
+            }),
+            (DbKind::MsSql, Mode::Restore) => {
+                if db.trim().is_empty() {
+                    return Err("Choose the database to restore into.".into());
+                }
+                Ok(JobSpec::MsSql {
+                    cfg: Box::new(self.cfg.clone()),
+                    job: MsJob::Restore {
+                        database: db.clone(),
+                        options: self.ms_restore.clone(),
+                        path: self.path.trim().into(),
+                    },
+                })
+            }
             (DbKind::DuckDb, Mode::Backup) => {
                 if path.exists() {
                     return Err(format!(
@@ -296,6 +327,23 @@ impl BackupDialog {
             JobSpec::SqliteRestore { source, db } => {
                 format!("online backup API: copy every page of {} over {}", source.display(), db.display())
             }
+            JobSpec::MsSql { job: MsJob::Backup { database, options, path }, .. } => {
+                backup::ms_backup(database, options, path)
+                    .iter()
+                    .map(|s| format!("{s};"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            JobSpec::MsSql { job: MsJob::Restore { database, options, path }, .. } => {
+                let moves: Vec<(String, String)> = if options.relocate {
+                    vec![("<each file>".into(), format!("<default data or log folder>/{database}…"))]
+                } else {
+                    Vec::new()
+                };
+                let (mut lines, cleanup) = backup::ms_restore(database, options, path, &moves);
+                lines.extend(cleanup);
+                lines.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n")
+            }
             JobSpec::DuckDb { statements, .. } => {
                 statements.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n")
             }
@@ -327,6 +375,7 @@ impl BackupDialog {
                 DbKind::MySql => ("SQL scripts", &["sql"]),
                 DbKind::Sqlite => ("SQLite databases", &["db", "sqlite", "sqlite3", "db3", "bak"]),
                 DbKind::DuckDb => ("DuckDB databases", &["duckdb", "ddb", "db"]),
+                DbKind::MsSql => ("SQL Server backups", &["bak", "trn"]),
             };
             d = d.add_filter(name, exts).add_filter("All files", &["*"]);
         }
@@ -349,6 +398,8 @@ impl BackupDialog {
             (Mode::Restore, DbKind::Sqlite) => "Replaces the whole database with the backup.",
             (Mode::Restore, DbKind::Postgres) => "Runs pg_restore (or psql for SQL scripts) in the background.",
             (Mode::Restore, DbKind::MySql) => "Runs the SQL file with the mysql client in the background.",
+            (Mode::Backup, DbKind::MsSql) => "Runs BACKUP on the server in the background.",
+            (Mode::Restore, DbKind::MsSql) => "Runs RESTORE on the server in the background.",
             (Mode::Backup, DbKind::DuckDb) => "Exports the database in the background; it stays usable meanwhile.",
             (Mode::Restore, DbKind::DuckDb) => "Loads an export folder or a database file in the background.",
         };
@@ -365,10 +416,13 @@ impl BackupDialog {
                         (DbKind::MySql, Mode::Restore) => self.my_restore_ui(ui),
                         (DbKind::Sqlite, Mode::Backup) => self.sqlite_backup_ui(ui),
                         (DbKind::Sqlite, Mode::Restore) => self.sqlite_restore_ui(ui),
+                        (DbKind::MsSql, Mode::Backup) => self.ms_backup_ui(ui),
+                        (DbKind::MsSql, Mode::Restore) => self.ms_restore_ui(ui),
                         (DbKind::DuckDb, Mode::Backup) => self.duck_backup_ui(ui),
                         (DbKind::DuckDb, Mode::Restore) => self.duck_restore_ui(ui),
                     }
-                    if !self.kind().is_file_based() {
+                    // SQL Server runs BACKUP itself; no client tools.
+                    if !self.kind().is_file_based() && self.kind() != DbKind::MsSql {
                         ui.add_space(10.0);
                         label(ui, "Client tools folder");
                         ui.add(
@@ -449,6 +503,7 @@ impl BackupDialog {
             match self.mode {
                 Mode::Backup if dir_format && self.kind() == DbKind::DuckDb => "Export folder (created by DuckDB)",
                 Mode::Backup if dir_format => "Backup folder (created by pg_dump)",
+                _ if self.kind() == DbKind::MsSql => "Backup file on the server",
                 Mode::Backup => "Backup file",
                 Mode::Restore => "Backup to restore",
             },
@@ -456,6 +511,15 @@ impl BackupDialog {
         ui.horizontal(|ui| {
             let folders = matches!(self.kind(), DbKind::Postgres | DbKind::DuckDb);
             let browse_width = if self.mode == Mode::Restore && folders { 200.0 } else { 100.0 };
+            if self.kind() == DbKind::MsSql {
+                // The path is on the server, so a local file picker would mislead.
+                ui.add(
+                    Input::new(&mut self.path)
+                        .placeholder("shop.bak, or a full path on the server")
+                        .width(ui.available_width()),
+                );
+                return;
+            }
             ui.add(Input::new(&mut self.path).width(ui.available_width() - browse_width));
             let idle = self.browsing.is_none();
             match self.mode {
@@ -615,6 +679,63 @@ impl BackupDialog {
         if let Some(i) = idx {
             self.sqlite_method = SqliteMethod::ALL[i];
         }
+    }
+
+    fn ms_backup_ui(&mut self, ui: &mut Ui) {
+        let t = Theme::get(ui.ctx());
+        ui.label(
+            RichText::new(
+                "SQL Server writes the file itself, on the server's disk; a bare file name goes to its default backup folder.",
+            )
+            .size(12.0)
+            .color(t.muted_foreground),
+        );
+        ui.add_space(8.0);
+        label(ui, "Type");
+        let before = self.ms_backup.kind;
+        let labels: Vec<&str> = MsBackupType::ALL.iter().map(|k| k.label()).collect();
+        let mut idx = MsBackupType::ALL.iter().position(|k| *k == self.ms_backup.kind);
+        ui.add(Select::new(&mut idx, &labels).width(200.0));
+        if let Some(i) = idx {
+            self.ms_backup.kind = MsBackupType::ALL[i];
+        }
+        if self.ms_backup.kind != before {
+            let ext = if self.ms_backup.kind == MsBackupType::Log { "trn" } else { "bak" };
+            let p = Path::new(self.path.trim());
+            self.path = p.with_extension(ext).to_string_lossy().into_owned();
+        }
+        ui.add_space(8.0);
+        let o = &mut self.ms_backup;
+        if o.kind != MsBackupType::Differential {
+            ui.add(Checkbox::new(&mut o.copy_only).label("Copy-only (does not affect scheduled backups)"));
+        }
+        ui.add(Checkbox::new(&mut o.compression).label("Compress (not in Express edition)"));
+        ui.add(Checkbox::new(&mut o.checksum).label("Page checksums"));
+        ui.add(Checkbox::new(&mut o.init).label("Overwrite backup sets in the file"));
+        ui.add(Checkbox::new(&mut o.verify).label("Verify the backup afterwards"));
+    }
+
+    fn ms_restore_ui(&mut self, ui: &mut Ui) {
+        Alert::new("Overwrites the database")
+            .icon("!")
+            .description(format!(
+                "{} is replaced by the backup; other sessions in it are disconnected. To restore a copy, type a new name below.",
+                self.scope.database
+            ))
+            .destructive()
+            .show(ui);
+        ui.add_space(8.0);
+        label(ui, "Restore as database");
+        ui.add(Input::new(&mut self.scope.database).width(280.0));
+        ui.add_space(8.0);
+        let o = &mut self.ms_restore;
+        ui.add(Checkbox::new(&mut o.replace).label("Replace an existing database (WITH REPLACE)"));
+        ui.add(Checkbox::new(&mut o.close_connections).label("Disconnect other sessions first"));
+        ui.add(
+            Checkbox::new(&mut o.relocate)
+                .label("Move files to the server's default folders, named after the database"),
+        );
+        ui.add(Checkbox::new(&mut o.recovery).label("Bring online (off to restore differential or log backups next)"));
     }
 
     fn duck_backup_ui(&mut self, ui: &mut Ui) {

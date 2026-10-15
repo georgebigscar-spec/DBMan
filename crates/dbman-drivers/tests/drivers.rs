@@ -424,3 +424,84 @@ async fn duckdb() {
     let c = dbman_drivers::connect(&cfg).await.unwrap();
     assert!(c.objects("test", "app").await.unwrap().iter().any(|o| o.path.name == "items"));
 }
+
+#[tokio::test]
+async fn mssql() {
+    let Some(mut cfg) = from_url(DbKind::MsSql, "DBMAN_TEST_MSSQL") else {
+        eprintln!("DBMAN_TEST_MSSQL not set, skipping");
+        return;
+    };
+    // The test container has a self-signed certificate.
+    cfg.ssl_mode = dbman_core::SslMode::Prefer;
+    let db = cfg.database.clone();
+    let mut master_cfg = cfg.clone();
+    master_cfg.database = "master".into();
+    let master = dbman_drivers::connect(&master_cfg).await.unwrap();
+    // A fresh database every run.
+    exec(
+        &master,
+        "master",
+        &format!(
+            "IF DB_ID(N'{db}') IS NOT NULL BEGIN \
+             ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}]; END"
+        ),
+    )
+    .await;
+    exec(&master, "master", &format!("CREATE DATABASE [{db}]")).await;
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    assert!(c.databases().await.unwrap().iter().any(|d| d == "master"));
+    exec(&c, &db, "CREATE SCHEMA app").await;
+    check_engine(
+        c.clone(),
+        &db,
+        "app",
+        &[
+            "CREATE TABLE app.items (id int PRIMARY KEY, name nvarchar(50) NOT NULL, parent int \
+             CONSTRAINT items_parent_fk REFERENCES app.items(id))",
+            "CREATE INDEX items_name_idx ON app.items(name)",
+            "CREATE VIEW app.item_names AS SELECT name FROM app.items",
+        ],
+    )
+    .await;
+    // A GO-separated script runs batch by batch; procedure bodies keep their semicolons.
+    let script = "CREATE FUNCTION app.add_two(@a int) RETURNS int AS BEGIN RETURN @a + 2; END\nGO\n\
+                  CREATE PROCEDURE app.touch AS BEGIN SET NOCOUNT ON; SELECT 1 AS one; END\nGO\n\
+                  CREATE SEQUENCE app.counter START WITH 5\nGO\nCREATE TYPE app.email FROM nvarchar(320) NOT NULL";
+    for r in dbman_core::sql::split_statements(script, DbKind::MsSql) {
+        exec(&c, &db, &script[r]).await;
+    }
+    let objects = c.objects(&db, "app").await.unwrap();
+    for o in &objects {
+        let ddl = c.ddl(o).await.unwrap_or_else(|e| panic!("ddl of {:?}: {e}", o.path));
+        assert!(ddl.contains("CREATE"), "{ddl}");
+    }
+    for (name, kind) in [
+        ("add_two", ObjectKind::Function),
+        ("touch", ObjectKind::Procedure),
+        ("counter", ObjectKind::Sequence),
+        ("email", ObjectKind::Type),
+    ] {
+        assert!(objects.iter().any(|o| o.kind == kind && o.path.name == name), "{name}");
+    }
+    assert_eq!(rows(&c, &db, "SELECT app.add_two(40)").await[0][0], Cell::Text("42".into()));
+    assert_eq!(rows(&c, &db, "EXEC app.touch").await[0][0], Cell::Text("1".into()));
+    let typed = rows(
+        &c,
+        &db,
+        "SELECT CAST(0xAB01 AS varbinary(2)), CAST(1 AS bit), CAST('2024-02-29T10:20:30.5' AS datetime2), \
+         CAST(12.50 AS decimal(5,2)), CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS uniqueidentifier)",
+    )
+    .await;
+    assert_eq!(
+        typed[0],
+        [
+            Cell::Bytes(vec![0xab, 1]),
+            Cell::Text("1".into()),
+            Cell::Text("2024-02-29 10:20:30.5".into()),
+            Cell::Text("12.50".into()),
+            Cell::Text("6F9619FF-8B86-D011-B42D-00C04FC964FF".into()),
+        ]
+    );
+    check_ddl(c.clone(), &db, "app").await;
+    check_cancel(c, &db, "WAITFOR DELAY '00:00:30'").await;
+}
