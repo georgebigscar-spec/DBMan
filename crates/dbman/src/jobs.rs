@@ -35,6 +35,11 @@ pub enum JobSpec {
         source: PathBuf,
         db: PathBuf,
     },
+    /// BACKUP or RESTORE run by SQL Server itself.
+    MsSql {
+        cfg: Box<dbman_core::ConnectionConfig>,
+        job: runner::MsJob,
+    },
     /// Backup or restore statements run on a session of a DuckDB file.
     DuckDb {
         db: String,
@@ -56,6 +61,7 @@ impl JobSpec {
                 runner::sqlite_backup(db, target, method, report, cancel).await
             }
             JobSpec::SqliteRestore { source, db } => runner::sqlite_restore(source, db, report, cancel).await,
+            JobSpec::MsSql { cfg, job } => runner::mssql_run(*cfg, job, report, cancel).await,
             JobSpec::DuckDb { db, statements, watch } => {
                 runner::duckdb_run(db, statements, watch, report, cancel).await
             }

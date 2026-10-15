@@ -417,3 +417,142 @@ pub async fn duckdb_run(
     .await
     .map_err(DbError::from_display)?
 }
+
+/// A SQL Server backup or restore; the file path is on the server.
+#[derive(Debug, Clone)]
+pub enum MsJob {
+    Backup { database: String, options: dbman_core::backup::MsBackupOptions, path: String },
+    Restore { database: String, options: dbman_core::backup::MsRestoreOptions, path: String },
+}
+
+async fn ms_exec(client: &mut crate::mssql::MsClient, sql: &str) -> DbResult<Vec<Vec<tiberius::Row>>> {
+    let stream = client.simple_query(sql).await.map_err(crate::mssql::ms_err)?;
+    stream.into_results().await.map_err(crate::mssql::ms_err)
+}
+
+/// Relocations for restoring `path` as `database`: every file goes to the
+/// server's default data or log folder, named after the database.
+async fn ms_moves(client: &mut crate::mssql::MsClient, database: &str, path: &str) -> DbResult<Vec<(String, String)>> {
+    let d = dbman_core::sql::Dialect(dbman_core::DbKind::MsSql);
+    let dirs = ms_exec(
+        client,
+        "SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(400)), \
+         CAST(SERVERPROPERTY('InstanceDefaultLogPath') AS nvarchar(400))",
+    )
+    .await?;
+    let row = dirs.first().and_then(|r| r.first()).ok_or_else(|| DbError::new("no default folders"))?;
+    let data_dir = row.get::<&str, _>(0).unwrap_or_default().to_string();
+    let log_dir = row.get::<&str, _>(1).map(String::from).unwrap_or_else(|| data_dir.clone());
+    let files = ms_exec(client, &format!("RESTORE FILELISTONLY FROM DISK = {}", d.string(path))).await?;
+    let mut moves = Vec::new();
+    for (i, r) in files.first().into_iter().flatten().enumerate() {
+        let logical = r.get::<&str, _>("LogicalName").unwrap_or_default().to_string();
+        let physical = r.get::<&str, _>("PhysicalName").unwrap_or_default();
+        let is_log = r.get::<&str, _>("Type") == Some("L");
+        let ext = physical.rsplit_once('.').map(|(_, e)| e).unwrap_or(if is_log { "ldf" } else { "mdf" });
+        let suffix = match (is_log, i) {
+            (true, _) => "_log".to_string(),
+            (false, 0) => String::new(),
+            (false, n) => format!("_{n}"),
+        };
+        let dir = if is_log { &log_dir } else { &data_dir };
+        let sep = if dir.ends_with(['/', '\\']) || dir.is_empty() {
+            ""
+        } else if dir.contains('\\') {
+            "\\"
+        } else {
+            "/"
+        };
+        moves.push((logical, format!("{dir}{sep}{database}{suffix}.{ext}")));
+    }
+    Ok(moves)
+}
+
+/// Runs a SQL Server backup or restore on the server. A second session
+/// reports `percent_complete` and, on cancel, ends the job with `KILL`.
+pub async fn mssql_run(cfg: dbman_core::ConnectionConfig, job: MsJob, report: Report, cancel: Cancel) -> DbResult<()> {
+    use dbman_core::backup::{ms_backup, ms_restore};
+    let mut client = crate::mssql::open_client(&cfg, Some("master")).await?;
+    let spid: i16 = ms_exec(&mut client, "SELECT CAST(@@SPID AS smallint)")
+        .await?
+        .first()
+        .and_then(|r| r.first())
+        .and_then(|r| r.get::<i16, _>(0))
+        .unwrap_or(0);
+    let (statements, cleanup, database) = match &job {
+        MsJob::Backup { database, options, path } => (ms_backup(database, options, path), None, database.clone()),
+        MsJob::Restore { database, options, path } => {
+            let moves = if options.relocate { ms_moves(&mut client, database, path).await? } else { Vec::new() };
+            let (s, c) = ms_restore(database, options, path, &moves);
+            (s, c, database.clone())
+        }
+    };
+
+    let done = Arc::new(AtomicBool::new(false));
+    let monitor = {
+        let (cfg, done, cancel, report) = (cfg.clone(), done.clone(), cancel.clone(), report.clone());
+        tokio::spawn(async move {
+            let Ok(mut watcher) = crate::mssql::open_client(&cfg, Some("master")).await else {
+                return;
+            };
+            let poll = format!(
+                "SELECT CAST(percent_complete AS float) FROM sys.dm_exec_requests WHERE session_id = {spid} \
+                 AND command IN ('BACKUP DATABASE', 'BACKUP LOG', 'RESTORE DATABASE', 'RESTORE VERIFYON')"
+            );
+            while !done.load(Ordering::Relaxed) {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = ms_exec(&mut watcher, &format!("KILL {spid}")).await;
+                    return;
+                }
+                if let Ok(r) = ms_exec(&mut watcher, &poll).await
+                    && let Some(p) = r.first().and_then(|r| r.first()).and_then(|r| r.get::<f64, _>(0))
+                {
+                    report(Progress::Fraction((p / 100.0) as f32));
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        })
+    };
+
+    let mut result = Ok(());
+    for sql in &statements {
+        report(Progress::Log(format!("{sql};")));
+        if let Err(e) = ms_exec(&mut client, sql).await {
+            result = Err(if cancel.load(Ordering::Relaxed) { cancelled() } else { e });
+            break;
+        }
+    }
+    done.store(true, Ordering::Relaxed);
+    let _ = monitor.await;
+    if let Some(sql) = cleanup {
+        report(Progress::Log(format!("{sql};")));
+        // The killed session cannot run it; use a new one.
+        let cleaned = match ms_exec(&mut client, &sql).await {
+            Ok(_) => Ok(()),
+            Err(_) => match crate::mssql::open_client(&cfg, Some("master")).await {
+                Ok(mut c) => ms_exec(&mut c, &sql).await.map(|_| ()),
+                Err(e) => Err(e),
+            },
+        };
+        if let Err(e) = cleaned {
+            report(Progress::Log(format!("cleanup failed: {}", e.message)));
+        }
+    }
+    result?;
+    if matches!(job, MsJob::Backup { .. })
+        && let Ok(sets) = ms_exec(
+            &mut client,
+            &format!(
+                "SELECT TOP 1 CAST(compressed_backup_size AS bigint) FROM msdb.dbo.backupset \
+                 WHERE database_name = {} ORDER BY backup_finish_date DESC",
+                dbman_core::sql::Dialect(dbman_core::DbKind::MsSql).string(&database)
+            ),
+        )
+        .await
+        && let Some(n) = sets.first().and_then(|r| r.first()).and_then(|r| r.get::<i64, _>(0))
+    {
+        report(Progress::Bytes(n as u64));
+    }
+    report(Progress::Fraction(1.0));
+    Ok(())
+}

@@ -29,6 +29,7 @@ pub fn literal(d: Dialect, cell: &Cell, numeric: bool) -> String {
             match d.0 {
                 DbKind::Postgres => format!("'\\x{hex}'::bytea"),
                 DbKind::MySql | DbKind::Sqlite => format!("X'{hex}'"),
+                DbKind::MsSql => format!("0x{hex}"),
                 DbKind::DuckDb => {
                     let escaped: String = b.iter().map(|x| format!("\\x{x:02X}")).collect();
                     format!("'{escaped}'::BLOB")
@@ -86,6 +87,7 @@ pub fn insert(d: Dialect, table: &ObjectPath, values: &[Value<'_>]) -> String {
 pub fn begin(kind: DbKind) -> &'static str {
     match kind {
         DbKind::MySql => "START TRANSACTION",
+        DbKind::MsSql => "BEGIN TRANSACTION",
         _ => "BEGIN",
     }
 }

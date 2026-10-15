@@ -145,6 +145,7 @@ pub fn kind_color(kind: DbKind) -> Color32 {
         DbKind::MySql => Color32::from_rgb(0xe4, 0x8e, 0x00),
         DbKind::Sqlite => Color32::from_rgb(0x0f, 0x80, 0xcc),
         DbKind::DuckDb => Color32::from_rgb(0xb8, 0x9a, 0x00),
+        DbKind::MsSql => Color32::from_rgb(0xa9, 0x1d, 0x22),
     }
 }
 
@@ -155,6 +156,7 @@ pub fn kind_badge(ui: &mut Ui, kind: DbKind) {
         DbKind::MySql => "MY",
         DbKind::Sqlite => "SL",
         DbKind::DuckDb => "DK",
+        DbKind::MsSql => "MS",
     };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 16.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, kind_color(kind));
@@ -393,7 +395,8 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
                 actions.push(Action::CopyText(s.clone()));
             }
             menu_separator(ui);
-            if menu_item(ui, "Back up schema…", None).clicked() {
+            // Only pg_dump can back up one schema.
+            if c.cfg.kind == DbKind::Postgres && menu_item(ui, "Back up schema…", None).clicked() {
                 let scope = Scope { database: db.to_string(), schema: Some(s.clone()), table: None };
                 actions.push(Action::Backup(id, scope));
             }
@@ -437,6 +440,14 @@ fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions:
             (ObjectKind::Trigger, "New trigger…"),
         ],
         DbKind::Sqlite => &[(ObjectKind::View, "New view…"), (ObjectKind::Trigger, "New trigger…")],
+        DbKind::MsSql => &[
+            (ObjectKind::View, "New view…"),
+            (ObjectKind::Function, "New function…"),
+            (ObjectKind::Procedure, "New procedure…"),
+            (ObjectKind::Trigger, "New trigger…"),
+            (ObjectKind::Sequence, "New sequence…"),
+            (ObjectKind::Type, "New type…"),
+        ],
         DbKind::DuckDb => &[
             (ObjectKind::View, "New view…"),
             (ObjectKind::Function, "New macro…"),
@@ -574,7 +585,9 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if o.kind == ObjectKind::Table && menu_item(ui, "Truncate…", None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));
         }
-        if o.kind == ObjectKind::Table && !c.cfg.kind.is_file_based() && menu_item(ui, "Back up table…", None).clicked()
+        if o.kind == ObjectKind::Table
+            && matches!(c.cfg.kind, DbKind::Postgres | DbKind::MySql)
+            && menu_item(ui, "Back up table…", None).clicked()
         {
             let table = match c.cfg.kind {
                 DbKind::Postgres => format!("{}.{}", o.path.schema, o.path.name),
