@@ -1,6 +1,7 @@
 //! Backup → damage → restore round trips. SQLite and DuckDB always run; PostgreSQL and
 //! MySQL need `DBMAN_TEST_POSTGRES` / `DBMAN_TEST_MYSQL` and the dump tools on
-//! `PATH`, SQL Server needs `DBMAN_TEST_MSSQL` (skipped with a note otherwise).
+//! `PATH`, SQL Server and ClickHouse need `DBMAN_TEST_MSSQL` / `DBMAN_TEST_CLICKHOUSE`
+//! (the latter with a `backups` disk, see `ci/clickhouse-backups.xml`); skipped with a note otherwise.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -10,7 +11,7 @@ use dbman_core::backup::{
 };
 use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, StatementOutcome};
 use dbman_drivers::backup::{
-    MsJob, Progress, Report, duckdb_run, find_tool, mssql_run, run_tool, sqlite_backup, sqlite_restore,
+    MsJob, Progress, Report, clickhouse_run, duckdb_run, find_tool, mssql_run, run_tool, sqlite_backup, sqlite_restore,
 };
 
 fn collect() -> (Report, Arc<Mutex<Vec<Progress>>>) {
@@ -299,4 +300,72 @@ async fn mssql_round_trip() {
             .await,
         "MULTI_USER"
     );
+}
+
+#[tokio::test]
+async fn clickhouse_round_trip() {
+    use dbman_core::backup::{ChBackupOptions, ChDestination, ChRestoreOptions, ch_backup, ch_restore};
+    let Some(mut cfg) = from_url(DbKind::ClickHouse, "DBMAN_TEST_CLICKHOUSE") else {
+        eprintln!("DBMAN_TEST_CLICKHOUSE not set, skipping");
+        return;
+    };
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    let run = |sql: String| {
+        let c = c.clone();
+        async move { c.execute(None, &sql, 0).await.unwrap_or_else(|e| panic!("{sql}: {e}")) }
+    };
+    for db in ["dbman_chbk", "dbman_chbk_full", "dbman_chbk_incr"] {
+        run(format!("DROP DATABASE IF EXISTS {db}")).await;
+    }
+    run("CREATE DATABASE dbman_chbk".into()).await;
+    run("CREATE TABLE dbman_chbk.t (id UInt64, v String) ENGINE = MergeTree ORDER BY id".into()).await;
+    run("INSERT INTO dbman_chbk.t SELECT number, toString(number) FROM numbers(5000)".into()).await;
+
+    // The disk keeps old backups, so every run uses new names.
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let full = ChDestination::Disk { disk: "backups".into(), path: format!("full_{stamp}.zip") };
+    let o = ChBackupOptions { destination: full.clone(), ..Default::default() };
+    let (report, seen) = collect();
+    clickhouse_run(
+        cfg.clone(),
+        ch_backup("dbman_chbk", None, &o, false),
+        ch_backup("dbman_chbk", None, &o, true),
+        report,
+        no_cancel(),
+    )
+    .await
+    .unwrap();
+    assert!(seen.lock().unwrap().iter().any(|p| matches!(p, Progress::Bytes(n) if *n > 0)));
+
+    run("INSERT INTO dbman_chbk.t SELECT number, 'more' FROM numbers(5000, 100)".into()).await;
+    let incr = full.with_name(&format!("incr_{stamp}.zip"));
+    let o =
+        ChBackupOptions { destination: incr.clone(), base_backup: format!("full_{stamp}.zip"), ..Default::default() };
+    let (report, _) = collect();
+    clickhouse_run(cfg.clone(), ch_backup("dbman_chbk", None, &o, false), String::new(), report, no_cancel())
+        .await
+        .unwrap();
+
+    for (source, name, rows) in [(full, "dbman_chbk_full", "5000"), (incr, "dbman_chbk_incr", "5100")] {
+        let r = ChRestoreOptions { source, rename_to: name.into(), ..Default::default() };
+        let (report, seen) = collect();
+        clickhouse_run(cfg.clone(), ch_restore("dbman_chbk", None, &r, false), String::new(), report, no_cancel())
+            .await
+            .unwrap();
+        assert!(seen.lock().unwrap().iter().any(|p| matches!(p, Progress::Fraction(f) if *f >= 1.0)));
+        assert_eq!(count(&c, name, &format!("SELECT count() FROM {name}.t")).await, rows);
+    }
+
+    // Restoring over existing tables fails unless rows may be added.
+    let r = ChRestoreOptions {
+        source: ChDestination::Disk { disk: "backups".into(), path: format!("full_{stamp}.zip") },
+        ..Default::default()
+    };
+    let (report, _) = collect();
+    let err =
+        clickhouse_run(cfg.clone(), ch_restore("dbman_chbk", Some("t"), &r, false), String::new(), report, no_cancel())
+            .await
+            .unwrap_err();
+    assert!(err.message.contains("already"), "{}", err.message);
 }

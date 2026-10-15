@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use dbman_core::backup::{
-    self, Content, DuckMethod, MsBackupOptions, MsBackupType, MsRestoreOptions, MyDumpOptions, MyRestoreOptions,
-    PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
+    self, ChBackupOptions, ChDestination, ChRestoreOptions, Content, DuckMethod, MsBackupOptions, MsBackupType,
+    MsRestoreOptions, MyDumpOptions, MyRestoreOptions, PgDumpOptions, PgFormat, PgRestoreOptions, SqliteMethod, Tool,
 };
 use dbman_core::{ConnectionConfig, DbKind};
 use dbman_drivers::backup::find_tool;
@@ -62,6 +62,8 @@ pub struct BackupDialog {
     duck_method: DuckMethod,
     ms_backup: MsBackupOptions,
     ms_restore: MsRestoreOptions,
+    ch_backup: ChBackupOptions,
+    ch_restore: ChRestoreOptions,
     path: String,
     /// Format of the PostgreSQL file chosen for restore.
     detected: Option<PgFormat>,
@@ -129,6 +131,8 @@ impl BackupDialog {
             duck_method: DuckMethod::default(),
             ms_backup: MsBackupOptions::default(),
             ms_restore: MsRestoreOptions::default(),
+            ch_backup: ChBackupOptions::default(),
+            ch_restore: ChRestoreOptions::default(),
             path: String::new(),
             detected: None,
             detected_for: String::new(),
@@ -141,6 +145,11 @@ impl BackupDialog {
             cfg,
             scope,
         };
+        if me.kind() == DbKind::ClickHouse {
+            let name = me.file_name();
+            me.ch_backup.destination = ChDestination::Disk { disk: "backups".into(), path: name };
+            me.ch_restore.source = ChDestination::Disk { disk: "backups".into(), path: String::new() };
+        }
         if mode == Mode::Backup {
             // SQL Server writes on its own machine; a bare name goes to its default backup folder.
             me.path = if me.kind() == DbKind::MsSql {
@@ -211,8 +220,37 @@ impl BackupDialog {
         })
     }
 
+    /// A ClickHouse BACKUP or RESTORE; the server reads and writes the files.
+    fn ch_job(&self) -> Result<JobSpec, String> {
+        let db = &self.scope.database;
+        let table = self.scope.table.as_deref();
+        let dest = if self.mode == Mode::Backup { &self.ch_backup.destination } else { &self.ch_restore.source };
+        let missing = match dest {
+            ChDestination::Disk { disk, path } => disk.trim().is_empty() || path.trim().is_empty(),
+            ChDestination::File { path } => path.trim().is_empty(),
+            ChDestination::S3 { url, .. } => url.trim().is_empty(),
+        };
+        if missing {
+            return Err("Fill in where the backup is.".into());
+        }
+        let (sql, shown) = match self.mode {
+            Mode::Backup => (
+                backup::ch_backup(db, table, &self.ch_backup, false),
+                backup::ch_backup(db, table, &self.ch_backup, true),
+            ),
+            Mode::Restore => (
+                backup::ch_restore(db, table, &self.ch_restore, false),
+                backup::ch_restore(db, table, &self.ch_restore, true),
+            ),
+        };
+        Ok(JobSpec::ClickHouse { cfg: Box::new(self.cfg.clone()), sql, shown })
+    }
+
     /// The job to run, or why it cannot run yet.
     fn job(&self) -> Result<JobSpec, String> {
+        if self.kind() == DbKind::ClickHouse {
+            return self.ch_job();
+        }
         let path = PathBuf::from(self.path.trim());
         if self.path.trim().is_empty() {
             return Err("Choose a file.".into());
@@ -273,6 +311,7 @@ impl BackupDialog {
                 }
                 Ok(JobSpec::SqliteRestore { source: path, db: PathBuf::from(self.cfg.database.trim()) })
             }
+            (DbKind::ClickHouse, _) => self.ch_job(),
             (DbKind::MsSql, Mode::Backup) => Ok(JobSpec::MsSql {
                 cfg: Box::new(self.cfg.clone()),
                 job: MsJob::Backup {
@@ -327,6 +366,7 @@ impl BackupDialog {
             JobSpec::SqliteRestore { source, db } => {
                 format!("online backup API: copy every page of {} over {}", source.display(), db.display())
             }
+            JobSpec::ClickHouse { shown, .. } => format!("{shown};"),
             JobSpec::MsSql { job: MsJob::Backup { database, options, path }, .. } => {
                 backup::ms_backup(database, options, path)
                     .iter()
@@ -376,6 +416,7 @@ impl BackupDialog {
                 DbKind::Sqlite => ("SQLite databases", &["db", "sqlite", "sqlite3", "db3", "bak"]),
                 DbKind::DuckDb => ("DuckDB databases", &["duckdb", "ddb", "db"]),
                 DbKind::MsSql => ("SQL Server backups", &["bak", "trn"]),
+                DbKind::ClickHouse => ("ClickHouse backups", &["zip", "tar"]),
             };
             d = d.add_filter(name, exts).add_filter("All files", &["*"]);
         }
@@ -400,6 +441,8 @@ impl BackupDialog {
             (Mode::Restore, DbKind::MySql) => "Runs the SQL file with the mysql client in the background.",
             (Mode::Backup, DbKind::MsSql) => "Runs BACKUP on the server in the background.",
             (Mode::Restore, DbKind::MsSql) => "Runs RESTORE on the server in the background.",
+            (Mode::Backup, DbKind::ClickHouse) => "Runs BACKUP on the server in the background.",
+            (Mode::Restore, DbKind::ClickHouse) => "Runs RESTORE on the server in the background.",
             (Mode::Backup, DbKind::DuckDb) => "Exports the database in the background; it stays usable meanwhile.",
             (Mode::Restore, DbKind::DuckDb) => "Loads an export folder or a database file in the background.",
         };
@@ -418,11 +461,13 @@ impl BackupDialog {
                         (DbKind::Sqlite, Mode::Restore) => self.sqlite_restore_ui(ui),
                         (DbKind::MsSql, Mode::Backup) => self.ms_backup_ui(ui),
                         (DbKind::MsSql, Mode::Restore) => self.ms_restore_ui(ui),
+                        (DbKind::ClickHouse, Mode::Backup) => self.ch_backup_ui(ui),
+                        (DbKind::ClickHouse, Mode::Restore) => self.ch_restore_ui(ui),
                         (DbKind::DuckDb, Mode::Backup) => self.duck_backup_ui(ui),
                         (DbKind::DuckDb, Mode::Restore) => self.duck_restore_ui(ui),
                     }
                     // SQL Server runs BACKUP itself; no client tools.
-                    if !self.kind().is_file_based() && self.kind() != DbKind::MsSql {
+                    if !self.kind().is_file_based() && !matches!(self.kind(), DbKind::MsSql | DbKind::ClickHouse) {
                         ui.add_space(10.0);
                         label(ui, "Client tools folder");
                         ui.add(
@@ -496,6 +541,10 @@ impl BackupDialog {
     }
 
     fn file_row(&mut self, ui: &mut Ui) {
+        // ClickHouse's destination has its own fields.
+        if self.kind() == DbKind::ClickHouse {
+            return;
+        }
         let dir_format = (self.kind() == DbKind::Postgres && self.pg_dump.format == PgFormat::Directory)
             || (self.kind() == DbKind::DuckDb && self.duck_method.writes_folder());
         label(
@@ -679,6 +728,97 @@ impl BackupDialog {
         if let Some(i) = idx {
             self.sqlite_method = SqliteMethod::ALL[i];
         }
+    }
+
+    /// Disk / File / S3 fields of a ClickHouse backup location.
+    fn ch_destination_ui(ui: &mut Ui, dest: &mut ChDestination, id: &str) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                label(ui, "Location");
+                let mut idx = Some(dest.index());
+                ui.push_id(id, |ui| ui.add(Select::new(&mut idx, &ChDestination::LABELS).width(120.0)));
+                if let Some(i) = idx.filter(|i| *i != dest.index()) {
+                    let name = match &*dest {
+                        ChDestination::Disk { path, .. } | ChDestination::File { path } => path.clone(),
+                        ChDestination::S3 { url, .. } => url.rsplit('/').next().unwrap_or_default().to_string(),
+                    };
+                    *dest = match i {
+                        0 => ChDestination::Disk { disk: "backups".into(), path: name },
+                        1 => ChDestination::File { path: name },
+                        _ => ChDestination::S3 {
+                            url: format!("https://bucket.s3.amazonaws.com/backups/{name}"),
+                            access_key: String::new(),
+                            secret: String::new(),
+                        },
+                    };
+                }
+            });
+            ui.vertical(|ui| match dest {
+                ChDestination::Disk { disk, path } => {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            label(ui, "Disk");
+                            ui.add(Input::new(disk).width(120.0));
+                        });
+                        ui.vertical(|ui| {
+                            label(ui, "File on the disk");
+                            ui.add(Input::new(path).width(ui.available_width()));
+                        });
+                    });
+                }
+                ChDestination::File { path } => {
+                    label(ui, "Path on the server (under backups.allowed_path)");
+                    ui.add(Input::new(path).width(ui.available_width()));
+                }
+                ChDestination::S3 { url, access_key, secret } => {
+                    label(ui, "S3 URL of the backup");
+                    ui.add(Input::new(url).width(ui.available_width()));
+                    ui.horizontal(|ui| {
+                        let half = (ui.available_width() - 8.0) / 2.0;
+                        ui.add(
+                            Input::new(access_key).placeholder("Access key (empty for the server's own)").width(half),
+                        );
+                        ui.add(Input::new(secret).placeholder("Secret").password().width(half));
+                    });
+                }
+            });
+        });
+    }
+
+    fn ch_backup_ui(&mut self, ui: &mut Ui) {
+        let t = Theme::get(ui.ctx());
+        Self::ch_destination_ui(ui, &mut self.ch_backup.destination, "ch-backup-dest");
+        ui.label(
+            RichText::new(
+                "ClickHouse writes the backup itself; a disk or path must be allowed in the server's backups settings.",
+            )
+            .size(12.0)
+            .color(t.muted_foreground),
+        );
+        ui.add_space(8.0);
+        label(ui, "Incremental on top of (an earlier backup at the same location, empty for a full one)");
+        ui.add(
+            Input::new(&mut self.ch_backup.base_backup)
+                .placeholder("shop_20240101-000000.zip")
+                .width(ui.available_width()),
+        );
+        ui.add_space(6.0);
+        ui.add(Checkbox::new(&mut self.ch_backup.structure_only).label("Table definitions only, no data"));
+    }
+
+    fn ch_restore_ui(&mut self, ui: &mut Ui) {
+        Self::ch_destination_ui(ui, &mut self.ch_restore.source, "ch-restore-src");
+        ui.add_space(8.0);
+        label(ui, "Restore as (empty keeps the original name)");
+        ui.add(
+            Input::new(&mut self.ch_restore.rename_to)
+                .placeholder(format!("{}_restored", self.scope.database))
+                .width(280.0),
+        );
+        ui.add_space(6.0);
+        let o = &mut self.ch_restore;
+        ui.add(Checkbox::new(&mut o.allow_non_empty_tables).label("Add rows to tables that already exist"));
+        ui.add(Checkbox::new(&mut o.structure_only).label("Table definitions only, no data"));
     }
 
     fn ms_backup_ui(&mut self, ui: &mut Ui) {

@@ -68,8 +68,12 @@ impl ColumnMeta {
 
 /// Recognizes numeric type names of all supported engines.
 pub fn is_numeric_type(type_name: &str) -> bool {
-    let t = type_name.to_ascii_lowercase();
-    let base = t.split(['(', ' ']).next().unwrap_or("");
+    let mut t = type_name.to_ascii_lowercase();
+    // ClickHouse wrappers: Nullable(UInt32), LowCardinality(Nullable(Int64)).
+    while let Some(inner) = t.strip_prefix("nullable(").or_else(|| t.strip_prefix("lowcardinality(")) {
+        t = inner.to_string();
+    }
+    let base = t.split(['(', ' ', ')']).next().unwrap_or("");
     matches!(
         base,
         "int"
@@ -106,6 +110,23 @@ pub fn is_numeric_type(type_name: &str) -> bool {
             | "usmallint"
             | "uinteger"
             | "ubigint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uint128"
+            | "uint256"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "int128"
+            | "int256"
+            | "float32"
+            | "float64"
+            | "decimal32"
+            | "decimal64"
+            | "decimal128"
+            | "decimal256"
     )
 }
 
@@ -151,6 +172,9 @@ mod tests {
         assert!(is_numeric_type("int4"));
         assert!(is_numeric_type("NUMERIC(10,2)"));
         assert!(is_numeric_type("double precision"));
+        assert!(is_numeric_type("Nullable(UInt64)"));
+        assert!(is_numeric_type("LowCardinality(Nullable(Float64))"));
+        assert!(!is_numeric_type("Nullable(String)"));
         assert!(!is_numeric_type("varchar(20)"));
         assert!(!is_numeric_type(""));
     }

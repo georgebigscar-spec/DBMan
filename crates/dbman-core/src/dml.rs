@@ -30,6 +30,7 @@ pub fn literal(d: Dialect, cell: &Cell, numeric: bool) -> String {
                 DbKind::Postgres => format!("'\\x{hex}'::bytea"),
                 DbKind::MySql | DbKind::Sqlite => format!("X'{hex}'"),
                 DbKind::MsSql => format!("0x{hex}"),
+                DbKind::ClickHouse => format!("unhex('{hex}')"),
                 DbKind::DuckDb => {
                     let escaped: String = b.iter().map(|x| format!("\\x{x:02X}")).collect();
                     format!("'{escaped}'::BLOB")

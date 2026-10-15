@@ -9,6 +9,7 @@ use std::sync::Arc;
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbResult};
 
 pub mod backup;
+pub mod clickhouse;
 pub mod duckdb;
 pub mod mssql;
 pub mod mysql;
@@ -23,5 +24,6 @@ pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {
         DbKind::Sqlite => Arc::new(sqlite::SqliteConnection::connect(cfg).await?),
         DbKind::DuckDb => Arc::new(duckdb::DuckDbConnection::connect(cfg).await?),
         DbKind::MsSql => Arc::new(mssql::MsSqlConnection::connect(cfg).await?),
+        DbKind::ClickHouse => Arc::new(clickhouse::ClickHouseConnection::connect(cfg).await?),
     })
 }

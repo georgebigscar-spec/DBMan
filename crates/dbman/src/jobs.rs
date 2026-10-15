@@ -35,6 +35,12 @@ pub enum JobSpec {
         source: PathBuf,
         db: PathBuf,
     },
+    /// BACKUP or RESTORE run by ClickHouse; `shown` hides secrets.
+    ClickHouse {
+        cfg: Box<dbman_core::ConnectionConfig>,
+        sql: String,
+        shown: String,
+    },
     /// BACKUP or RESTORE run by SQL Server itself.
     MsSql {
         cfg: Box<dbman_core::ConnectionConfig>,
@@ -61,6 +67,7 @@ impl JobSpec {
                 runner::sqlite_backup(db, target, method, report, cancel).await
             }
             JobSpec::SqliteRestore { source, db } => runner::sqlite_restore(source, db, report, cancel).await,
+            JobSpec::ClickHouse { cfg, sql, shown } => runner::clickhouse_run(*cfg, sql, shown, report, cancel).await,
             JobSpec::MsSql { cfg, job } => runner::mssql_run(*cfg, job, report, cancel).await,
             JobSpec::DuckDb { db, statements, watch } => {
                 runner::duckdb_run(db, statements, watch, report, cancel).await

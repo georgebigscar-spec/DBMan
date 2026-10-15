@@ -124,6 +124,28 @@ pub fn common_types(kind: DbKind) -> &'static [&'static str] {
             "enum('a','b')",
         ],
         DbKind::Sqlite => &["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC", "BOOLEAN", "DATE", "DATETIME"],
+        DbKind::ClickHouse => &[
+            "UInt32",
+            "UInt64",
+            "Int32",
+            "Int64",
+            "Float64",
+            "Decimal(18, 2)",
+            "Bool",
+            "String",
+            "LowCardinality(String)",
+            "FixedString(16)",
+            "UUID",
+            "Date",
+            "DateTime",
+            "DateTime64(3)",
+            "IPv4",
+            "Array(String)",
+            "Map(String, UInt64)",
+            "Tuple(a UInt32, b String)",
+            "JSON",
+            "Enum8('a' = 1, 'b' = 2)",
+        ],
         DbKind::MsSql => &[
             "int",
             "bigint",
@@ -256,6 +278,7 @@ fn drop_index(kind: DbKind, table: &ObjectPath, name: &str) -> String {
     let d = Dialect(kind);
     match kind {
         DbKind::MySql | DbKind::MsSql => format!("DROP INDEX {} ON {}", d.ident(name), d.qualified(table)),
+        DbKind::ClickHouse => format!("ALTER TABLE {} DROP INDEX {}", d.qualified(table), d.ident(name)),
         _ => format!("DROP INDEX {}.{}", d.ident(&table.schema), d.ident(name)),
     }
 }
@@ -302,8 +325,119 @@ fn ms_drop_default(table: &ObjectPath, column: &str) -> String {
     )
 }
 
+/// A ClickHouse column: `NULL` makes it Nullable; no NOT NULL, identity or keys.
+fn ch_column(c: &ColumnInfo) -> String {
+    let d = Dialect(DbKind::ClickHouse);
+    let mut s = format!("{} {}", d.ident(&c.name), c.data_type.trim());
+    if c.nullable && !c.data_type.trim().starts_with("Nullable(") {
+        s.push_str(" NULL");
+    }
+    if let Some(def) = c.default.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        s.push_str(&format!(" DEFAULT {def}"));
+    }
+    if let Some(cm) = c.comment.as_deref().filter(|c| !c.is_empty()) {
+        s.push_str(&format!(" COMMENT {}", d.string(cm)));
+    }
+    s
+}
+
+/// A data-skipping index; the editor's indexes become `minmax` ones.
+fn ch_index(i: &IndexInfo) -> String {
+    let d = Dialect(DbKind::ClickHouse);
+    let ty = i.method.as_deref().filter(|m| !m.is_empty()).unwrap_or("minmax");
+    let expr = if i.columns.len() == 1 { i.columns[0].clone() } else { format!("({})", i.columns.join(", ")) };
+    format!("INDEX {} {expr} TYPE {ty} GRANULARITY 1", d.ident(&i.name))
+}
+
+/// ClickHouse tables get the MergeTree engine, ordered by the primary key.
+fn ch_create_table(def: &TableDef) -> Plan {
+    let d = Dialect(DbKind::ClickHouse);
+    let mut lines: Vec<String> = def.columns.iter().map(|c| format!("    {}", ch_column(&c.col))).collect();
+    lines.extend(def.indexes.iter().map(|i| format!("    {}", ch_index(i))));
+    let pk: Vec<String> = def.pk().iter().map(|s| d.ident(s)).collect();
+    let order = if pk.is_empty() { "tuple()".to_string() } else { format!("({})", pk.join(", ")) };
+    let mut create = format!(
+        "CREATE TABLE {} (\n{}\n)\nENGINE = MergeTree\nORDER BY {order}",
+        d.qualified(&def.path),
+        lines.join(",\n")
+    );
+    if let Some(c) = def.comment.as_deref().filter(|c| !c.is_empty()) {
+        create.push_str(&format!("\nCOMMENT {}", d.string(c)));
+    }
+    let mut plan = Plan { statements: vec![create], notes: Vec::new() };
+    if def.columns.iter().any(|c| c.col.auto_increment) {
+        plan.notes.push("ClickHouse has no auto-increment columns; use DEFAULT generateSerialID or a UUID.".into());
+    }
+    if !def.foreign_keys.is_empty() {
+        plan.notes.push("ClickHouse has no foreign keys; they are left out.".into());
+    }
+    plan
+}
+
+fn ch_alter_table(old: &TableDef, new: &TableDef) -> Plan {
+    let d = Dialect(DbKind::ClickHouse);
+    let t = d.qualified(&new.path);
+    let mut plan = Plan::default();
+    let old_col = |name: &str| old.columns.iter().find(|c| c.col.name == name).map(|c| &c.col);
+    for i in &old.indexes {
+        if !new.indexes.iter().any(|n| n.name == i.name && same_index(i, n)) {
+            plan.statements.push(drop_index(DbKind::ClickHouse, &new.path, &i.name));
+        }
+    }
+    for c in &old.columns {
+        if !new.columns.iter().any(|n| n.original.as_deref() == Some(&c.col.name)) {
+            plan.statements.push(format!("ALTER TABLE {t} DROP COLUMN {}", d.ident(&c.col.name)));
+        }
+    }
+    for c in &new.columns {
+        let Some(o) = c.original.as_deref().and_then(old_col) else {
+            plan.statements.push(format!("ALTER TABLE {t} ADD COLUMN {}", ch_column(&c.col)));
+            continue;
+        };
+        let col = d.ident(&c.col.name);
+        if o.name != c.col.name {
+            plan.statements.push(format!("ALTER TABLE {t} RENAME COLUMN {} TO {col}", d.ident(&o.name)));
+        }
+        let (od, nd) = (o.default.as_deref().unwrap_or("").trim(), c.col.default.as_deref().unwrap_or("").trim());
+        if o.data_type.trim() != c.col.data_type.trim() || o.nullable != c.col.nullable || (od != nd && !nd.is_empty())
+        {
+            let mut m = c.col.clone();
+            m.comment = None;
+            plan.statements.push(format!("ALTER TABLE {t} MODIFY COLUMN {}", ch_column(&m)));
+        }
+        if od != nd && nd.is_empty() {
+            plan.statements.push(format!("ALTER TABLE {t} MODIFY COLUMN {col} REMOVE DEFAULT"));
+        }
+        let (oc, nc) = (o.comment.as_deref().unwrap_or(""), c.col.comment.as_deref().unwrap_or(""));
+        if oc != nc {
+            plan.statements.push(format!("ALTER TABLE {t} COMMENT COLUMN {col} {}", d.string(nc)));
+        }
+        if o.primary_key != c.col.primary_key {
+            plan.notes
+                .push("ClickHouse cannot change the primary key of an existing table; that change is skipped.".into());
+        }
+    }
+    for i in &new.indexes {
+        if !old.indexes.iter().any(|o| o.name == i.name && same_index(i, o)) {
+            plan.statements.push(format!("ALTER TABLE {t} ADD {}", ch_index(i)));
+        }
+    }
+    let (oc, nc) = (old.comment.as_deref().unwrap_or(""), new.comment.as_deref().unwrap_or(""));
+    if oc != nc {
+        plan.statements.push(format!("ALTER TABLE {t} MODIFY COMMENT {}", d.string(nc)));
+    }
+    if old.foreign_keys != new.foreign_keys {
+        plan.notes.push("ClickHouse has no foreign keys; those changes are skipped.".into());
+    }
+    plan.notes.dedup();
+    plan
+}
+
 /// `CREATE TABLE` and its indexes and comments.
 pub fn create_table(kind: DbKind, def: &TableDef) -> Plan {
+    if kind == DbKind::ClickHouse {
+        return ch_create_table(def);
+    }
     let d = Dialect(kind);
     let t = d.qualified(&def.path);
     let pk = def.pk();
@@ -382,6 +516,9 @@ fn same_fk(a: &ForeignKeyInfo, b: &ForeignKeyInfo) -> bool {
 
 /// Statements that turn `old` into `new` (same table; rename it with [`rename`]).
 pub fn alter_table(kind: DbKind, old: &TableDef, new: &TableDef) -> Plan {
+    if kind == DbKind::ClickHouse {
+        return ch_alter_table(old, new);
+    }
     let d = Dialect(kind);
     let t = d.qualified(&new.path);
     let mut plan = Plan::default();
@@ -612,6 +749,7 @@ pub fn alter_table(kind: DbKind, old: &TableDef, new: &TableDef) -> Plan {
             DbKind::MySql => plan.statements.push(format!("ALTER TABLE {t} COMMENT = {}", d.string(nc))),
             DbKind::Sqlite => plan.notes.push("SQLite has no table comments; the comment is not saved.".into()),
             DbKind::MsSql => plan.statements.extend(ms_comment(&new.path, None, oc, nc)),
+            DbKind::ClickHouse => unreachable!("handled by ch_alter_table"),
         }
     }
     plan
@@ -687,6 +825,12 @@ pub fn drop_object(kind: DbKind, o: &DbObject, cascade: bool) -> String {
         ObjectKind::Type => "TYPE",
     };
     match (o.kind, kind) {
+        (ObjectKind::Table, DbKind::ClickHouse) if o.detail.as_deref() == Some("Dictionary") => {
+            format!("DROP DICTIONARY {q}")
+        }
+        // Materialized views are dropped as views; functions are global.
+        (ObjectKind::MaterializedView, DbKind::ClickHouse) => format!("DROP VIEW {q}"),
+        (ObjectKind::Function, DbKind::ClickHouse) => format!("DROP FUNCTION {}", d.ident(&o.path.name)),
         (ObjectKind::Function | ObjectKind::Procedure, DbKind::Postgres) => {
             format!("DROP {what} {q}({}){cascade}", o.detail.as_deref().unwrap_or(""))
         }
@@ -705,6 +849,11 @@ pub fn rename(kind: DbKind, o: &DbObject, new_name: &str) -> Option<String> {
     let q = d.qualified(&o.path);
     let to = d.ident(new_name);
     match (kind, o.kind) {
+        (DbKind::ClickHouse, ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView) => {
+            let what = if o.detail.as_deref() == Some("Dictionary") { "DICTIONARY" } else { "TABLE" };
+            let target = d.qualified(&ObjectPath::new(&o.path.database, &o.path.schema, new_name));
+            Some(format!("RENAME {what} {q} TO {target}"))
+        }
         (DbKind::Postgres, ObjectKind::Table) => Some(format!("ALTER TABLE {q} RENAME TO {to}")),
         (DbKind::Postgres, ObjectKind::View) => Some(format!("ALTER VIEW {q} RENAME TO {to}")),
         (DbKind::Postgres, ObjectKind::MaterializedView) => Some(format!("ALTER MATERIALIZED VIEW {q} RENAME TO {to}")),
@@ -760,6 +909,15 @@ pub fn template(kind: DbKind, what: ObjectKind, database: &str, schema: &str) ->
             at("some_table"),
             at("some_table")
         ),
+        (ObjectKind::MaterializedView, DbKind::ClickHouse) => format!(
+            "CREATE MATERIALIZED VIEW {}\nENGINE = SummingMergeTree\nORDER BY key\nAS SELECT key, count() AS hits\nFROM {}\nGROUP BY key;\n",
+            at("new_view"),
+            at("some_table")
+        ),
+        (ObjectKind::View, DbKind::ClickHouse) => {
+            format!("CREATE VIEW {} AS\nSELECT *\nFROM {}\nWHERE 1;\n", at("new_view"), at("some_table"))
+        }
+        (ObjectKind::Function, DbKind::ClickHouse) => "CREATE FUNCTION add_two AS (a) -> a + 2;\n".into(),
         (ObjectKind::Type, DbKind::MsSql) => format!("CREATE TYPE {} FROM nvarchar(50) NOT NULL;\n", at("new_type")),
         (ObjectKind::View, _) => {
             format!("CREATE VIEW {} AS\nSELECT *\nFROM {}\nWHERE true;\n", at("new_view"), at("some_table"))
@@ -998,5 +1156,37 @@ mod tests {
         assert_eq!(rename(DbKind::MySql, &t, "b").unwrap(), "RENAME TABLE `shop`.`a` TO `shop`.`b`");
         assert_eq!(truncate(DbKind::Sqlite, &t.path), "DELETE FROM \"shop\".\"a\"");
         assert!(rename(DbKind::Sqlite, &trg, "x").is_none());
+    }
+
+    #[test]
+    fn clickhouse_tables() {
+        let mut def = users(DbKind::ClickHouse);
+        def.columns[0].col.data_type = "UInt64".into();
+        def.columns[1].col.data_type = "String".into();
+        def.columns[2].col.data_type = "UInt32".into();
+        let plan = create_table(DbKind::ClickHouse, &def);
+        assert_eq!(
+            plan.statements[0],
+            "CREATE TABLE `app`.`users` (\n    `id` UInt64,\n    `email` String COMMENT 'login',\n    `team_id` UInt32 NULL DEFAULT 1,\n    INDEX `users_email_key` email TYPE minmax GRANULARITY 1\n)\nENGINE = MergeTree\nORDER BY (`id`)"
+        );
+        assert_eq!(plan.notes.len(), 2, "{:?}", plan.notes);
+
+        let mut old = def.clone();
+        for c in &mut old.columns {
+            c.original = Some(c.col.name.clone());
+        }
+        let mut new = old.clone();
+        new.columns[1].col.name = "mail".into();
+        new.columns[2].col.nullable = false;
+        new.columns[2].col.default = None;
+        let plan = alter_table(DbKind::ClickHouse, &old, &new);
+        assert_eq!(
+            plan.statements,
+            [
+                "ALTER TABLE `app`.`users` RENAME COLUMN `email` TO `mail`",
+                "ALTER TABLE `app`.`users` MODIFY COLUMN `team_id` UInt32",
+                "ALTER TABLE `app`.`users` MODIFY COLUMN `team_id` REMOVE DEFAULT",
+            ]
+        );
     }
 }

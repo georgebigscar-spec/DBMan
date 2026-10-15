@@ -152,9 +152,13 @@ impl DataView {
         }
     }
 
-    /// Rows can be edited in tables whose structure is known.
+    /// Rows can be edited in tables whose structure is known. ClickHouse has
+    /// no transactions to apply edits safely; change its data in a console.
     fn editable(&self) -> bool {
-        self.object.kind == ObjectKind::Table && self.details.ready().is_some() && self.rows.ready().is_some()
+        self.kind != DbKind::ClickHouse
+            && self.object.kind == ObjectKind::Table
+            && self.details.ready().is_some()
+            && self.rows.ready().is_some()
     }
 
     fn base_len(&self) -> usize {

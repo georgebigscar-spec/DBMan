@@ -505,3 +505,123 @@ async fn mssql() {
     check_ddl(c.clone(), &db, "app").await;
     check_cancel(c, &db, "WAITFOR DELAY '00:00:30'").await;
 }
+
+/// ClickHouse has no foreign keys or transactions, so it gets its own checks.
+#[tokio::test]
+async fn clickhouse() {
+    let Some(mut cfg) = from_url(DbKind::ClickHouse, "DBMAN_TEST_CLICKHOUSE") else {
+        eprintln!("DBMAN_TEST_CLICKHOUSE not set, skipping");
+        return;
+    };
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let db = cfg.database.clone();
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    assert!(c.server_version().await.unwrap().starts_with("ClickHouse "));
+    exec(&c, &db, &format!("CREATE DATABASE IF NOT EXISTS `{db}`")).await;
+    for sql in ["DROP VIEW IF EXISTS item_names", "DROP TABLE IF EXISTS items", "DROP TABLE IF EXISTS ddl_members"] {
+        exec(&c, &db, sql).await;
+    }
+    exec(
+        &c,
+        &db,
+        "CREATE TABLE items (id UInt32, name String, note Nullable(String) COMMENT 'free text', \
+         INDEX items_name_idx name TYPE minmax GRANULARITY 1) ENGINE = MergeTree ORDER BY id COMMENT 'things'",
+    )
+    .await;
+    exec(&c, &db, "CREATE VIEW item_names AS SELECT name FROM items").await;
+    assert!(c.databases().await.unwrap().contains(&db));
+    assert_eq!(c.schemas(&db).await.unwrap(), std::slice::from_ref(&db));
+    let objects = c.objects(&db, &db).await.unwrap();
+    let items = objects.iter().find(|o| o.path.name == "items").unwrap().clone();
+    assert_eq!(
+        (items.kind, items.detail.as_deref(), items.comment.as_deref()),
+        (ObjectKind::Table, Some("MergeTree"), Some("things"))
+    );
+    assert!(objects.iter().any(|o| o.path.name == "item_names" && o.kind == ObjectKind::View));
+    let d = c.table_details(&items.path).await.unwrap();
+    assert_eq!(d.primary_key(), ["id"]);
+    assert_eq!((d.columns[2].data_type.as_str(), d.columns[2].nullable), ("String", true));
+    assert_eq!(d.columns[2].comment.as_deref(), Some("free text"));
+    assert!(d.indexes.iter().any(|i| i.name == "items_name_idx" && i.columns == ["name"]));
+    assert!(c.ddl(&items).await.unwrap().contains("ENGINE = MergeTree"));
+
+    match exec(&c, &db, "INSERT INTO items VALUES (1, 'root', NULL), (2, 'O''Brien', 'x')").await {
+        StatementOutcome::Done { affected } => assert_eq!(affected, Some(2)),
+        other => panic!("{other:?}"),
+    }
+    match exec(&c, &db, "SELECT id, name, note FROM items ORDER BY id").await {
+        StatementOutcome::Rows(r) => {
+            assert!(r.columns[0].numeric);
+            assert_eq!(r.columns[2].type_name, "Nullable(String)");
+            assert_eq!(r.rows[0], [Cell::Text("1".into()), Cell::Text("root".into()), Cell::Null]);
+            assert_eq!(r.rows[1][1], Cell::Text("O'Brien".into()));
+        }
+        other => panic!("{other:?}"),
+    }
+    match c.execute(Some(&db), "SELECT number FROM system.numbers", 5).await.unwrap() {
+        StatementOutcome::Rows(r) => assert!(r.truncated && r.rows.len() == 5),
+        other => panic!("{other:?}"),
+    }
+    let r = rows(
+        &c,
+        &db,
+        "SELECT [1, 2] AS a, map('k', 1) AS m, tuple(1, 'x') AS t, toUInt64(18446744073709551615) AS big, \
+         toDate('2024-02-29') AS d, toDateTime('2024-02-29 10:20:30', 'UTC') AS ts",
+    )
+    .await;
+    assert_eq!(
+        r[0],
+        [
+            Cell::Text("[1,2]".into()),
+            Cell::Text(r#"{"k":1}"#.into()),
+            Cell::Text(r#"[1,"x"]"#.into()),
+            Cell::Text("18446744073709551615".into()),
+            Cell::Text("2024-02-29".into()),
+            Cell::Text("2024-02-29 10:20:30".into()),
+        ]
+    );
+    assert!(c.execute(Some(&db), "SELECT * FROM no_such_table_xyz", 10).await.is_err());
+
+    // Table editor round trip.
+    let path = ObjectPath::new(&db, &db, "ddl_members");
+    let col = |name: &str, ty: &str| ColumnDef {
+        col: ColumnInfo { name: name.into(), data_type: ty.into(), nullable: false, ..Default::default() },
+        original: None,
+    };
+    let mut def = TableDef::new(path.clone());
+    let mut id = col("id", "UInt64");
+    id.col.primary_key = true;
+    let mut email = col("email", "String");
+    email.col.comment = Some("login".into());
+    let mut team = col("team_id", "UInt32");
+    team.col.default = Some("1".into());
+    team.col.nullable = true;
+    def.columns = vec![id, email, team];
+    run_plan(&c, &db, &ddl::create_table(DbKind::ClickHouse, &def)).await;
+    let details = c.table_details(&path).await.unwrap();
+    assert_eq!(details.columns[2].default.as_deref(), Some("1"));
+    let old = TableDef::from_details(path.clone(), &details);
+    assert!(ddl::alter_table(DbKind::ClickHouse, &old, &old).statements.is_empty());
+    let mut new = old.clone();
+    new.columns[1].col.name = "mail".into();
+    new.columns[2].col.nullable = false;
+    new.columns[2].col.default = None;
+    new.columns.push(col("nick", "LowCardinality(String)"));
+    new.indexes = vec![IndexInfo { name: "nick_idx".into(), columns: vec!["nick".into()], ..Default::default() }];
+    let plan = ddl::alter_table(DbKind::ClickHouse, &old, &new);
+    run_plan(&c, &db, &plan).await;
+    let after = c.table_details(&path).await.unwrap();
+    let names: Vec<&str> = after.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "mail", "team_id", "nick"], "{}", plan.script());
+    assert!(!after.columns[2].nullable && after.columns[2].default.is_none());
+    assert!(after.indexes.iter().any(|i| i.name == "nick_idx"));
+    let again = TableDef::from_details(path.clone(), &after);
+    assert!(ddl::alter_table(DbKind::ClickHouse, &again, &again).statements.is_empty());
+    let o = dbman_core::DbObject { kind: ObjectKind::Table, path: path.clone(), detail: None, comment: None };
+    exec(&c, &db, &ddl::rename(DbKind::ClickHouse, &o, "ddl_people").unwrap()).await;
+    let people = dbman_core::DbObject { path: ObjectPath::new(&db, &db, "ddl_people"), ..o };
+    exec(&c, &db, &ddl::truncate(DbKind::ClickHouse, &people.path)).await;
+    exec(&c, &db, &ddl::drop_object(DbKind::ClickHouse, &people, false)).await;
+
+    check_cancel(c, &db, "SELECT count() FROM numbers(100000000000) WHERE sipHash64(number) = 0").await;
+}
