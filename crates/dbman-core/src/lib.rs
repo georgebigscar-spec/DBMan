@@ -5,8 +5,10 @@
 //! added by implementing [`Connection`] in `dbman-drivers` (or any other crate).
 
 mod config;
+pub mod dml;
 mod driver;
 mod error;
+pub mod export;
 mod result;
 mod schema;
 pub mod sql;

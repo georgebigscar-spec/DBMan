@@ -309,8 +309,11 @@ impl Dialect {
         }
     }
 
-    /// `schema.name`, quoted, as used in queries.
+    /// `schema.name`, quoted, as used in queries (just `name` without a schema).
     pub fn qualified(self, path: &ObjectPath) -> String {
+        if path.schema.is_empty() {
+            return self.ident(&path.name);
+        }
         format!("{}.{}", self.ident(&path.schema), self.ident(&path.name))
     }
 

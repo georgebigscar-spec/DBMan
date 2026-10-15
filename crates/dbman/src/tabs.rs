@@ -2,14 +2,15 @@
 
 use std::sync::Arc;
 
-use dbman_core::sql::{Dialect, split_statements, statement_at};
+use dbman_core::sql::{split_statements, statement_at};
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
 use egui::{Key, Modifiers, RichText, Ui};
-use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Input, Select, Theme, TooltipExt, tabs};
+use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, tabs};
 
+use crate::data_view::DataView;
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
-use crate::grid::Grid;
+use crate::grid::{self, Grid};
 use crate::sql_editor;
 
 pub struct Tab {
@@ -20,7 +21,7 @@ pub struct Tab {
 
 pub enum TabKind {
     Console(Console),
-    Data(DataView),
+    Data(Box<DataView>),
     Object(ObjectView),
 }
 
@@ -43,10 +44,10 @@ impl Tab {
         }
     }
 
-    pub fn on_event(&mut self, ev: TabEvent) {
+    pub fn on_event(&mut self, ev: TabEvent, ctx: &egui::Context) {
         match &mut self.kind {
             TabKind::Console(c) => c.on_event(ev),
-            TabKind::Data(d) => d.on_event(ev),
+            TabKind::Data(d) => d.on_event(ev, ctx),
             TabKind::Object(o) => o.on_event(ev),
         }
     }
@@ -61,15 +62,15 @@ impl Tab {
     }
 }
 
-fn toolbar_button(ui: &mut Ui, text: &str) -> egui::Response {
+pub(crate) fn toolbar_button(ui: &mut Ui, text: &str) -> egui::Response {
     ui.add(Button::outline(text).size(ButtonSize::Sm))
 }
 
-fn error_alert(ui: &mut Ui, title: &str, e: &str) {
+pub(crate) fn error_alert(ui: &mut Ui, title: &str, e: &str) {
     Alert::new(title).icon("!").description(e).destructive().show(ui);
 }
 
-fn not_connected(ui: &mut Ui, cx: &mut TabCtx<'_>) {
+pub(crate) fn not_connected(ui: &mut Ui, cx: &mut TabCtx<'_>) {
     ui.add_space(16.0);
     ui.vertical_centered(|ui| {
         ui.label(RichText::new("Not connected").color(Theme::get(ui.ctx()).muted_foreground));
@@ -313,6 +314,8 @@ impl Console {
             error_alert(ui, "Statement failed", e);
         }
         if let Some(g) = &o.grid {
+            ui.horizontal(|ui| grid::export_menu(ui, &g.result, self.cfg.kind, None));
+            ui.add_space(4.0);
             g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output)));
         }
     }
@@ -338,117 +341,6 @@ fn spawn_run(
         }
         tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
     });
-}
-
-// ---------------------------------------------------------------------------
-
-/// Rows of a table or view, page by page, with a WHERE filter and ORDER BY.
-pub struct DataView {
-    pub object: DbObject,
-    kind: DbKind,
-    filter: String,
-    order_by: String,
-    page: usize,
-    rows: Load<Grid>,
-    summary: String,
-    loaded_once: bool,
-}
-
-impl DataView {
-    pub fn new(object: DbObject, kind: DbKind) -> Self {
-        Self {
-            object,
-            kind,
-            filter: String::new(),
-            order_by: String::new(),
-            page: 0,
-            rows: Load::Idle,
-            summary: String::new(),
-            loaded_once: false,
-        }
-    }
-
-    fn on_event(&mut self, ev: TabEvent) {
-        if let TabEvent::Page { elapsed, result } = ev {
-            match result {
-                Ok(StatementOutcome::Rows(r)) => {
-                    self.summary = StatementOutcome::Rows(r.clone()).summary(elapsed);
-                    self.rows = Load::Ready(Grid::new(r));
-                }
-                Ok(other) => self.rows = Load::Failed(format!("unexpected result: {other:?}")),
-                Err(e) => self.rows = Load::Failed(e.message),
-            }
-        }
-    }
-
-    fn load(&mut self, tasks: &Tasks, tab: TabId, session: Arc<dyn Connection>, page_size: usize) {
-        // One row more than a page tells whether there is a next page.
-        let sql = Dialect(self.kind).select_page(
-            &self.object.path,
-            &self.filter,
-            &self.order_by,
-            page_size + 1,
-            self.page * page_size,
-        );
-        let db = self.object.path.database.clone();
-        self.rows = Load::Loading;
-        self.loaded_once = true;
-        tasks.spawn(async move {
-            let (elapsed, result) = timed(session.execute(Some(&db), &sql, page_size)).await;
-            Event::Tab { tab, event: TabEvent::Page { elapsed, result } }
-        });
-    }
-
-    fn ui(&mut self, ui: &mut Ui, tab: TabId, mut cx: TabCtx<'_>) {
-        let t = Theme::get(ui.ctx());
-        let Some(session) = cx.conn.and_then(ConnState::session) else {
-            not_connected(ui, &mut cx);
-            return;
-        };
-        if !self.loaded_once {
-            self.load(cx.tasks, tab, session.clone(), cx.page_size);
-        }
-        let mut reload = false;
-        ui.horizontal(|ui| {
-            if toolbar_button(ui, "⟳ Refresh").clicked() {
-                reload = true;
-            }
-            let has_next = self.rows.ready().is_some_and(|g| g.result.truncated);
-            if ui.add_enabled(self.page > 0, Button::outline("‹").size(ButtonSize::Sm)).clicked() {
-                self.page -= 1;
-                reload = true;
-            }
-            ui.label(RichText::new(format!("page {}", self.page + 1)).color(t.muted_foreground));
-            if ui.add_enabled(has_next, Button::outline("›").size(ButtonSize::Sm)).clicked() {
-                self.page += 1;
-                reload = true;
-            }
-            ui.add_space(12.0);
-            ui.label(RichText::new("WHERE").monospace().color(t.muted_foreground));
-            let f = ui.add(Input::new(&mut self.filter).placeholder("id > 10").width(260.0));
-            ui.label(RichText::new("ORDER BY").monospace().color(t.muted_foreground));
-            let o = ui.add(Input::new(&mut self.order_by).placeholder("id DESC").width(180.0));
-            let enter = ui.input(|i| i.key_pressed(Key::Enter));
-            if (f.lost_focus() || o.lost_focus()) && enter {
-                self.page = 0;
-                reload = true;
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(&self.summary).color(t.muted_foreground));
-            });
-        });
-        ui.add_space(6.0);
-        if reload {
-            self.load(cx.tasks, tab, session, cx.page_size);
-        }
-        match &self.rows {
-            Load::Idle | Load::Loading => {
-                ui.add(egui::Spinner::new());
-            }
-            Load::Failed(e) => error_alert(ui, "Query failed", e),
-            Load::Ready(g) => g.show(ui, egui::Id::new(("data-grid", tab))),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

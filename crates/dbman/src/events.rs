@@ -38,6 +38,8 @@ pub enum TabEvent {
         result: DbResult<StatementOutcome>,
     },
     Ddl(DbResult<String>),
+    /// Grid edits were written; the number of statements run.
+    Submitted(DbResult<usize>),
     Details(DbResult<TableDetails>),
 }
 

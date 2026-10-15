@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod connection_dialog;
+pub mod data_view;
 pub mod events;
 pub mod explorer;
 pub mod grid;
