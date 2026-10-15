@@ -1,6 +1,8 @@
 //! Editor tabs: SQL consoles, table data and object structure.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use dbman_core::sql::{split_statements, statement_at};
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
@@ -105,6 +107,10 @@ pub struct Console {
     pub sql: String,
     session: Load<Arc<dyn Connection>>,
     running: bool,
+    /// When the current run started, for the timer next to Stop.
+    started: Option<Instant>,
+    /// Set by Stop: the run skips its remaining statements.
+    stop: Arc<AtomicBool>,
     outputs: Vec<Output>,
     shown_output: usize,
     selection: Option<std::ops::Range<usize>>,
@@ -121,6 +127,8 @@ impl Console {
             sql: String::new(),
             session: Load::Idle,
             running: false,
+            started: None,
+            stop: Arc::new(AtomicBool::new(false)),
             outputs: Vec::new(),
             shown_output: 0,
             selection: None,
@@ -138,6 +146,7 @@ impl Console {
                 self.session = Load::from_result(r);
                 if let Load::Failed(e) = &self.session {
                     self.running = false;
+                    self.started = None;
                     self.queued = None;
                     self.outputs = vec![Output {
                         sql: String::new(),
@@ -157,6 +166,7 @@ impl Console {
                         };
                         (summary, None, grid)
                     }
+                    Err(e) if self.stop.load(Ordering::Relaxed) => ("cancelled".into(), Some(e.message), None),
                     Err(e) => ("failed".into(), Some(e.message), None),
                 };
                 let has_grid = grid.is_some();
@@ -166,7 +176,19 @@ impl Console {
                     self.shown_output = self.outputs.len() - 1;
                 }
             }
-            TabEvent::RunFinished => self.running = false,
+            TabEvent::RunFinished => {
+                self.running = false;
+                self.started = None;
+            }
+            TabEvent::Cancelled(Some(e)) => {
+                self.outputs.push(Output {
+                    sql: String::new(),
+                    summary: "cancel failed".into(),
+                    error: Some(e),
+                    grid: None,
+                });
+                self.shown_output = self.outputs.len() - 1;
+            }
             _ => {}
         }
     }
@@ -195,12 +217,38 @@ impl Console {
         self.outputs.clear();
         self.shown_output = 0;
         self.running = true;
+        self.started = Some(Instant::now());
+        self.stop = Arc::new(AtomicBool::new(false));
         match &self.session {
-            Load::Ready(s) => spawn_run(tasks, tab, s.clone(), self.database.clone(), stmts, max_rows),
+            Load::Ready(s) => {
+                spawn_run(tasks, tab, s.clone(), self.database.clone(), stmts, max_rows, self.stop.clone())
+            }
             Load::Loading => self.queued = Some(stmts),
             Load::Idle | Load::Failed(_) => {
                 self.queued = Some(stmts);
                 self.open_session(tasks, tab);
+            }
+        }
+    }
+
+    /// Stops the run: the server cancels the current statement and the rest are skipped.
+    fn stop(&mut self, tasks: &Tasks, tab: TabId) {
+        self.stop.store(true, Ordering::Relaxed);
+        match &self.session {
+            Load::Ready(s) => {
+                let s = s.clone();
+                tasks.spawn(async move {
+                    match s.cancel().await {
+                        Ok(()) => Event::Tab { tab, event: TabEvent::Cancelled(None) },
+                        Err(e) => Event::Tab { tab, event: TabEvent::Cancelled(Some(e.message)) },
+                    }
+                });
+            }
+            // Still connecting: nothing runs yet, so just drop the queued statements.
+            _ => {
+                self.queued = None;
+                self.running = false;
+                self.started = None;
             }
         }
     }
@@ -219,7 +267,7 @@ impl Console {
     fn ui(&mut self, ui: &mut Ui, tab: TabId, cx: TabCtx<'_>) {
         let t = Theme::get(ui.ctx());
         if let (Load::Ready(s), Some(stmts)) = (&self.session, self.queued.take()) {
-            spawn_run(cx.tasks, tab, s.clone(), self.database.clone(), stmts, cx.page_size);
+            spawn_run(cx.tasks, tab, s.clone(), self.database.clone(), stmts, cx.page_size, self.stop.clone());
         }
 
         // Ctrl+Enter runs the statement under the cursor (or the selection),
@@ -247,7 +295,18 @@ impl Console {
                 self.run(cx.tasks, tab, true, cx.page_size);
             }
             if self.running {
+                if ui
+                    .add(Button::destructive("Stop").size(ButtonSize::Sm))
+                    .tooltip("Cancel the running statement on the server")
+                    .clicked()
+                {
+                    self.stop(cx.tasks, tab);
+                }
                 ui.add(egui::Spinner::new().size(14.0));
+                if let Some(t0) = self.started {
+                    ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                }
             }
             if let Some(dbs) = cx.conn.and_then(|c| c.databases.ready())
                 && dbs.len() > 1
@@ -335,10 +394,14 @@ fn spawn_run(
     database: Option<String>,
     stmts: Vec<String>,
     max_rows: usize,
+    stop: Arc<AtomicBool>,
 ) {
     let tx = tasks.sender();
     tasks.runtime().spawn(async move {
         for sql in stmts {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
             let (elapsed, result) = timed(session.execute(database.as_deref(), &sql, max_rows)).await;
             let failed = result.is_err();
             tx.send(Event::Tab { tab, event: TabEvent::Statement { sql, elapsed, result } });
@@ -348,6 +411,18 @@ fn spawn_run(
         }
         tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
     });
+}
+
+/// "0.4 s", "12 s", "3 min 05 s" for the running-query timer.
+pub(crate) fn format_elapsed(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 10 {
+        format!("{:.1} s", d.as_secs_f64())
+    } else if secs < 60 {
+        format!("{secs} s")
+    } else {
+        format!("{} min {:02} s", secs / 60, secs % 60)
+    }
 }
 
 // ---------------------------------------------------------------------------

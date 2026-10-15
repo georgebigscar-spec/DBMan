@@ -145,6 +145,25 @@ fn browse_sqlite_database() {
         h.state().console_summaries()
     );
 
+    // A long query keeps the window responsive and Stop cancels it on the server.
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text(
+        "\nWITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000000000) SELECT count(*) FROM n;",
+    );
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    let started = std::time::Instant::now();
+    settle(&mut h);
+    assert!(
+        h.query_by_label("Stop").is_some(),
+        "the query should still be running: {:?}",
+        h.state().console_summaries()
+    );
+    click(&mut h, "Stop");
+    settle(&mut h);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(h.state().console_summaries(), vec!["cancelled".to_string()]);
+    assert!(h.query_by_label("Stop").is_none());
+
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);
     snapshot(&mut h, "connection_dialog");

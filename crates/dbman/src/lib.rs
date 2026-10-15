@@ -7,6 +7,7 @@ pub mod data_view;
 pub mod events;
 pub mod exec;
 pub mod explorer;
+pub mod files;
 pub mod grid;
 pub mod icons;
 pub mod prompt;

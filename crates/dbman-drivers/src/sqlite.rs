@@ -15,6 +15,8 @@ use rusqlite::types::ValueRef;
 
 pub struct SqliteConnection {
     conn: Arc<Mutex<rusqlite::Connection>>,
+    /// Interrupts the running statement without taking the connection lock.
+    interrupt: rusqlite::InterruptHandle,
 }
 
 impl SqliteConnection {
@@ -31,7 +33,8 @@ impl SqliteConnection {
         })
         .await
         .map_err(DbError::from_display)??;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        let interrupt = conn.get_interrupt_handle();
+        Ok(Self { conn: Arc::new(Mutex::new(conn)), interrupt })
     }
 
     /// The underlying connection, for the backup tools.
@@ -245,5 +248,10 @@ impl Connection for SqliteConnection {
     async fn execute(&self, _database: Option<&str>, sql: &str, max_rows: usize) -> DbResult<StatementOutcome> {
         let sql = sql.to_string();
         self.with(move |c| run(c, &sql, max_rows)).await
+    }
+
+    async fn cancel(&self) -> DbResult<()> {
+        self.interrupt.interrupt();
+        Ok(())
     }
 }

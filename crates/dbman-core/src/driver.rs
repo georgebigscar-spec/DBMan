@@ -51,4 +51,9 @@ pub trait Connection: Send + Sync {
     /// Runs one SQL statement in `database` (the current one if `None`) and
     /// returns at most `max_rows` rows.
     async fn execute(&self, database: Option<&str>, sql: &str, max_rows: usize) -> DbResult<StatementOutcome>;
+
+    /// Asks the server to stop the statement this session is running right now.
+    /// Returns once the request is sent; the running `execute` then ends early,
+    /// usually with an error. Does nothing when the session is idle.
+    async fn cancel(&self) -> DbResult<()>;
 }

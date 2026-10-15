@@ -240,6 +240,22 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
     assert!(!left.iter().any(|o| o.path.name.starts_with("ddl_")));
 }
 
+/// Starts a statement that runs for many seconds, cancels it, and checks it
+/// stops quickly and that the session still works afterwards. (Whether a
+/// killed statement reports an error differs: MySQL's SLEEP() just returns 1.)
+async fn check_cancel(c: Arc<dyn Connection>, db: &str, slow: &str) {
+    let started = std::time::Instant::now();
+    let runner = {
+        let (c, db, slow) = (c.clone(), db.to_string(), slow.to_string());
+        tokio::spawn(async move { c.execute(Some(&db), &slow, 10).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    c.cancel().await.unwrap();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), runner).await.expect("cancel took too long");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(rows(&c, db, "SELECT 1").await, vec![vec![Cell::Text("1".into())]]);
+}
+
 #[tokio::test]
 async fn sqlite() {
     let dir = tempfile::tempdir().unwrap();
@@ -247,6 +263,12 @@ async fn sqlite() {
     cfg.database = dir.path().join("test.db").to_string_lossy().into_owned();
     let c = dbman_drivers::connect(&cfg).await.unwrap();
     check_ddl(c.clone(), "main", "main").await;
+    check_cancel(
+        c.clone(),
+        "main",
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000000000) SELECT count(*) FROM n",
+    )
+    .await;
     check_engine(
         c,
         "main",
@@ -296,6 +318,7 @@ async fn postgres() {
     assert!(objects.iter().any(|o| o.kind == ObjectKind::Sequence && o.path.name == "counter"));
     check_ddl(c.clone(), &db, "dbman_test").await;
     exec(&c, &db, "DROP SCHEMA dbman_test CASCADE").await;
+    check_cancel(c, &db, "SELECT pg_sleep(30)").await;
 }
 
 #[tokio::test]
@@ -332,4 +355,5 @@ async fn mysql() {
     let blob = rows(&c, &db, "SELECT CAST('ab' AS BINARY) AS b, 'x' AS t").await;
     assert_eq!(blob[0][0], Cell::Bytes(b"ab".to_vec()));
     assert_eq!(blob[0][1], Cell::Text("x".into()));
+    check_cancel(c, &db, "SELECT SLEEP(30)").await;
 }

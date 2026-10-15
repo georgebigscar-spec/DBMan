@@ -7,8 +7,9 @@ use dbman_core::{Cell, DbKind, ObjectPath, QueryResult};
 use egui::{RichText, Ui};
 use shadcn_egui::{
     Button, ButtonSize, Column, DataTable, Theme, dropdown_menu, menu_item, menu_label, menu_separator, toast,
-    toast_error,
 };
+
+use crate::files;
 
 pub struct Grid {
     pub result: QueryResult,
@@ -78,14 +79,9 @@ pub fn export_menu(ui: &mut Ui, result: &QueryResult, kind: DbKind, table: Optio
         for f in Format::ALL {
             if menu_item(ui, &format!("{}…", f.label()), None).clicked() {
                 let name = format!("{}.{}", table.map_or("result", |t| t.name.as_str()), f.extension());
-                if let Some(path) =
-                    rfd::FileDialog::new().set_file_name(name).add_filter(f.label(), &[f.extension()]).save_file()
-                {
-                    match std::fs::write(&path, render(f)) {
-                        Ok(()) => toast(ui.ctx(), "Saved", Some(&path.to_string_lossy())),
-                        Err(e) => toast_error(ui.ctx(), "Could not save the file", Some(&e.to_string())),
-                    }
-                }
+                let dialog = rfd::AsyncFileDialog::new().set_file_name(name).add_filter(f.label(), &[f.extension()]);
+                let (result, table) = (result.clone(), table.cloned());
+                files::save_file(ui.ctx(), dialog, move || export(&result, f, Dialect(kind), table.as_ref()));
             }
         }
     });

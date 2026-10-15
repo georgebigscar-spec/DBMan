@@ -61,7 +61,11 @@ pub enum TabEvent {
     },
     /// The console run is over (all statements done or stopped at an error).
     RunFinished,
+    /// A cancel request was sent (`None`) or could not be sent.
+    Cancelled(Option<String>),
     Page {
+        /// Which load this answers; older loads are ignored.
+        seq: u64,
         elapsed: Duration,
         result: DbResult<StatementOutcome>,
     },

@@ -11,11 +11,12 @@ dbman-drivers = { path = "../dbman-drivers" }
 directories = "6.0.0"
 eframe = "0.36.2"
 egui = "0.36.2"
+pollster = "1.0.1"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 shadcn_egui = { git = "https://github.com/georgebigscar-spec/shadcn_egui", rev = "7425c3f3b33934fb7cb087e0e39d34c6ab6f965c" }
-tokio = { version = "1.53.3", features = ["rt-multi-thread"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
