@@ -9,6 +9,7 @@ mod config;
 pub mod ddl;
 pub mod dml;
 mod driver;
+pub mod er;
 mod error;
 pub mod export;
 pub mod import;

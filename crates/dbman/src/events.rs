@@ -87,6 +87,13 @@ pub enum TabEvent {
     /// DDL from the table editor ran.
     Executed(DbResult<usize>),
     Details(DbResult<TableDetails>),
+    /// Tables of a diagram read so far.
+    DiagramProgress {
+        done: usize,
+        total: usize,
+    },
+    /// Every table of a diagram's schema with its structure.
+    Diagram(DbResult<Vec<(dbman_core::ObjectPath, TableDetails)>>),
 }
 
 /// Spawns futures on the runtime and wakes the UI when they finish.

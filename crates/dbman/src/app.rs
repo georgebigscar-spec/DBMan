@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
 use crate::data_view::DataView;
+use crate::er_view::ErView;
 use crate::events::{Event, JobEvent, TabId, Tasks};
 use crate::exec;
 use crate::explorer::{self, Action, ConnState, Load, Node};
@@ -301,6 +302,17 @@ impl DbManApp {
             Action::DeleteConnection(id) => self.confirm_delete = Some(id),
             Action::Backup(id, scope) => self.open_backup(id, Mode::Backup, scope),
             Action::Restore(id, scope) => self.open_backup(id, Mode::Restore, scope),
+            Action::OpenDiagram(id, db, schema) => {
+                let Some(c) = self.conn(id) else { return };
+                let cfg = c.cfg.clone();
+                let existing = self.tabs.iter().find(|t| {
+                    t.conn == id && matches!(&t.kind, TabKind::Diagram(d) if d.database == db && d.schema == schema)
+                });
+                match existing {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::Diagram(Box::new(ErView::new(cfg, db, schema)))),
+                }
+            }
             Action::ExportData(id, source) => {
                 if let Some(c) = self.conn(id) {
                     self.export = Some(ExportDialog::new(id, c.cfg.clone(), source));
@@ -436,6 +448,15 @@ impl DbManApp {
     /// Titles of the open tabs, in order.
     pub fn tab_titles(&self) -> Vec<String> {
         self.tabs.iter().map(Tab::title).collect()
+    }
+
+    /// The diagram tab on screen, if the active tab is one.
+    pub fn active_diagram(&mut self) -> Option<&mut ErView> {
+        let active = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
+            TabKind::Diagram(d) => Some(d.as_mut()),
+            _ => None,
+        }
     }
 
     /// The data tab on screen, if the active tab is one.
@@ -604,6 +625,7 @@ impl DbManApp {
                                     TabKind::Data(_) => Icon::Table,
                                     TabKind::Object(_) => Icon::Info,
                                     TabKind::TableEditor(_) => Icon::Table,
+                                    TabKind::Diagram(_) => Icon::ForeignKey,
                                 };
                                 let color = if active { t.foreground } else { t.muted_foreground };
                                 icons::icon(ui, icon, color);

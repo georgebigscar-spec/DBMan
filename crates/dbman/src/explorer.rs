@@ -139,6 +139,8 @@ pub enum Action {
     Restore(Uuid, Scope),
     ExportData(Uuid, dbman_drivers::transfer::ExportSource),
     ImportData(Uuid, ObjectPath),
+    /// Opens the ER diagram of a schema (database, schema).
+    OpenDiagram(Uuid, String, String),
 }
 
 pub fn kind_color(kind: DbKind) -> Color32 {
@@ -343,6 +345,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
                 }
             } else {
                 new_object_items(ui, c, db, db, actions);
+                if menu_item(ui, "ER diagram", None).clicked() {
+                    actions.push(Action::OpenDiagram(id, db.clone(), db.clone()));
+                }
                 if menu_item(ui, "Refresh", None).clicked() {
                     actions.push(Action::RefreshObjects(id, db.clone(), db.clone()));
                 }
@@ -392,6 +397,9 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
                 actions.push(Action::OpenConsole(id, Some(db.to_string())));
             }
             new_object_items(ui, c, db, s, actions);
+            if menu_item(ui, "ER diagram", None).clicked() {
+                actions.push(Action::OpenDiagram(id, db.to_string(), s.clone()));
+            }
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::RefreshObjects(id, db.to_string(), s.clone()));
             }
