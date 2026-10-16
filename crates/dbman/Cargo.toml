@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 dbman-core = { path = "../dbman-core" }
 dbman-drivers = { path = "../dbman-drivers" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 directories = "6.0.0"
 eframe = "0.36.2"
 egui = "0.36.2"

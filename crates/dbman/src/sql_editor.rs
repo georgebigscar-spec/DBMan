@@ -105,10 +105,15 @@ fn accept(ui: &Ui, id: egui::Id, text: &mut String, range: Range<usize>, insert:
     let range = range.start.min(text.len())..range.end.min(text.len());
     text.replace_range(range.clone(), insert);
     let at = text[..range.start + insert.len()].chars().count();
-    let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+    place_cursor(ui.ctx(), id, at);
+}
+
+/// Focuses an editor with the cursor before character `at`.
+pub fn place_cursor(ctx: &egui::Context, id: egui::Id, at: usize) {
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
     state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(at))));
-    state.store(ui.ctx(), id);
-    ui.memory_mut(|m| m.request_focus(id));
+    state.store(ctx, id);
+    ctx.memory_mut(|m| m.request_focus(id));
 }
 
 fn kind_tag(k: ItemKind) -> &'static str {

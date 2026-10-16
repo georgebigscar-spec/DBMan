@@ -1224,6 +1224,7 @@ dependencies = [
 name = "dbman"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dbman-core",
  "dbman-drivers",
  "directories",

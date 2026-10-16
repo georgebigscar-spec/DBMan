@@ -229,6 +229,12 @@ pub enum Action {
     /// Opens a console in a database with a script in it.
     OpenConsoleWith(Uuid, Option<String>, String),
     StartJob(Box<crate::transfer_dialog::Start>),
+    /// Opens a script file in a new console in a database.
+    OpenScript(Uuid, Option<String>, std::path::PathBuf),
+    /// A script file was opened or saved: it goes first in the recent list.
+    RecentScript(std::path::PathBuf),
+    /// A console ran a statement.
+    RecordQuery(Box<crate::store::HistoryEntry>),
 }
 
 pub fn kind_color(kind: DbKind) -> Color32 {

@@ -21,13 +21,14 @@ use crate::generate_dialog::GenerateDialog;
 use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
-use crate::store::Settings;
+use crate::store::{History, Settings};
 use crate::table_editor::TableEditor;
 use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
 use crate::transfer_dialog::{ExportDialog, ImportDialog, Start, TransferOutcome};
 
 pub struct DbManApp {
     settings: Settings,
+    history: History,
     conns: Vec<ConnState>,
     tasks: Tasks,
     events: Receiver<Event>,
@@ -59,6 +60,7 @@ impl DbManApp {
         let conns = settings.connections.iter().cloned().map(ConnState::new).collect();
         Self {
             settings,
+            history: History::load(),
             conns,
             tasks,
             events,
@@ -287,7 +289,7 @@ impl DbManApp {
                     .find(|t| t.conn == id && matches!(&t.kind, TabKind::Object(o) if o.object == object));
                 match existing {
                     Some(t) => self.active = Some(t.id),
-                    None => self.add_tab(id, TabKind::Object(ObjectView::new(object, kind))),
+                    None => self.add_tab(id, TabKind::Object(Box::new(ObjectView::new(object, kind)))),
                 }
             }
             Action::NewConnection => {
@@ -331,6 +333,25 @@ impl DbManApp {
                 self.add_tab(id, TabKind::Copy(Box::new(CopyView::new(cfg, db, schema, table))));
             }
             Action::OpenConsoleWith(id, db, sql) => self.open_console(id, db, Some(sql)),
+            Action::OpenScript(id, db, path) => match crate::tabs::read_script(&path) {
+                Ok(sql) => {
+                    self.open_console(id, db, None);
+                    if let Some(TabKind::Console(c)) = self.tabs.last_mut().map(|t| &mut t.kind) {
+                        c.set_file(path.clone(), sql);
+                    }
+                    self.handle(Action::RecentScript(path), ctx);
+                }
+                Err(e) => shadcn_egui::toast_error(ctx, tr("Could not open the file"), Some(&e)),
+            },
+            Action::RecentScript(path) => {
+                self.settings.add_recent(path);
+                self.save_settings();
+            }
+            Action::RecordQuery(e) => {
+                if let Err(e) = self.history.add(*e) {
+                    self.status = trf("Could not save the query history: {error}", &[("error", &e)]);
+                }
+            }
             Action::StartJob(job) => self.start_transfer(*job),
             Action::ExportData(id, source) => {
                 if let Some(c) = self.conn(id) {
@@ -423,7 +444,7 @@ impl DbManApp {
         if c.session.is_idle() {
             self.connect(id);
         }
-        self.add_tab(id, TabKind::Console(console));
+        self.add_tab(id, TabKind::Console(Box::new(console)));
     }
 
     fn close_tab(&mut self, id: TabId) {
@@ -547,6 +568,29 @@ impl DbManApp {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// What the first console's history panel lists (tests).
+    pub fn console_history(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .find_map(|t| match &t.kind {
+                TabKind::Console(c) => Some(c.history_shown(&self.history).into_iter().map(String::from).collect()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn recent_scripts(&self) -> &[std::path::PathBuf] {
+        &self.settings.recent_scripts
+    }
+
+    /// The title, script file and text of the active console (tests).
+    pub fn active_console(&self) -> Option<(String, Option<std::path::PathBuf>, String)> {
+        self.tabs.iter().filter(|t| Some(t.id) == self.active).find_map(|t| match &t.kind {
+            TabKind::Console(c) => Some((c.title(), c.file.clone(), c.sql.clone())),
+            _ => None,
+        })
     }
 
     pub fn console_summaries(&self) -> Vec<String> {
@@ -684,7 +728,16 @@ impl DbManApp {
             let conn_id = tab.conn;
             tab.ui(
                 ui,
-                TabCtx { tasks: &self.tasks, conn, actions: &mut actions, page_size, conn_id, conns: &self.conns },
+                TabCtx {
+                    tasks: &self.tasks,
+                    conn,
+                    actions: &mut actions,
+                    page_size,
+                    conn_id,
+                    conns: &self.conns,
+                    history: &self.history,
+                    recent_scripts: &self.settings.recent_scripts,
+                },
             );
         });
 
