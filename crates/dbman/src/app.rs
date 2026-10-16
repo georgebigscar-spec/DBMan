@@ -635,6 +635,14 @@ impl DbManApp {
         })
     }
 
+    /// What the active console's value panel shows ("JSON"…), if it is open (tests).
+    pub fn console_value_kind(&self) -> Option<String> {
+        self.tabs.iter().filter(|t| Some(t.id) == self.active).find_map(|t| match &t.kind {
+            TabKind::Console(c) if c.value.open => Some(c.value.kind.clone()),
+            _ => None,
+        })
+    }
+
     pub fn console_summaries(&self) -> Vec<String> {
         self.tabs
             .iter()

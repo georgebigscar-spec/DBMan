@@ -23,6 +23,7 @@ pub mod infer;
 mod result;
 mod schema;
 pub mod sql;
+pub mod value;
 pub mod xlsx;
 
 pub use config::{ConnectionConfig, DbKind, SshAuth, SshTunnel, SslMode};

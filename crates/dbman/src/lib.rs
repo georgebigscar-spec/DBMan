@@ -25,3 +25,4 @@ pub mod table_editor;
 pub mod tabs;
 pub mod target_picker;
 pub mod transfer_dialog;
+pub mod value_panel;

@@ -349,6 +349,31 @@ fn browse_sqlite_database() {
     assert!(saved.starts_with("SELECT 1;") && saved.contains("SELECT 2;"), "{saved}");
     assert_eq!(h.state().recent_scripts(), [script]);
 
+    // The value panel shows the clicked cell whole: JSON indented, an image drawn.
+    let png = "89504E470D0A1A0A0000000D4948445200000004000000040802000000269309290000001449444154789C63F8CFC0C0D0F01F423210C7010000B213F18E391A340000000049454E44AE426082";
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().focus();
+    h.run_steps(2);
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .last()
+        .unwrap()
+        .type_text(&format!("\nSELECT '{{\"id\":7,\"tags\":[\"a\",\"b\"]}}' AS doc, X'{png}' AS picture;"));
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    // The last node is the cell's label; the first is the whole row.
+    h.get_all_by_label(r#"{"id":7,"tags":["a","b"]}"#).last().unwrap().click();
+    settle(&mut h);
+    click(&mut h, "Value");
+    assert_eq!(h.state().console_value_kind().as_deref(), Some("JSON"));
+    let bytes: Vec<u8> = (0..png.len()).step_by(2).map(|i| u8::from_str_radix(&png[i..i + 2], 16).unwrap()).collect();
+    h.get_all_by_label(&Cell::Bytes(bytes).display()).last().unwrap().click();
+    settle(&mut h);
+    assert_eq!(h.state().console_value_kind().as_deref(), Some("PNG image"));
+    assert!(h.query_by_label("4 × 4").is_some(), "the image is decoded");
+    snapshot(&mut h, "value_panel");
+    click(&mut h, "Value");
+    assert_eq!(h.state().console_value_kind(), None);
+
     // Manual commit: the run opens a transaction that Rollback undoes.
     let orders_count =
         |c: &rusqlite::Connection| c.query_row("SELECT count(*) FROM orders", [], |r| r.get::<_, i64>(0)).unwrap();
