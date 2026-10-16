@@ -574,109 +574,101 @@ impl DataView {
                 if c.numeric { col.right() } else { col }
             })
             .collect();
-        let width = (result.columns.len() as f32 * grid::MIN_COLUMN_WIDTH + if editable { 40.0 } else { 0.0 })
-            .max(ui.available_width());
         let height = (ui.available_height() - 110.0).max(120.0);
         let display = &self.display;
         let selected = &mut self.selected;
-        egui::ScrollArea::horizontal().id_salt(id.with("h")).auto_shrink([false, true]).show(ui, |ui| {
-            ui.set_width(width);
-            let mut table = DataTable::new(id, columns)
-                .filter(tr("Filter rows..."))
-                .max_height(height)
-                .row_height(30.0)
-                .version(self.version)
-                .cell_ui(|ui, row, col| {
-                    let cell_rect = ui.max_rect().expand2(egui::vec2(12.0, 0.0));
-                    if let Some(e) = editing.as_mut().filter(|e| e.row == row && e.col == col) {
-                        let te = ui.add(
-                            egui::TextEdit::singleline(&mut e.text)
-                                .id(id.with(("edit", row, col)))
-                                .desired_width(cell_rect.width() - 8.0)
-                                .font(egui::TextStyle::Body),
-                        );
-                        if !e.focused {
-                            te.request_focus();
-                            e.focused = true;
-                        } else if te.lost_focus() {
-                            let cancel = ui.input(|i| i.key_pressed(Key::Escape));
-                            cmds.push(if cancel { GridCmd::Cancel } else { GridCmd::Commit });
+        let mut table = DataTable::new(id, columns)
+            .filter(tr("Filter rows..."))
+            .min_column_width(grid::MIN_COLUMN_WIDTH)
+            .resizable()
+            .max_height(height)
+            .row_height(30.0)
+            .version(self.version)
+            .cell_ui(|ui, row, col| {
+                let cell_rect = ui.max_rect().expand2(egui::vec2(12.0, 0.0));
+                if let Some(e) = editing.as_mut().filter(|e| e.row == row && e.col == col) {
+                    let te = ui.add(
+                        egui::TextEdit::singleline(&mut e.text)
+                            .id(id.with(("edit", row, col)))
+                            .desired_width(cell_rect.width() - 8.0)
+                            .font(egui::TextStyle::Body),
+                    );
+                    if !e.focused {
+                        te.request_focus();
+                        e.focused = true;
+                    } else if te.lost_focus() {
+                        let cancel = ui.input(|i| i.key_pressed(Key::Escape));
+                        cmds.push(if cancel { GridCmd::Cancel } else { GridCmd::Commit });
+                    }
+                    return true;
+                }
+                let is_new = row >= base;
+                let deleted = edits.deleted.contains(&row);
+                let changed = !is_new && edits.changed.contains_key(&(row, col));
+                let value: Option<&Cell> = if is_new {
+                    edits.inserted.get(row - base).and_then(|r| r[col].as_ref())
+                } else {
+                    edits.changed.get(&(row, col)).or_else(|| result.rows.get(row).and_then(|r| r.get(col)))
+                };
+                let bg = if deleted {
+                    Some(deleted_bg)
+                } else if is_new {
+                    Some(new_bg)
+                } else if changed {
+                    Some(changed_bg)
+                } else {
+                    None
+                };
+                if let Some(bg) = bg {
+                    ui.painter().rect_filled(cell_rect, 0.0, bg);
+                }
+                let r = ui.interact(cell_rect, id.with(("cell", row, col)), Sense::click());
+                let text = match value {
+                    None if is_new => RichText::new(tr("<default>")).italics().color(t.muted_foreground),
+                    None | Some(Cell::Null) => RichText::new("NULL").italics().color(t.muted_foreground),
+                    Some(v) => RichText::new(
+                        display.get(row).and_then(|d| d.get(col)).cloned().unwrap_or_else(|| v.display().into_owned()),
+                    )
+                    .color(t.foreground),
+                };
+                let text = if deleted { text.strikethrough() } else { text };
+                ui.add(egui::Label::new(text).truncate().selectable(false));
+                if editable && !deleted && r.double_clicked() {
+                    cmds.push(GridCmd::StartEdit(row, col));
+                }
+                r.context_menu(|ui| {
+                    ui.set_min_width(180.0);
+                    if let Some(v) = value.and_then(|v| v.as_text())
+                        && menu_item(ui, tr("Copy value"), None).clicked()
+                    {
+                        cmds.push(GridCmd::Copy(v.into_owned()));
+                    }
+                    if editable && !deleted {
+                        menu_separator(ui);
+                        if menu_item(ui, tr("Edit"), None).clicked() {
+                            cmds.push(GridCmd::StartEdit(row, col));
                         }
-                        return true;
-                    }
-                    let is_new = row >= base;
-                    let deleted = edits.deleted.contains(&row);
-                    let changed = !is_new && edits.changed.contains_key(&(row, col));
-                    let value: Option<&Cell> = if is_new {
-                        edits.inserted.get(row - base).and_then(|r| r[col].as_ref())
-                    } else {
-                        edits.changed.get(&(row, col)).or_else(|| result.rows.get(row).and_then(|r| r.get(col)))
-                    };
-                    let bg = if deleted {
-                        Some(deleted_bg)
-                    } else if is_new {
-                        Some(new_bg)
-                    } else if changed {
-                        Some(changed_bg)
-                    } else {
-                        None
-                    };
-                    if let Some(bg) = bg {
-                        ui.painter().rect_filled(cell_rect, 0.0, bg);
-                    }
-                    let r = ui.interact(cell_rect, id.with(("cell", row, col)), Sense::click());
-                    let text = match value {
-                        None if is_new => RichText::new(tr("<default>")).italics().color(t.muted_foreground),
-                        None | Some(Cell::Null) => RichText::new("NULL").italics().color(t.muted_foreground),
-                        Some(v) => RichText::new(
-                            display
-                                .get(row)
-                                .and_then(|d| d.get(col))
-                                .cloned()
-                                .unwrap_or_else(|| v.display().into_owned()),
-                        )
-                        .color(t.foreground),
-                    };
-                    let text = if deleted { text.strikethrough() } else { text };
-                    ui.add(egui::Label::new(text).truncate().selectable(false));
-                    if editable && !deleted && r.double_clicked() {
-                        cmds.push(GridCmd::StartEdit(row, col));
-                    }
-                    r.context_menu(|ui| {
-                        ui.set_min_width(180.0);
-                        if let Some(v) = value.and_then(|v| v.as_text())
-                            && menu_item(ui, tr("Copy value"), None).clicked()
+                        if menu_item(ui, tr("Set NULL"), None).clicked() {
+                            cmds.push(GridCmd::SetNull(row, col));
+                        }
+                        if (changed || (is_new && value.is_some())) && menu_item(ui, tr("Revert cell"), None).clicked()
                         {
-                            cmds.push(GridCmd::Copy(v.into_owned()));
+                            cmds.push(GridCmd::Revert(row, col));
                         }
-                        if editable && !deleted {
-                            menu_separator(ui);
-                            if menu_item(ui, tr("Edit"), None).clicked() {
-                                cmds.push(GridCmd::StartEdit(row, col));
-                            }
-                            if menu_item(ui, tr("Set NULL"), None).clicked() {
-                                cmds.push(GridCmd::SetNull(row, col));
-                            }
-                            if (changed || (is_new && value.is_some()))
-                                && menu_item(ui, tr("Revert cell"), None).clicked()
-                            {
-                                cmds.push(GridCmd::Revert(row, col));
-                            }
+                    }
+                    if editable {
+                        let label = if deleted { tr("Restore row") } else { tr("Delete row") };
+                        if menu_item(ui, label, None).clicked() {
+                            cmds.push(GridCmd::Delete(row));
                         }
-                        if editable {
-                            let label = if deleted { tr("Restore row") } else { tr("Delete row") };
-                            if menu_item(ui, label, None).clicked() {
-                                cmds.push(GridCmd::Delete(row));
-                            }
-                        }
-                    });
-                    true
+                    }
                 });
-            if editable {
-                table = table.selection(selected);
-            }
-            table.show(ui, display);
-        });
+                true
+            });
+        if editable {
+            table = table.selection(selected);
+        }
+        table.show(ui, display);
         self.editing = editing;
         for c in cmds {
             self.apply(c, &ctx);
