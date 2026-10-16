@@ -17,10 +17,11 @@ use shadcn_egui::{
 
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::exec;
-use crate::explorer::{ConnState, Load};
+use crate::explorer::{Action, ConnState, Load};
 use crate::grid;
 use crate::sql_editor;
 use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, toolbar_button};
+use dbman_drivers::transfer::ExportSource;
 use tokio::sync::OnceCell;
 
 /// Pending changes to the rows on screen.
@@ -150,6 +151,23 @@ impl DataView {
             }
             _ => {}
         }
+    }
+
+    /// The whole table, or the rows the filter and ordering select.
+    fn export_source(&self) -> ExportSource {
+        let path = &self.object.path;
+        if self.filter.trim().is_empty() && self.order_by.trim().is_empty() {
+            return ExportSource::Table(path.clone());
+        }
+        let d = Dialect(self.kind);
+        let mut sql = format!("SELECT * FROM {}", d.qualified(path));
+        if !self.filter.trim().is_empty() {
+            sql.push_str(&format!(" WHERE {}", self.filter.trim()));
+        }
+        if !self.order_by.trim().is_empty() {
+            sql.push_str(&format!(" ORDER BY {}", self.order_by.trim()));
+        }
+        ExportSource::Query { database: Some(path.database.clone()).filter(|d| !d.is_empty()), sql }
     }
 
     /// Rows can be edited in tables whose structure is known. ClickHouse has
@@ -427,8 +445,10 @@ impl DataView {
                 self.page = 0;
                 reload = true;
             }
-            if let Some(r) = self.rows.ready() {
-                grid::export_menu(ui, r, self.kind, Some(&self.object.path));
+            if let Some(r) = self.rows.ready()
+                && grid::export_menu(ui, r, self.kind, Some(&self.object.path), true)
+            {
+                cx.actions.push(Action::ExportData(cx.conn_id, self.export_source()));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(&self.summary).color(t.muted_foreground));

@@ -19,6 +19,7 @@ use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::store::Settings;
 use crate::table_editor::TableEditor;
 use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
+use crate::transfer_dialog::{ExportDialog, ImportDialog, Start, TransferOutcome};
 
 pub struct DbManApp {
     settings: Settings,
@@ -33,6 +34,8 @@ pub struct DbManApp {
     confirm_delete: Option<Uuid>,
     prompt: Option<Prompt>,
     backup: Option<BackupDialog>,
+    export: Option<ExportDialog>,
+    import: Option<ImportDialog>,
     pub jobs: Jobs,
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
@@ -60,6 +63,8 @@ impl DbManApp {
             confirm_delete: None,
             prompt: None,
             backup: None,
+            export: None,
+            import: None,
             jobs: Jobs::default(),
             status: "Ready".into(),
             runtime: Some(runtime),
@@ -296,6 +301,21 @@ impl DbManApp {
             Action::DeleteConnection(id) => self.confirm_delete = Some(id),
             Action::Backup(id, scope) => self.open_backup(id, Mode::Backup, scope),
             Action::Restore(id, scope) => self.open_backup(id, Mode::Restore, scope),
+            Action::ExportData(id, source) => {
+                if let Some(c) = self.conn(id) {
+                    self.export = Some(ExportDialog::new(id, c.cfg.clone(), source));
+                }
+            }
+            Action::ImportData(id, path) => {
+                let Some(c) = self.conn(id) else { return };
+                let mut dialog = ImportDialog::new(id, c.cfg.clone(), path.clone());
+                match c.details.get(&path) {
+                    Some(Load::Ready(d)) => dialog.set_details(d.clone()),
+                    Some(Load::Loading) => {}
+                    _ => self.handle(Action::LoadDetails(id, path), ctx),
+                }
+                self.import = Some(dialog);
+            }
             Action::CopyText(text) => {
                 ctx.copy_text(text.clone());
                 toast(ctx, "Copied", Some(&text));
@@ -386,6 +406,22 @@ impl DbManApp {
         from_tree
             .or_else(|| self.active.and_then(|a| self.tabs.iter().find(|t| t.id == a)).map(|t| t.conn))
             .or_else(|| self.conns.first().map(|c| c.cfg.id))
+    }
+
+    fn start_transfer(&mut self, job: Start) {
+        let Start { title, spec, output, refresh } = job;
+        self.jobs.start(&self.tasks, title.clone(), spec, output, refresh);
+        self.status = format!("{title}…");
+    }
+
+    /// The open export dialog.
+    pub fn export_dialog(&mut self) -> Option<&mut ExportDialog> {
+        self.export.as_mut()
+    }
+
+    /// The open import dialog.
+    pub fn import_dialog(&mut self) -> Option<&mut ImportDialog> {
+        self.import.as_mut()
     }
 
     pub fn backup_dialog_open(&self) -> bool {
@@ -692,6 +728,32 @@ impl DbManApp {
                     self.jobs.start(&self.tasks, title.clone(), spec, output, refresh);
                     self.status = format!("{title}…");
                     self.backup = None;
+                }
+                None => {}
+            }
+        }
+        if let Some(d) = &mut self.export {
+            match d.show(ctx) {
+                Some(TransferOutcome::Close) => self.export = None,
+                Some(TransferOutcome::Start(job)) => {
+                    self.start_transfer(*job);
+                    self.export = None;
+                }
+                None => {}
+            }
+        }
+        if let Some(d) = &mut self.import {
+            if d.needs_details()
+                && let Some(Load::Ready(details)) =
+                    self.conns.iter().find(|c| c.cfg.id == d.conn()).and_then(|c| c.details.get(d.table()))
+            {
+                d.set_details(details.clone());
+            }
+            match d.show(ctx) {
+                Some(TransferOutcome::Close) => self.import = None,
+                Some(TransferOutcome::Start(job)) => {
+                    self.start_transfer(*job);
+                    self.import = None;
                 }
                 None => {}
             }

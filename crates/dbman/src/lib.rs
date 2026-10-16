@@ -17,3 +17,4 @@ pub mod sql_editor;
 pub mod store;
 pub mod table_editor;
 pub mod tabs;
+pub mod transfer_dialog;

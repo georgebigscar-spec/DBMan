@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use dbman_core::sql::{split_statements, statement_at};
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
+use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, tabs};
 
@@ -345,10 +346,10 @@ impl Console {
             });
 
         ui.add_space(8.0);
-        self.results(ui, tab);
+        self.results(ui, tab, cx.actions, cx.conn_id);
     }
 
-    fn results(&mut self, ui: &mut Ui, tab: TabId) {
+    fn results(&mut self, ui: &mut Ui, tab: TabId, actions: &mut Vec<Action>, conn: uuid::Uuid) {
         let t = Theme::get(ui.ctx());
         if self.outputs.is_empty() {
             if !self.running {
@@ -380,7 +381,12 @@ impl Console {
             error_alert(ui, if o.summary == "cancelled" { "Statement cancelled" } else { "Statement failed" }, e);
         }
         if let Some(g) = &o.grid {
-            ui.horizontal(|ui| grid::export_menu(ui, &g.result, self.cfg.kind, None));
+            ui.horizontal(|ui| {
+                if grid::export_menu(ui, &g.result, self.cfg.kind, None, true) {
+                    let source = ExportSource::Query { database: self.database.clone(), sql: o.sql.clone() };
+                    actions.push(Action::ExportData(conn, source));
+                }
+            });
             ui.add_space(4.0);
             g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output)));
         }

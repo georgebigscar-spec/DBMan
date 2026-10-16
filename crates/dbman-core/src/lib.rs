@@ -11,6 +11,7 @@ pub mod dml;
 mod driver;
 mod error;
 pub mod export;
+pub mod import;
 mod result;
 mod schema;
 pub mod sql;
