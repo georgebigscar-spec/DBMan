@@ -31,17 +31,9 @@ pub struct Ctx<'a> {
     pub dark: bool,
 }
 
-const ID: &str = "command-palette";
-
 pub fn show(ctx: &egui::Context, open: &mut bool, cx: Ctx<'_>) -> Option<Pick> {
-    // `show_dialog` resets the search under a re-hashed id, so the last query
-    // would come back next time; clear it here while the palette is closed.
-    if !*open {
-        Command::reset(ctx, ID);
-        return None;
-    }
     let mut pick = None;
-    Command::new(ID)
+    Command::new("command-palette")
         .placeholder(tr("Search tables, tabs and commands…"))
         .empty(tr("Nothing found."))
         .max_height(360.0)
