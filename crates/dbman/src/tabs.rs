@@ -5,20 +5,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use dbman_core::sql::{split_statements, statement_at};
+use dbman_core::sql::{self, split_statements, statement_at};
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
 use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{
-    Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, dropdown_menu, menu_item, menu_label,
-    menu_separator, tabs, toast, toast_error,
+    Alert, Badge, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, dropdown_menu, menu_item,
+    menu_label, menu_separator, tabs, toast, toast_error,
 };
 
 use crate::compare_view::CompareView;
 use crate::copy_view::CopyView;
 use crate::data_view::DataView;
 use crate::er_view::ErView;
-use crate::events::{Event, TabEvent, TabId, Tasks, timed};
+use crate::events::{Event, EventSender, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
 use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
@@ -133,10 +133,16 @@ pub struct Output {
 }
 
 /// Work a console starts once its session is open.
+/// The statements of a console run, after the one that opens a transaction, if any.
+struct Batch {
+    begin: Option<String>,
+    stmts: Vec<String>,
+}
+
 enum Queued {
-    Run(Vec<String>),
+    Run(Batch),
     /// The plan of a statement, measured or not.
-    Explain(String, bool),
+    Explain(String, bool, Option<String>),
 }
 
 /// A SQL console with its own session (own transaction state), like DataGrip's.
@@ -165,6 +171,10 @@ pub struct Console {
     pending_save: Option<PendingPath>,
     pub show_history: bool,
     history_search: String,
+    /// Statements wait for Commit instead of committing on their own.
+    pub manual: bool,
+    /// A transaction is open in the session.
+    pub in_tx: bool,
 }
 
 impl Console {
@@ -189,6 +199,8 @@ impl Console {
             pending_save: None,
             show_history: false,
             history_search: String::new(),
+            manual: false,
+            in_tx: false,
         }
     }
 
@@ -316,6 +328,7 @@ impl Console {
         match ev {
             TabEvent::Session(r) => {
                 self.session = Load::from_result(r);
+                self.in_tx = false;
                 if let Load::Failed(e) = &self.session {
                     self.running = false;
                     self.started = None;
@@ -330,7 +343,13 @@ impl Console {
                     }];
                 }
             }
+            TabEvent::Transaction(open) => self.in_tx = open,
             TabEvent::Statement { sql, elapsed, result } => {
+                if result.is_ok()
+                    && let Some(open) = sql::transaction_effect(self.cfg.kind, &sql)
+                {
+                    self.in_tx = open;
+                }
                 let (summary, cancelled, error, grid) = match result {
                     Ok(outcome) => {
                         let summary = outcome_summary(&outcome, elapsed);
@@ -419,6 +438,32 @@ impl Console {
 
     fn run(&mut self, tasks: &Tasks, tab: TabId, all: bool, max_rows: usize) {
         let stmts = self.statements_to_run(all);
+        let begin = self.begin();
+        self.start_run(tasks, tab, stmts, begin, max_rows);
+    }
+
+    /// The statement to open a transaction with before the next run, in manual mode.
+    fn begin(&self) -> Option<String> {
+        if self.manual && !self.in_tx { sql::begin_statement(self.cfg.kind).map(str::to_string) } else { None }
+    }
+
+    /// Commits or rolls back the open transaction.
+    pub fn finish(&mut self, tasks: &Tasks, tab: TabId, commit: bool, max_rows: usize) {
+        let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+        self.start_run(tasks, tab, vec![sql.to_string()], None, max_rows);
+    }
+
+    /// Rolls back an open transaction before the console closes.
+    pub fn roll_back_on_close(&self, tasks: &Tasks) {
+        if let (true, Load::Ready(s)) = (self.in_tx, &self.session) {
+            let (s, db) = (s.clone(), self.database.clone());
+            tasks.runtime().spawn(async move {
+                let _ = s.execute(db.as_deref(), "ROLLBACK", 0).await;
+            });
+        }
+    }
+
+    fn start_run(&mut self, tasks: &Tasks, tab: TabId, stmts: Vec<String>, begin: Option<String>, max_rows: usize) {
         if stmts.is_empty() || self.running {
             return;
         }
@@ -428,12 +473,18 @@ impl Console {
         self.started = Some(Instant::now());
         self.stop = Arc::new(AtomicBool::new(false));
         match &self.session {
-            Load::Ready(s) => {
-                spawn_run(tasks, tab, s.clone(), self.database.clone(), stmts, max_rows, self.stop.clone())
-            }
-            Load::Loading => self.queued = Some(Queued::Run(stmts)),
+            Load::Ready(s) => spawn_run(
+                tasks,
+                tab,
+                s.clone(),
+                self.database.clone(),
+                Batch { begin, stmts },
+                max_rows,
+                self.stop.clone(),
+            ),
+            Load::Loading => self.queued = Some(Queued::Run(Batch { begin, stmts })),
             Load::Idle | Load::Failed(_) => {
-                self.queued = Some(Queued::Run(stmts));
+                self.queued = Some(Queued::Run(Batch { begin, stmts }));
                 self.open_session(tasks, tab);
             }
         }
@@ -445,16 +496,20 @@ impl Console {
         if self.running {
             return;
         }
+        // An analyzed plan runs the statement, so in manual mode it waits for Commit too.
+        let begin = if analyze { self.begin() } else { None };
         self.outputs.clear();
         self.shown_output = 0;
         self.running = true;
         self.started = Some(Instant::now());
         self.stop = Arc::new(AtomicBool::new(false));
         match &self.session {
-            Load::Ready(s) => spawn_explain(tasks, tab, s.clone(), self.database.clone(), self.cfg.kind, sql, analyze),
-            Load::Loading => self.queued = Some(Queued::Explain(sql, analyze)),
+            Load::Ready(s) => {
+                spawn_explain(tasks, tab, s.clone(), self.database.clone(), self.cfg.kind, sql, analyze, begin)
+            }
+            Load::Loading => self.queued = Some(Queued::Explain(sql, analyze, begin)),
             Load::Idle | Load::Failed(_) => {
-                self.queued = Some(Queued::Explain(sql, analyze));
+                self.queued = Some(Queued::Explain(sql, analyze, begin));
                 self.open_session(tasks, tab);
             }
         }
@@ -503,8 +558,10 @@ impl Console {
         if let (Load::Ready(s), Some(work)) = (&self.session, self.queued.take()) {
             let (s, db) = (s.clone(), self.database.clone());
             match work {
-                Queued::Run(stmts) => spawn_run(cx.tasks, tab, s, db, stmts, cx.page_size, self.stop.clone()),
-                Queued::Explain(sql, analyze) => spawn_explain(cx.tasks, tab, s, db, self.cfg.kind, sql, analyze),
+                Queued::Run(batch) => spawn_run(cx.tasks, tab, s, db, batch, cx.page_size, self.stop.clone()),
+                Queued::Explain(sql, analyze, begin) => {
+                    spawn_explain(cx.tasks, tab, s, db, self.cfg.kind, sql, analyze, begin)
+                }
             }
         }
 
@@ -569,6 +626,34 @@ impl Console {
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
                 }
             }
+            if sql::begin_statement(self.cfg.kind).is_some() {
+                ui.add_space(12.0);
+                let modes = [tr("Auto-commit"), tr("Manual commit")];
+                let mut mode = Some(usize::from(self.manual));
+                ui.add_enabled(!self.in_tx && !self.running, Select::new(&mut mode, &modes).width(150.0)).tooltip(
+                    if self.in_tx {
+                        tr("Commit or roll back the open transaction first")
+                    } else {
+                        tr("Manual: statements wait for Commit, and Rollback undoes them")
+                    },
+                );
+                self.manual = mode == Some(1);
+                if self.in_tx {
+                    ui.add(Badge::new(tr("transaction open")).outline());
+                    let commit = ui
+                        .add_enabled(!self.running, Button::new(tr("Commit")).size(ButtonSize::Sm))
+                        .tooltip(tr("Make the transaction's changes permanent"));
+                    if commit.clicked() {
+                        self.finish(cx.tasks, tab, true, cx.page_size);
+                    }
+                    let rollback = ui
+                        .add_enabled(!self.running, Button::outline(tr("Rollback")).size(ButtonSize::Sm))
+                        .tooltip(tr("Undo the transaction's changes"));
+                    if rollback.clicked() {
+                        self.finish(cx.tasks, tab, false, cx.page_size);
+                    }
+                }
+            }
             if let Some(dbs) = cx.conn.and_then(|c| c.databases.ready())
                 && dbs.len() > 1
             {
@@ -577,7 +662,8 @@ impl Console {
                 let names: Vec<&str> = dbs.iter().map(String::as_str).collect();
                 let mut idx = self.database.as_ref().and_then(|d| dbs.iter().position(|x| x == d));
                 let before = idx;
-                ui.add(Select::new(&mut idx, &names).width(180.0).placeholder(tr("default")));
+                // The transaction belongs to the session of the current database.
+                ui.add_enabled(!self.in_tx, Select::new(&mut idx, &names).width(180.0).placeholder(tr("default")));
                 if idx != before {
                     self.database = idx.map(|i| dbs[i].clone());
                 }
@@ -816,9 +902,13 @@ fn spawn_explain(
     kind: DbKind,
     sql: String,
     analyze: bool,
+    begin: Option<String>,
 ) {
     let tx = tasks.sender();
     tasks.runtime().spawn(async move {
+        if !open_transaction(&tx, tab, &session, database.as_deref(), begin).await {
+            return;
+        }
         let (elapsed, result) = timed(dbman_drivers::explain(&session, database.as_deref(), kind, &sql, analyze)).await;
         tx.send(Event::Tab { tab, event: TabEvent::Plan { sql, elapsed, result } });
         tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
@@ -956,13 +1046,16 @@ fn spawn_run(
     tab: TabId,
     session: Arc<dyn Connection>,
     database: Option<String>,
-    stmts: Vec<String>,
+    batch: Batch,
     max_rows: usize,
     stop: Arc<AtomicBool>,
 ) {
     let tx = tasks.sender();
     tasks.runtime().spawn(async move {
-        for sql in stmts {
+        if !open_transaction(&tx, tab, &session, database.as_deref(), batch.begin).await {
+            return;
+        }
+        for sql in batch.stmts {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
@@ -975,6 +1068,25 @@ fn spawn_run(
         }
         tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
     });
+}
+
+/// Runs `begin`, if any, before a console run; on failure the run is over.
+async fn open_transaction(
+    tx: &EventSender,
+    tab: TabId,
+    session: &Arc<dyn Connection>,
+    database: Option<&str>,
+    begin: Option<String>,
+) -> bool {
+    let Some(sql) = begin else { return true };
+    let (elapsed, result) = timed(session.execute(database, &sql, 0)).await;
+    let ok = result.is_ok();
+    tx.send(Event::Tab { tab, event: TabEvent::Transaction(ok) });
+    if !ok {
+        tx.send(Event::Tab { tab, event: TabEvent::Statement { sql, elapsed, result } });
+        tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
+    }
+    ok
 }
 
 /// "0.4 s", "12 s", "3 min 05 s" for the running-query timer.

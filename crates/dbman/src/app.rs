@@ -40,6 +40,8 @@ pub struct DbManApp {
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<Uuid>,
     prompt: Option<Prompt>,
+    /// A console with an open transaction waiting for Close to be confirmed.
+    closing: Option<TabId>,
     backup: Option<BackupDialog>,
     export: Option<ExportDialog>,
     import: Option<ImportDialog>,
@@ -77,6 +79,7 @@ impl DbManApp {
             dialog: None,
             confirm_delete: None,
             prompt: None,
+            closing: None,
             backup: None,
             export: None,
             import: None,
@@ -457,7 +460,18 @@ impl DbManApp {
     }
 
     fn close_tab(&mut self, id: TabId) {
+        let open_tx = self.tabs.iter().any(|t| t.id == id && matches!(&t.kind, TabKind::Console(c) if c.in_tx));
+        if open_tx && self.closing != Some(id) {
+            self.closing = Some(id);
+            return;
+        }
+        if self.closing == Some(id) {
+            self.closing = None;
+        }
         if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+            if let TabKind::Console(c) = &self.tabs[i].kind {
+                c.roll_back_on_close(&self.tasks);
+            }
             self.tabs.remove(i);
             if self.active == Some(id) {
                 self.active = self.tabs.get(i.min(self.tabs.len().saturating_sub(1))).map(|t| t.id);
@@ -609,6 +623,14 @@ impl DbManApp {
     pub fn active_console(&self) -> Option<(String, Option<std::path::PathBuf>, String)> {
         self.tabs.iter().filter(|t| Some(t.id) == self.active).find_map(|t| match &t.kind {
             TabKind::Console(c) => Some((c.title(), c.file.clone(), c.sql.clone())),
+            _ => None,
+        })
+    }
+
+    /// Whether the active console has a transaction open (tests).
+    pub fn console_in_tx(&self) -> Option<bool> {
+        self.tabs.iter().filter(|t| Some(t.id) == self.active).find_map(|t| match &t.kind {
+            TabKind::Console(c) => Some(c.in_tx),
             _ => None,
         })
     }
@@ -935,6 +957,21 @@ impl DbManApp {
                     self.dialog = None;
                     self.save_settings();
                 }
+                None => {}
+            }
+        }
+        if let Some(id) = self.closing {
+            let description =
+                tr("Its transaction is still open. Closing rolls back the changes that were not committed.");
+            match shadcn_egui::alert_dialog(
+                ctx,
+                "close-open-tx",
+                tr("Close the console?"),
+                description,
+                tr("Roll back and close"),
+            ) {
+                Some(true) => self.close_tab(id),
+                Some(false) => self.closing = None,
                 None => {}
             }
         }
