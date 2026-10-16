@@ -26,6 +26,7 @@ use crate::i18n::{tr, trf};
 use crate::sql_editor;
 use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
+use dbman_core::explain::{self, Plan, PlanNode};
 
 pub struct Tab {
     pub id: TabId,
@@ -128,6 +129,14 @@ pub struct Output {
     pub cancelled: bool,
     pub error: Option<String>,
     pub grid: Option<Grid>,
+    pub plan: Option<Plan>,
+}
+
+/// Work a console starts once its session is open.
+enum Queued {
+    Run(Vec<String>),
+    /// The plan of a statement, measured or not.
+    Explain(String, bool),
 }
 
 /// A SQL console with its own session (own transaction state), like DataGrip's.
@@ -146,7 +155,7 @@ pub struct Console {
     shown_output: usize,
     selection: Option<std::ops::Range<usize>>,
     /// Statements to run once the session is open.
-    queued: Option<Vec<String>>,
+    queued: Option<Queued>,
     autocomplete: sql_editor::Autocomplete,
     /// The script file the console was opened from or saved to.
     pub file: Option<PathBuf>,
@@ -268,6 +277,13 @@ impl Console {
         sql_editor::place_cursor(ctx, editor_id, self.sql.chars().count());
     }
 
+    /// The shown plan's steps, indented by depth (tests).
+    pub fn plan_outline(&self) -> Vec<String> {
+        let plan = self.outputs.get(self.shown_output).and_then(|o| o.plan.as_ref());
+        plan.map(|p| p.rows().into_iter().map(|(d, n)| format!("{}{}", "  ".repeat(d), n.operation)).collect())
+            .unwrap_or_default()
+    }
+
     /// The history panel's statements (tests).
     pub fn history_shown<'a>(&self, history: &'a History) -> Vec<&'a str> {
         history.find(self.cfg.id, &self.history_search).take(HISTORY_SHOWN).map(|e| e.sql.as_str()).collect()
@@ -297,6 +313,7 @@ impl Console {
                         cancelled: false,
                         error: Some(e.clone()),
                         grid: None,
+                        plan: None,
                     }];
                 }
             }
@@ -328,7 +345,7 @@ impl Console {
                     summary: summary.clone(),
                     ok: error.is_none(),
                 })));
-                self.outputs.push(Output { sql, summary, cancelled, error: error.clone(), grid });
+                self.outputs.push(Output { sql, summary, cancelled, error: error.clone(), grid, plan: None });
                 // Show the newest result set, or the error.
                 if has_grid || error.is_some() {
                     self.shown_output = self.outputs.len() - 1;
@@ -345,7 +362,25 @@ impl Console {
                     cancelled: false,
                     error: Some(e),
                     grid: None,
+                    plan: None,
                 });
+                self.shown_output = self.outputs.len() - 1;
+            }
+            TabEvent::Plan { sql, elapsed, result } => {
+                let cancelled = result.is_err() && self.stop.load(Ordering::Relaxed);
+                let (summary, error, plan) = match result {
+                    Ok(p) => {
+                        let steps = p.rows().len();
+                        (
+                            trf("plan, {n} steps, {time}", &[("n", &steps), ("time", &format_elapsed(elapsed))]),
+                            None,
+                            Some(p),
+                        )
+                    }
+                    Err(e) if cancelled => (tr("cancelled").into(), Some(e.message), None),
+                    Err(e) => (tr("failed").into(), Some(e.message), None),
+                };
+                self.outputs.push(Output { sql, summary, cancelled, error, grid: None, plan });
                 self.shown_output = self.outputs.len() - 1;
             }
             _ => {}
@@ -383,9 +418,30 @@ impl Console {
             Load::Ready(s) => {
                 spawn_run(tasks, tab, s.clone(), self.database.clone(), stmts, max_rows, self.stop.clone())
             }
-            Load::Loading => self.queued = Some(stmts),
+            Load::Loading => self.queued = Some(Queued::Run(stmts)),
             Load::Idle | Load::Failed(_) => {
-                self.queued = Some(stmts);
+                self.queued = Some(Queued::Run(stmts));
+                self.open_session(tasks, tab);
+            }
+        }
+    }
+
+    /// Shows the plan of the statement under the cursor (or the selection's first one).
+    fn explain(&mut self, tasks: &Tasks, tab: TabId, analyze: bool) {
+        let Some(sql) = self.statements_to_run(false).into_iter().next() else { return };
+        if self.running {
+            return;
+        }
+        self.outputs.clear();
+        self.shown_output = 0;
+        self.running = true;
+        self.started = Some(Instant::now());
+        self.stop = Arc::new(AtomicBool::new(false));
+        match &self.session {
+            Load::Ready(s) => spawn_explain(tasks, tab, s.clone(), self.database.clone(), self.cfg.kind, sql, analyze),
+            Load::Loading => self.queued = Some(Queued::Explain(sql, analyze)),
+            Load::Idle | Load::Failed(_) => {
+                self.queued = Some(Queued::Explain(sql, analyze));
                 self.open_session(tasks, tab);
             }
         }
@@ -431,8 +487,12 @@ impl Console {
         if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save(&ctx, cx.actions);
         }
-        if let (Load::Ready(s), Some(stmts)) = (&self.session, self.queued.take()) {
-            spawn_run(cx.tasks, tab, s.clone(), self.database.clone(), stmts, cx.page_size, self.stop.clone());
+        if let (Load::Ready(s), Some(work)) = (&self.session, self.queued.take()) {
+            let (s, db) = (s.clone(), self.database.clone());
+            match work {
+                Queued::Run(stmts) => spawn_run(cx.tasks, tab, s, db, stmts, cx.page_size, self.stop.clone()),
+                Queued::Explain(sql, analyze) => spawn_explain(cx.tasks, tab, s, db, self.cfg.kind, sql, analyze),
+            }
         }
 
         // Ctrl+Enter runs the statement under the cursor (or the selection),
@@ -458,6 +518,20 @@ impl Console {
                 .tooltip(tr("Run every statement (Ctrl+Shift+Enter)"));
             if all.clicked() {
                 self.run(cx.tasks, tab, true, cx.page_size);
+            }
+            let explain = ui
+                .add_enabled(!self.running, Button::outline(tr("Explain")).size(ButtonSize::Sm))
+                .tooltip(tr("Show the plan of the statement under the cursor without running it"));
+            if explain.clicked() {
+                self.explain(cx.tasks, tab, false);
+            }
+            if explain::supports_analyze(self.cfg.kind) {
+                let analyze = ui
+                    .add_enabled(!self.running, Button::outline(tr("Explain analyze")).size(ButtonSize::Sm))
+                    .tooltip(tr("Run the statement and show the plan with the actual times and rows"));
+                if analyze.clicked() {
+                    self.explain(cx.tasks, tab, true);
+                }
             }
             if self.running {
                 if ui
@@ -695,6 +769,9 @@ impl Console {
         if let Some(e) = &o.error {
             error_alert(ui, if o.cancelled { tr("Statement cancelled") } else { tr("Statement failed") }, e);
         }
+        if let Some(p) = &o.plan {
+            plan_view(ui, tab, p);
+        }
         if let Some(g) = &o.grid {
             ui.horizontal(|ui| {
                 if grid::export_menu(ui, &g.result, self.cfg.kind, None, true) {
@@ -706,6 +783,127 @@ impl Console {
             g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output)));
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_explain(
+    tasks: &Tasks,
+    tab: TabId,
+    session: Arc<dyn Connection>,
+    database: Option<String>,
+    kind: DbKind,
+    sql: String,
+    analyze: bool,
+) {
+    let tx = tasks.sender();
+    tasks.runtime().spawn(async move {
+        let (elapsed, result) = timed(dbman_drivers::explain(&session, database.as_deref(), kind, &sql, analyze)).await;
+        tx.send(Event::Tab { tab, event: TabEvent::Plan { sql, elapsed, result } });
+        tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
+    });
+}
+
+/// "1234", "0.25", "1.2e9" for plan numbers.
+fn plan_number(v: f64) -> String {
+    if v.abs() >= 1e9 {
+        format!("{v:.2e}")
+    } else if v.fract() == 0.0 {
+        format!("{v:.0}")
+    } else if v.abs() >= 100.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:.3}").trim_end_matches('0').to_string()
+    }
+}
+
+/// A number of a plan step.
+type Metric = fn(&PlanNode) -> Option<f64>;
+
+/// A plan as an indented tree with its numbers, and a bar for each step's
+/// share of the time (or, without times, of the cost).
+fn plan_view(ui: &mut Ui, tab: TabId, plan: &Plan) {
+    let t = Theme::get(ui.ctx());
+    ui.horizontal(|ui| {
+        if toolbar_button(ui, tr("Copy plan")).clicked() {
+            ui.ctx().copy_text(plan.raw.clone());
+            toast(ui.ctx(), tr("Copied"), None);
+        }
+        for (k, v) in &plan.totals {
+            ui.add_space(8.0);
+            ui.label(RichText::new(format!("{}: {v}", tr(k))).color(t.muted_foreground));
+        }
+    });
+    ui.add_space(4.0);
+    let rows = plan.rows();
+    if rows.is_empty() {
+        ui.label(RichText::new(tr("The engine reports no plan steps for this statement.")).color(t.muted_foreground));
+        return;
+    }
+    let has = |f: Metric| rows.iter().any(|(_, n)| f(n).is_some());
+    let mut columns: Vec<(&str, Metric)> = Vec::new();
+    if has(|n| n.rows) {
+        columns.push((tr("Rows (est.)"), |n| n.rows));
+    }
+    if has(|n| n.cost) {
+        columns.push((tr("Cost"), |n| n.cost));
+    }
+    if has(|n| n.actual_rows) {
+        columns.push((tr("Rows"), |n| n.actual_rows));
+    }
+    if has(|n| n.actual_ms) {
+        columns.push((tr("Time, ms"), |n| n.actual_ms));
+    }
+    let share: Option<Metric> = if has(|n| n.actual_ms) {
+        Some(|n| n.actual_ms)
+    } else if has(|n| n.cost) {
+        Some(|n| n.cost)
+    } else {
+        None
+    };
+    let max = share.map_or(0.0, |f| rows.iter().filter_map(|(_, n)| f(n)).fold(0.0, f64::max));
+
+    egui::ScrollArea::both().id_salt(("console-plan", tab)).auto_shrink([false, false]).show(ui, |ui| {
+        egui::Grid::new(("plan-grid", tab)).spacing([20.0, 8.0]).show(ui, |ui| {
+            ui.label(RichText::new(tr("Step")).strong().color(t.muted_foreground));
+            for (name, _) in &columns {
+                ui.label(RichText::new(*name).strong().color(t.muted_foreground));
+            }
+            if share.is_some() {
+                ui.label("");
+            }
+            ui.end_row();
+            for (depth, n) in &rows {
+                ui.horizontal_top(|ui| {
+                    ui.add_space(*depth as f32 * 18.0);
+                    let glyph = if *depth == 0 { "" } else { "└ " };
+                    ui.vertical(|ui| {
+                        ui.set_max_width(640.0);
+                        let op = RichText::new(format!("{glyph}{}", n.operation)).monospace().color(t.foreground);
+                        ui.label(op);
+                        for d in &n.details {
+                            let indent = if glyph.is_empty() { "" } else { "  " };
+                            let text = RichText::new(format!("{indent}{d}")).size(11.5).color(t.muted_foreground);
+                            ui.add(egui::Label::new(text).wrap());
+                        }
+                    });
+                });
+                for (_, f) in &columns {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ui.label(RichText::new(f(n).map(plan_number).unwrap_or_default()).monospace());
+                    });
+                }
+                if let Some(f) = share {
+                    let frac = f(n).filter(|_| max > 0.0).map_or(0.0, |v| (v / max) as f32);
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(90.0, 8.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, t.muted);
+                    let mut fill = rect;
+                    fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
+                    ui.painter().rect_filled(fill, 3.0, t.primary);
+                }
+                ui.end_row();
+            }
+        });
+    });
 }
 
 /// History entries the panel shows at most.

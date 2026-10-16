@@ -570,6 +570,17 @@ impl DbManApp {
             .unwrap_or_default()
     }
 
+    /// The plan the first console shows (tests).
+    pub fn console_plan(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .find_map(|t| match &t.kind {
+                TabKind::Console(c) => Some(c.plan_outline()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     /// What the first console's history panel lists (tests).
     pub fn console_history(&self) -> Vec<String> {
         self.tabs

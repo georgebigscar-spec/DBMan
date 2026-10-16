@@ -289,6 +289,21 @@ fn browse_sqlite_database() {
     click(&mut h, "History");
     assert!(h.query_by_label("Query history").is_none());
 
+    // The plan of the statement under the cursor (the one just added), without running it.
+    let runs = h.state().console_history().len();
+    click(&mut h, "Explain");
+    for _ in 0..20 {
+        settle(&mut h);
+        if !h.state().console_plan().is_empty() {
+            break;
+        }
+    }
+    let plan = h.state().console_plan();
+    assert!(plan.iter().any(|s| s.trim() == "SCAN c"), "{plan:?}");
+    assert!(plan.iter().any(|s| s.trim().starts_with("SEARCH o") || s.trim().starts_with("SCAN o")), "{plan:?}");
+    assert_eq!(h.state().console_history().len(), runs, "explaining is not a run");
+    snapshot(&mut h, "explain_plan");
+
     // A script file opens in a new console and saves back with Ctrl+S.
     let script = dir.path().join("report.sql");
     std::fs::write(&script, "SELECT 1;\n").unwrap();
