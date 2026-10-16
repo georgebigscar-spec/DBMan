@@ -24,7 +24,7 @@ mod schema;
 pub mod sql;
 pub mod xlsx;
 
-pub use config::{ConnectionConfig, DbKind, SslMode};
+pub use config::{ConnectionConfig, DbKind, SshAuth, SshTunnel, SslMode};
 pub use driver::{Capabilities, Connection};
 pub use error::{DbError, DbResult};
 pub use result::{Cell, ColumnMeta, QueryResult, StatementOutcome};

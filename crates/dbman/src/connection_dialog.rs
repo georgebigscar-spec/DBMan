@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use dbman_core::{ConnectionConfig, DbKind, SslMode};
+use dbman_core::{ConnectionConfig, DbKind, SshAuth, SslMode};
 use egui::{Context, RichText, Ui};
-use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label};
+use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label, tabs};
 
 use crate::explorer::Load;
 use crate::files;
@@ -17,8 +17,21 @@ pub struct ConnectionDialog {
     pub test: Load<String>,
     /// The file dialog of "Browse…", while it is open.
     browsing: Option<files::PendingPath>,
-    /// Whether `browsing` is the save dialog of "Create new…".
-    creating: bool,
+    /// What `browsing` picks.
+    browse: Browse,
+    /// 0: the database, 1: SSH.
+    tab: usize,
+    ssh_port: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Browse {
+    /// An existing database file.
+    Open,
+    /// The save dialog of "Create new…".
+    Create,
+    /// The SSH private key.
+    Key,
 }
 
 pub enum DialogOutcome {
@@ -48,7 +61,8 @@ fn field(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui)) {
 impl ConnectionDialog {
     pub fn new(cfg: ConnectionConfig, is_new: bool) -> Self {
         let port = if cfg.port == 0 { String::new() } else { cfg.port.to_string() };
-        Self { cfg, is_new, port, test: Load::Idle, browsing: None, creating: false }
+        let ssh_port = cfg.ssh.port.to_string();
+        Self { cfg, is_new, port, test: Load::Idle, browsing: None, browse: Browse::Open, tab: 0, ssh_port }
     }
 
     fn config(&self) -> ConnectionConfig {
@@ -56,7 +70,73 @@ impl ConnectionDialog {
         c.port = self.port.trim().parse().unwrap_or_else(|_| c.kind.default_port().unwrap_or(0));
         c.name = c.name.trim().to_string();
         c.host = c.host.trim().to_string();
+        c.ssh.port = self.ssh_port.trim().parse().unwrap_or(22);
+        c.ssh.host = c.ssh.host.trim().to_string();
+        c.ssh.user = c.ssh.user.trim().to_string();
+        c.ssh.key_file = c.ssh.key_file.trim().to_string();
         c
+    }
+
+    fn ssh_tab(&mut self, ui: &mut Ui) {
+        let t = Theme::get(ui.ctx());
+        let full = ui.available_width();
+        ui.add(Checkbox::new(&mut self.cfg.ssh.enabled).label(tr("Connect through an SSH server")));
+        ui.add_enabled_ui(self.cfg.ssh.enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    field(ui, "SSH host", |ui| {
+                        ui.add(
+                            Input::new(&mut self.cfg.ssh.host).placeholder("bastion.example.com").width(full - 130.0),
+                        );
+                    });
+                });
+                ui.vertical(|ui| {
+                    field(ui, "Port", |ui| {
+                        let invalid = self.ssh_port.trim().parse::<u16>().is_err();
+                        ui.add(Input::new(&mut self.ssh_port).width(118.0).invalid(invalid));
+                    });
+                });
+            });
+            field(ui, "SSH user", |ui| {
+                ui.add(Input::new(&mut self.cfg.ssh.user).width(full));
+            });
+            field(ui, "Sign in with", |ui| {
+                let labels = [tr("Password"), tr("Private key file")];
+                let mut idx = Some(if self.cfg.ssh.auth == SshAuth::Key { 1 } else { 0 });
+                ui.add(Select::new(&mut idx, &labels).width(full));
+                self.cfg.ssh.auth = if idx == Some(1) { SshAuth::Key } else { SshAuth::Password };
+            });
+            if self.cfg.ssh.auth == SshAuth::Key {
+                field(ui, "Private key file", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            Input::new(&mut self.cfg.ssh.key_file).placeholder("~/.ssh/id_ed25519").width(full - 110.0),
+                        );
+                        if ui.add_enabled(self.browsing.is_none(), Button::outline(tr("Browse…"))).clicked() {
+                            self.browse = Browse::Key;
+                            self.browsing = Some(files::pick_file(ui.ctx(), rfd::AsyncFileDialog::new()));
+                        }
+                    });
+                });
+                field(ui, "Passphrase", |ui| {
+                    ui.add(Input::new(&mut self.cfg.ssh.password).password().placeholder(tr("(none)")).width(full));
+                });
+            } else {
+                field(ui, "SSH password", |ui| {
+                    ui.add(Input::new(&mut self.cfg.ssh.password).password().width(full));
+                });
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "The database's host and port are reached from the SSH server, so localhost is the SSH \
+                     server itself. The server's host key is remembered on the first connection, and a \
+                     different key later is refused.",
+                ))
+                .size(12.0)
+                .color(t.muted_foreground),
+            );
+        });
     }
 
     /// Points the dialog at a new database file at `path` and tests the
@@ -105,7 +185,25 @@ impl ConnectionDialog {
                         }
                     }
                 });
-                if self.cfg.kind.is_file_based() {
+                // Answers of "Browse…" and "Create new…".
+                if let Some(answer) = self.browsing.as_ref().and_then(files::PendingPath::poll) {
+                    self.browsing = None;
+                    if let Some(p) = answer {
+                        match self.browse {
+                            Browse::Create => outcome = self.create_at(p),
+                            Browse::Open => self.cfg.database = p.to_string_lossy().into_owned(),
+                            Browse::Key => self.cfg.ssh.key_file = p.to_string_lossy().into_owned(),
+                        }
+                    }
+                }
+                if !self.cfg.kind.is_file_based() {
+                    ui.add_space(6.0);
+                    let ssh = if self.cfg.ssh.enabled { tr("SSH (on)") } else { tr("SSH") };
+                    tabs(ui, &mut self.tab, &[tr("General"), ssh]);
+                }
+                if !self.cfg.kind.is_file_based() && self.tab == 1 {
+                    self.ssh_tab(ui);
+                } else if self.cfg.kind.is_file_based() {
                     field(ui, "Database file", |ui| {
                         ui.horizontal(|ui| {
                             ui.add(
@@ -117,16 +215,6 @@ impl ConnectionDialog {
                                     })
                                     .width(full - 230.0),
                             );
-                            if let Some(answer) = self.browsing.as_ref().and_then(files::PendingPath::poll) {
-                                self.browsing = None;
-                                if let Some(p) = answer {
-                                    if self.creating {
-                                        outcome = self.create_at(p);
-                                    } else {
-                                        self.cfg.database = p.to_string_lossy().into_owned();
-                                    }
-                                }
-                            }
                             let (name, exts): (&str, &[&str]) = match self.cfg.kind {
                                 DbKind::DuckDb => ("DuckDB", &["duckdb", "ddb", "db"]),
                                 _ => ("SQLite", &["db", "sqlite", "sqlite3", "db3"]),
@@ -136,7 +224,7 @@ impl ConnectionDialog {
                                 let dialog = rfd::AsyncFileDialog::new()
                                     .add_filter(name, exts)
                                     .add_filter(tr("All files"), &["*"]);
-                                self.creating = false;
+                                self.browse = Browse::Open;
                                 self.browsing = Some(files::pick_file(ui.ctx(), dialog));
                             }
                             if ui.add_enabled(idle, Button::outline(tr("Create new…"))).clicked() {
@@ -144,7 +232,7 @@ impl ConnectionDialog {
                                     .set_title(tr("Create a new database file"))
                                     .set_file_name(format!("database.{}", exts[0]))
                                     .add_filter(name, exts);
-                                self.creating = true;
+                                self.browse = Browse::Create;
                                 self.browsing = Some(files::pick(ui.ctx(), dialog, files::Pick::SaveAs));
                             }
                         });

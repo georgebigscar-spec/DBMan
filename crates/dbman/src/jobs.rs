@@ -26,6 +26,8 @@ pub enum JobSpec {
         program: PathBuf,
         cmd: ToolCommand,
         watch: Option<PathBuf>,
+        /// The connection, when the tool must reach it through its SSH server.
+        via: Option<Box<dbman_core::ConnectionConfig>>,
     },
     SqliteBackup {
         db: PathBuf,
@@ -86,9 +88,17 @@ pub enum JobSpec {
 impl JobSpec {
     async fn run(self, report: runner::Report, cancel: runner::Cancel) -> DbResult<()> {
         match self {
-            JobSpec::Tool { program, cmd, watch } => {
+            JobSpec::Tool { program, mut cmd, watch, via } => {
                 if let Some(v) = runner::tool_version(&program).await {
                     report(Progress::Log(format!("{} ({v})", program.display())));
+                }
+                // Kept open until the tool is done.
+                let mut _tunnel = None;
+                if let Some(cfg) = via {
+                    let (local, t) = dbman_drivers::ssh::route(&cfg).await?;
+                    report(Progress::Log(format!("Through SSH {} on local port {}", cfg.ssh.host, local.port)));
+                    cmd.reroute(&local.host, local.port);
+                    _tunnel = t;
                 }
                 runner::run_tool(&program, &cmd, watch.as_deref(), report, cancel).await
             }

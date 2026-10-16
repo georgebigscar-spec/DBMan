@@ -471,6 +471,7 @@ async fn ms_moves(client: &mut crate::mssql::MsClient, database: &str, path: &st
 /// Runs a SQL Server backup or restore on the server. A second session
 /// reports `percent_complete` and, on cancel, ends the job with `KILL`.
 pub async fn mssql_run(cfg: dbman_core::ConnectionConfig, job: MsJob, report: Report, cancel: Cancel) -> DbResult<()> {
+    let (cfg, _tunnel) = crate::ssh::route(&cfg).await?;
     use dbman_core::backup::{ms_backup, ms_restore};
     let mut client = crate::mssql::open_client(&cfg, Some("master")).await?;
     let spid: i16 = ms_exec(&mut client, "SELECT CAST(@@SPID AS smallint)")
@@ -573,6 +574,7 @@ pub async fn clickhouse_run(
         other => other.to_string(),
     };
     let num = |v: &serde_json::Value| text(v).parse::<u64>().unwrap_or(0);
+    let (cfg, _tunnel) = crate::ssh::route(&cfg).await?;
     let client = Client::new(&cfg)?;
     report(Progress::Log(format!("{shown};")));
     let started = client.rows(&sql, &[]).await?;

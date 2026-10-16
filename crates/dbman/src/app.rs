@@ -57,6 +57,9 @@ impl DbManApp {
     pub fn with_settings(ctx: &egui::Context, runtime: tokio::runtime::Runtime, settings: Settings) -> Self {
         let (tasks, events) = Tasks::new(runtime.handle().clone(), ctx.clone());
         crate::i18n::set(crate::i18n::Lang::from_code(&settings.language));
+        if let Some(path) = Settings::known_hosts_path() {
+            dbman_drivers::ssh::set_known_hosts_file(path);
+        }
         let conns = settings.connections.iter().cloned().map(ConnState::new).collect();
         Self {
             settings,

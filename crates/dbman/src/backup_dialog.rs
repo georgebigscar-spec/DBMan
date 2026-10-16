@@ -254,6 +254,11 @@ impl BackupDialog {
         Ok(JobSpec::ClickHouse { cfg: Box::new(self.cfg.clone()), sql, shown })
     }
 
+    /// The connection, for a tool that must reach it through SSH.
+    fn via(&self) -> Option<Box<ConnectionConfig>> {
+        self.cfg.uses_ssh().then(|| Box::new(self.cfg.clone()))
+    }
+
     /// The job to run, or why it cannot run yet.
     fn job(&self) -> Result<JobSpec, String> {
         if self.kind() == DbKind::ClickHouse {
@@ -272,7 +277,7 @@ impl BackupDialog {
                 o.tables = names(&self.tables_text);
                 o.exclude_data = names(&self.exclude_data_text);
                 let cmd = backup::pg_dump(&self.cfg, db, &o, &path);
-                Ok(JobSpec::Tool { program, cmd, watch: Some(path) })
+                Ok(JobSpec::Tool { program, cmd, watch: Some(path), via: self.via() })
             }
             (DbKind::Postgres, Mode::Restore) => {
                 let format = self.detected.ok_or(tr("Choose an existing dump file or directory."))?;
@@ -282,7 +287,7 @@ impl BackupDialog {
                 o.schemas = names(&self.schemas_text);
                 o.tables = names(&self.tables_text);
                 let cmd = backup::pg_restore(&self.cfg, db, &o, &path, format);
-                Ok(JobSpec::Tool { program, cmd, watch: None })
+                Ok(JobSpec::Tool { program, cmd, watch: None, via: self.via() })
             }
             (DbKind::MySql, Mode::Backup) => {
                 let order: &[Tool] = if self.mariadb {
@@ -294,7 +299,7 @@ impl BackupDialog {
                 let mut o = self.my_dump.clone();
                 o.tables = names(&self.tables_text);
                 let cmd = backup::my_dump(&self.cfg, tool, self.mariadb, db, &o, &path);
-                Ok(JobSpec::Tool { program, cmd, watch: Some(path) })
+                Ok(JobSpec::Tool { program, cmd, watch: Some(path), via: self.via() })
             }
             (DbKind::MySql, Mode::Restore) => {
                 if !path.is_file() {
@@ -304,7 +309,7 @@ impl BackupDialog {
                     if self.mariadb { &[Tool::MariaDb, Tool::MySql] } else { &[Tool::MySql, Tool::MariaDb] };
                 let (tool, program) = self.pick_tool(order)?;
                 let cmd = backup::my_restore(&self.cfg, tool, db, &self.my_restore, &path);
-                Ok(JobSpec::Tool { program, cmd, watch: None })
+                Ok(JobSpec::Tool { program, cmd, watch: None, via: self.via() })
             }
             (DbKind::Sqlite, Mode::Backup) => {
                 let source = PathBuf::from(self.cfg.database.trim());
