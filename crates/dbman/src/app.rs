@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
 use crate::compare_view::CompareView;
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
+use crate::copy_view::CopyView;
 use crate::data_view::DataView;
 use crate::er_view::ErView;
 use crate::events::{Event, JobEvent, TabId, Tasks};
@@ -319,6 +320,11 @@ impl DbManApp {
                 let cfg = c.cfg.clone();
                 self.add_tab(id, TabKind::Compare(Box::new(CompareView::new(cfg, db, schema))));
             }
+            Action::OpenCopy(id, db, schema, table) => {
+                let Some(c) = self.conn(id) else { return };
+                let cfg = c.cfg.clone();
+                self.add_tab(id, TabKind::Copy(Box::new(CopyView::new(cfg, db, schema, table))));
+            }
             Action::OpenConsoleWith(id, db, sql) => self.open_console(id, db, Some(sql)),
             Action::StartJob(job) => self.start_transfer(*job),
             Action::ExportData(id, source) => {
@@ -472,6 +478,15 @@ impl DbManApp {
         let active = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
             TabKind::Compare(c) => Some(c.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The copy tab on screen, if the active tab is one.
+    pub fn active_copy(&mut self) -> Option<&mut CopyView> {
+        let active = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
+            TabKind::Copy(c) => Some(c.as_mut()),
             _ => None,
         }
     }
@@ -653,6 +668,7 @@ impl DbManApp {
                                     TabKind::TableEditor(_) => Icon::Table,
                                     TabKind::Diagram(_) => Icon::ForeignKey,
                                     TabKind::Compare(_) => Icon::Schema,
+                                    TabKind::Copy(_) => Icon::Table,
                                 };
                                 let color = if active { t.foreground } else { t.muted_foreground };
                                 icons::icon(ui, icon, color);

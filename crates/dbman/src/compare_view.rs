@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dbman_core::compare::{self, DataDiff, DataSpec, ObjectDiff, Snapshot, Status};
 use dbman_core::ddl::Plan;
-use dbman_core::{Capabilities, Connection, ConnectionConfig, DbError, DbKind, DbResult, ObjectPath, TableDetails};
+use dbman_core::{Connection, ConnectionConfig, DbError, DbKind, DbResult, ObjectPath, TableDetails};
 use egui::{Color32, RichText, Ui};
-use shadcn_egui::{Button, ButtonSize, Checkbox, Select, Theme, TooltipExt, alert_dialog, tabs, toast};
+use shadcn_egui::{Button, ButtonSize, Checkbox, Theme, TooltipExt, alert_dialog, tabs, toast};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
@@ -20,16 +20,15 @@ use crate::explorer::{Action, Load};
 use crate::files;
 use crate::jobs::JobSpec;
 use crate::tabs::{TabCtx, error_alert, toolbar_button};
+use crate::target_picker::TargetPicker;
 use crate::transfer_dialog::Start;
 
 /// Script text shown in previews; Copy and Save give all of it.
 const PREVIEW_CHARS: usize = 200_000;
 
-type Session = Arc<OnceCell<Arc<dyn Connection>>>;
+type Session = crate::target_picker::Session;
 
 pub enum CompareEvent {
-    TargetDatabases(u64, DbResult<Vec<String>>),
-    TargetSchemas(u64, DbResult<Vec<String>>),
     Progress(String),
     Schema(DbResult<Vec<ObjectDiff>>),
     DataTables(DbResult<Vec<DataRow>>),
@@ -76,15 +75,7 @@ pub struct CompareView {
     pub schema: String,
     source_cfg: ConnectionConfig,
     source: Session,
-    target_conn: Option<Uuid>,
-    target_cfg: Option<ConnectionConfig>,
-    target: Session,
-    /// Bumped when the target changes, so late answers are ignored.
-    target_gen: u64,
-    databases: Load<Vec<String>>,
-    target_db: Option<usize>,
-    schemas: Load<Vec<String>>,
-    target_schema: Option<usize>,
+    picker: TargetPicker,
     mode: usize,
     running: bool,
     cancel: Arc<AtomicBool>,
@@ -102,19 +93,13 @@ pub struct CompareView {
 
 impl CompareView {
     pub fn new(cfg: ConnectionConfig, database: String, schema: String) -> Self {
+        let picker = TargetPicker::new(&database, &schema);
         Self {
             database,
             schema,
             source_cfg: cfg,
             source: Arc::new(OnceCell::new()),
-            target_conn: None,
-            target_cfg: None,
-            target: Arc::new(OnceCell::new()),
-            target_gen: 0,
-            databases: Load::Idle,
-            target_db: None,
-            schemas: Load::Idle,
-            target_schema: None,
+            picker,
             mode: 0,
             running: false,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -138,46 +123,18 @@ impl CompareView {
         }
     }
 
-    /// Picks the target connection, database and schema (tests and the first frame).
+    /// Picks the target connection (tests).
     pub fn set_target(&mut self, conn: Uuid, cfg: ConnectionConfig, tasks: &crate::events::Tasks, tab: TabId) {
-        self.target_conn = Some(conn);
-        self.target_cfg = Some(cfg);
-        self.target_gen += 1;
-        self.target = Arc::new(OnceCell::new());
-        self.target_db = None;
-        self.target_schema = None;
-        self.schemas = Load::Idle;
-        self.load_databases(tasks, tab);
+        self.picker.set_target(conn, cfg, tasks, tab);
     }
 
-    /// Chooses the target database and schema by name once they are listed.
+    /// Chooses the target database and schema by name (tests).
     pub fn choose(&mut self, database: &str, schema: &str) {
-        if let Some(dbs) = self.databases.ready() {
-            self.target_db = dbs.iter().position(|d| d == database);
-        }
-        if let Some(ss) = self.schemas.ready() {
-            self.target_schema = ss.iter().position(|s| s == schema);
-        }
+        self.picker.choose(database, schema);
     }
 
     pub fn target_database(&self) -> Option<&str> {
-        self.target_db.and_then(|i| self.databases.ready()?.get(i)).map(String::as_str)
-    }
-
-    fn target_kind(&self) -> Option<DbKind> {
-        self.target_cfg.as_ref().map(|c| c.kind)
-    }
-
-    fn target_has_schemas(&self) -> bool {
-        self.target_kind().is_some_and(|k| Capabilities::for_kind(k).schemas)
-    }
-
-    pub fn target_schema_name(&self) -> Option<&str> {
-        if self.target_has_schemas() {
-            self.target_schema.and_then(|i| self.schemas.ready()?.get(i)).map(String::as_str)
-        } else {
-            self.target_database()
-        }
+        self.picker.database()
     }
 
     pub fn is_running(&self) -> bool {
@@ -216,14 +173,6 @@ impl CompareView {
         self.script = None;
     }
 
-    fn target_cfg_for(&self, database: &str) -> Option<ConnectionConfig> {
-        let mut cfg = self.target_cfg.clone()?;
-        if cfg.kind == DbKind::MySql {
-            cfg.database = database.to_string();
-        }
-        Some(cfg)
-    }
-
     fn source_cfg(&self) -> ConnectionConfig {
         let mut cfg = self.source_cfg.clone();
         if cfg.kind == DbKind::MySql {
@@ -236,48 +185,13 @@ impl CompareView {
         tx.send(Event::Tab { tab, event: TabEvent::Compare(Box::new(ev)) });
     }
 
-    fn load_databases(&mut self, tasks: &crate::events::Tasks, tab: TabId) {
-        let Some(cfg) = self.target_cfg.clone() else { return };
-        self.databases = Load::Loading;
-        let (session, generation, tx) = (self.target.clone(), self.target_gen, tasks.sender());
-        tasks.runtime().spawn(async move {
-            let r = async { session.get_or_try_init(|| dbman_drivers::connect(&cfg)).await?.databases().await }.await;
-            Self::send(&tx, tab, CompareEvent::TargetDatabases(generation, r));
-        });
-    }
-
-    fn load_schemas(&mut self, tasks: &crate::events::Tasks, tab: TabId) {
-        let (Some(db), true) = (self.target_database().map(str::to_string), self.target_has_schemas()) else {
-            return;
-        };
-        let Some(cfg) = self.target_cfg_for(&db) else { return };
-        self.schemas = Load::Loading;
-        self.target_schema = None;
-        let (session, generation, tx) = (self.target.clone(), self.target_gen, tasks.sender());
-        tasks.runtime().spawn(async move {
-            let r = async { session.get_or_try_init(|| dbman_drivers::connect(&cfg)).await?.schemas(&db).await }.await;
-            Self::send(&tx, tab, CompareEvent::TargetSchemas(generation, r));
-        });
-    }
-
     pub fn on_event(&mut self, ev: TabEvent) {
-        let TabEvent::Compare(ev) = ev else { return };
+        let ev = match ev {
+            TabEvent::Picker(e) => return self.picker.on_event(e),
+            TabEvent::Compare(ev) => ev,
+            _ => return,
+        };
         match *ev {
-            CompareEvent::TargetDatabases(g, r) if g == self.target_gen => {
-                self.databases = Load::from_result(r);
-                if let Some(dbs) = self.databases.ready() {
-                    // Same name as the source, else the first.
-                    self.target_db = dbs.iter().position(|d| *d == self.database).or((!dbs.is_empty()).then_some(0));
-                }
-                self.schemas = Load::Idle;
-            }
-            CompareEvent::TargetSchemas(g, r) if g == self.target_gen => {
-                self.schemas = Load::from_result(r);
-                if let Some(ss) = self.schemas.ready() {
-                    self.target_schema = ss.iter().position(|s| *s == self.schema).or((!ss.is_empty()).then_some(0));
-                }
-            }
-            CompareEvent::TargetDatabases(..) | CompareEvent::TargetSchemas(..) => {}
             CompareEvent::Progress(p) => self.progress = p,
             CompareEvent::Schema(r) => {
                 self.running = false;
@@ -324,14 +238,14 @@ impl CompareView {
     }
 
     fn start(&mut self, cx: &TabCtx<'_>, tab: TabId) {
-        let (Some(conn), Some(db), Some(schema)) = (
-            self.target_conn,
-            self.target_database().map(str::to_string),
-            self.target_schema_name().map(str::to_string),
+        let (Some(conn), Some(db), Some(schema), Some(target_cfg)) = (
+            self.picker.conn(),
+            self.picker.database().map(str::to_string),
+            self.picker.schema().map(str::to_string),
+            self.picker.cfg(),
         ) else {
             return;
         };
-        let Some(target_cfg) = self.target_cfg_for(&db) else { return };
         self.compared = Some(Compared { conn, cfg: target_cfg.clone(), database: db.clone(), schema: schema.clone() });
         self.cancel = Arc::new(AtomicBool::new(false));
         self.running = true;
@@ -339,7 +253,7 @@ impl CompareView {
         self.script = None;
         self.show_script = false;
         self.progress = "Connecting…".into();
-        let (source, target) = (self.source.clone(), self.target.clone());
+        let (source, target) = (self.source.clone(), self.picker.session());
         let source_cfg = self.source_cfg();
         let (sdb, sschema) = (self.database.clone(), self.schema.clone());
         let cancel = self.cancel.clone();
@@ -465,21 +379,7 @@ impl CompareView {
     }
 
     pub fn ui(&mut self, ui: &mut Ui, tab: TabId, mut cx: TabCtx<'_>) {
-        if self.target_conn.is_none() {
-            // Another connection of the same kind, else this one.
-            let pick = cx
-                .conns
-                .iter()
-                .find(|c| c.cfg.id != cx.conn_id && c.cfg.kind == self.source_cfg.kind)
-                .or_else(|| cx.conns.iter().find(|c| c.cfg.id == cx.conn_id))
-                .or_else(|| cx.conns.first());
-            if let Some(c) = pick {
-                self.set_target(c.cfg.id, c.cfg.clone(), cx.tasks, tab);
-            }
-        }
-        if self.target_has_schemas() && self.schemas.is_idle() && self.target_database().is_some() {
-            self.load_schemas(cx.tasks, tab);
-        }
+        self.picker.ensure(cx.tasks, tab, cx.conns, cx.conn_id, self.source_cfg.kind);
         self.toolbar(ui, tab, &cx);
         ui.add_space(6.0);
 
@@ -559,55 +459,9 @@ impl CompareView {
             ui.add_space(8.0);
             ui.label(RichText::new("Target").color(t.muted_foreground));
 
-            let names: Vec<String> =
-                cx.conns.iter().map(|c| format!("{} ({})", c.cfg.display_name(), c.cfg.kind.label())).collect();
-            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let mut idx = self.target_conn.and_then(|id| cx.conns.iter().position(|c| c.cfg.id == id));
-            let before = idx;
-            ui.push_id("target-conn", |ui| ui.add(Select::new(&mut idx, &refs).width(220.0)));
-            if idx != before
-                && let Some(c) = idx.and_then(|i| cx.conns.get(i))
-            {
-                self.set_target(c.cfg.id, c.cfg.clone(), cx.tasks, tab);
-            }
-
-            match &self.databases {
-                Load::Ready(dbs) => {
-                    let refs: Vec<&str> = dbs.iter().map(String::as_str).collect();
-                    let before = self.target_db;
-                    ui.push_id("target-db", |ui| {
-                        ui.add(Select::new(&mut self.target_db, &refs).placeholder("Database").width(160.0))
-                    });
-                    if before != self.target_db {
-                        if self.target_kind() == Some(DbKind::MySql) {
-                            self.target = Arc::new(OnceCell::new());
-                        }
-                        self.schemas = Load::Idle;
-                    }
-                }
-                Load::Failed(e) => {
-                    ui.label(RichText::new("Could not connect").color(t.destructive)).on_hover_text(e.as_str());
-                }
-                _ => {
-                    ui.add(egui::Spinner::new());
-                }
-            }
-            if self.target_has_schemas() {
-                match &self.schemas {
-                    Load::Ready(ss) => {
-                        let refs: Vec<&str> = ss.iter().map(String::as_str).collect();
-                        ui.push_id("target-schema", |ui| {
-                            ui.add(Select::new(&mut self.target_schema, &refs).placeholder("Schema").width(140.0))
-                        });
-                    }
-                    Load::Failed(e) => {
-                        ui.label(RichText::new("No schemas").color(t.destructive)).on_hover_text(e.as_str());
-                    }
-                    _ => {}
-                }
-            }
+            self.picker.ui(ui, cx.tasks, tab, cx.conns);
             ui.add_space(8.0);
-            let ready = self.target_schema_name().is_some() && !self.running;
+            let ready = self.picker.schema().is_some() && !self.running;
             let label = if self.mode == 0 { "Compare structure" } else { "Compare data" };
             if ui.add_enabled(ready, Button::new(label).size(ButtonSize::Sm)).clicked() {
                 self.start(cx, tab);

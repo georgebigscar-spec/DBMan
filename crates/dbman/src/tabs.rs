@@ -11,6 +11,7 @@ use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, tabs};
 
 use crate::compare_view::CompareView;
+use crate::copy_view::CopyView;
 use crate::data_view::DataView;
 use crate::er_view::ErView;
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
@@ -32,6 +33,7 @@ pub enum TabKind {
     TableEditor(Box<TableEditor>),
     Diagram(Box<ErView>),
     Compare(Box<CompareView>),
+    Copy(Box<CopyView>),
 }
 
 /// What a tab can reach while drawing.
@@ -55,6 +57,7 @@ impl Tab {
             TabKind::TableEditor(e) => e.title(),
             TabKind::Diagram(d) => d.title(),
             TabKind::Compare(c) => c.title(),
+            TabKind::Copy(c) => c.title(),
         }
     }
 
@@ -67,6 +70,7 @@ impl Tab {
             TabKind::TableEditor(e) => return e.on_event(ev, ctx),
             TabKind::Diagram(d) => d.on_event(ev),
             TabKind::Compare(c) => c.on_event(ev),
+            TabKind::Copy(c) => c.on_event(ev),
         }
         Vec::new()
     }
@@ -80,6 +84,7 @@ impl Tab {
             TabKind::TableEditor(e) => e.ui(ui, id, cx),
             TabKind::Diagram(d) => d.ui(ui, id, cx),
             TabKind::Compare(c) => c.ui(ui, id, cx),
+            TabKind::Copy(c) => c.ui(ui, id, cx),
         }
     }
 }

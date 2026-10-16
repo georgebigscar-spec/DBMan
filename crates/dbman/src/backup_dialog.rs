@@ -388,7 +388,9 @@ impl BackupDialog {
                 statements.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n")
             }
             // Not made by this dialog.
-            JobSpec::Export { .. } | JobSpec::Import { .. } | JobSpec::Script { .. } => String::new(),
+            JobSpec::Export { .. } | JobSpec::Import { .. } | JobSpec::Script { .. } | JobSpec::Copy { .. } => {
+                String::new()
+            }
         }
     }
 

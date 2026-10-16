@@ -328,6 +328,56 @@ fn browse_sqlite_database() {
         }
     }
 
+    // Copy the tables with their rows into an empty DuckDB file, then one table again in place of its rows.
+    let archive = dir.path().join("archive.duckdb");
+    let mut archive_cfg = ConnectionConfig::new(DbKind::DuckDb);
+    archive_cfg.name = "archive".into();
+    archive_cfg.database = archive.to_string_lossy().into_owned();
+    let archive_id = archive_cfg.id;
+    h.state_mut().add_connection(archive_cfg);
+    h.state_mut().handle(Action::OpenCopy(conn_id, "main".into(), "main".into(), None), &ctx);
+    h.state_mut().active_copy().unwrap().set_target(archive_id);
+    let wait_target = |h: &mut Harness<'_, DbManApp>| {
+        for _ in 0..50 {
+            settle(h);
+            if h.state_mut().active_copy().unwrap().in_target().is_some() {
+                break;
+            }
+        }
+    };
+    wait_target(&mut h);
+    let chosen: Vec<String> = h.state_mut().active_copy().unwrap().chosen().iter().map(|s| s.to_string()).collect();
+    assert!(chosen.contains(&"customers".to_string()) && chosen.contains(&"orders".to_string()), "{chosen:?}");
+    h.state_mut().active_copy().unwrap().select("customers");
+    settle(&mut h);
+    snapshot(&mut h, "copy_tables");
+    let jobs = h.state().jobs.list.len();
+    click(&mut h, &format!("Copy {} tables", chosen.len()));
+    settle(&mut h);
+    let job = &h.state().jobs.list[jobs];
+    assert_eq!(job.state, JobState::Done, "{:?}", job.log);
+    let count = |table: &str| -> i64 {
+        let duck = duckdb::Connection::open(&archive).unwrap();
+        duck.query_row(&format!("SELECT count(*) FROM main.{table}"), [], |r| r.get(0)).unwrap()
+    };
+    let source = rusqlite::Connection::open(&db_path).unwrap();
+    let customers: i64 = source.query_row("SELECT count(*) FROM customers", [], |r| r.get(0)).unwrap();
+    assert_eq!(count("customers"), customers);
+
+    h.state_mut().handle(Action::OpenCopy(conn_id, "main".into(), "main".into(), Some("orders".into())), &ctx);
+    h.state_mut().active_copy().unwrap().set_target(archive_id);
+    h.state_mut().active_copy().unwrap().set_existing(dbman_drivers::copy::Existing::Replace);
+    wait_target(&mut h);
+    assert!(h.state_mut().active_copy().unwrap().in_target().unwrap().contains("orders"));
+    let jobs = h.state().jobs.list.len();
+    click(&mut h, "Copy 1 table");
+    click(&mut h, "Copy");
+    settle(&mut h);
+    let job = &h.state().jobs.list[jobs];
+    assert_eq!(job.state, JobState::Done, "{:?}", job.log);
+    let orders: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
+    assert_eq!(count("orders"), orders, "replaced, not added");
+
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);
     snapshot(&mut h, "connection_dialog");
