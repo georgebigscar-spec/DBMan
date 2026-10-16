@@ -349,6 +349,34 @@ fn browse_sqlite_database() {
     assert!(saved.starts_with("SELECT 1;") && saved.contains("SELECT 2;"), "{saved}");
     assert_eq!(h.state().recent_scripts(), [script]);
 
+    // Manual commit: the run opens a transaction that Rollback undoes.
+    let orders_count =
+        |c: &rusqlite::Connection| c.query_row("SELECT count(*) FROM orders", [], |r| r.get::<_, i64>(0)).unwrap();
+    click(&mut h, "Auto-commit");
+    click(&mut h, "Manual commit");
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().focus();
+    h.run_steps(2);
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().type_text("\nDELETE FROM orders;");
+    settle(&mut h);
+    click(&mut h, "Run script");
+    settle(&mut h);
+    assert_eq!(h.state().console_in_tx(), Some(true), "{:?}", h.state().console_summaries());
+    assert_eq!(orders_count(&check), 4, "not committed yet");
+    snapshot(&mut h, "transaction");
+    click(&mut h, "Rollback");
+    assert_eq!(h.state().console_in_tx(), Some(false));
+    assert_eq!(orders_count(&check), 4);
+    // Closing a console with an open transaction asks first, then rolls it back.
+    click(&mut h, "Run script");
+    assert_eq!(h.state().console_in_tx(), Some(true));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    settle(&mut h);
+    assert!(h.query_by_label("Close the console?").is_some());
+    click(&mut h, "Roll back and close");
+    assert!(!h.state().tab_titles().iter().any(|t| t.starts_with("report.sql")), "{:?}", h.state().tab_titles());
+    check.execute("UPDATE orders SET note = note", []).expect("the transaction was rolled back");
+    assert_eq!(orders_count(&check), 4);
+
     // Back up the database in the background, damage it, restore it.
     let backup_file = dir.path().join("shop-backup.db");
     h.state_mut().handle(Action::Backup(conn_id, Scope { database: "main".into(), ..Default::default() }), &ctx);

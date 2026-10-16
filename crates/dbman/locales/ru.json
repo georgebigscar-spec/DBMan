@@ -633,5 +633,17 @@
   "… The preview stops here; Copy and Save give the whole script.": "… Предпросмотр обрезан; «Копировать» и «Сохранить» дают весь скрипт.",
   "− Delete": "− Удалить",
   "▶ Run": "▶ Выполнить",
-  "⟳ Refresh": "⟳ Обновить"
+  "⟳ Refresh": "⟳ Обновить",
+  "Auto-commit": "Автофиксация",
+  "Manual commit": "Ручная фиксация",
+  "Commit or roll back the open transaction first": "Сначала зафиксируйте или откатите открытую транзакцию",
+  "Manual: statements wait for Commit, and Rollback undoes them": "Ручная: изменения ждут Commit, а Rollback их отменяет",
+  "transaction open": "транзакция открыта",
+  "Commit": "Commit",
+  "Make the transaction's changes permanent": "Сохранить изменения транзакции",
+  "Rollback": "Rollback",
+  "Undo the transaction's changes": "Отменить изменения транзакции",
+  "Close the console?": "Закрыть консоль?",
+  "Its transaction is still open. Closing rolls back the changes that were not committed.": "В ней открыта транзакция. При закрытии незафиксированные изменения откатятся.",
+  "Roll back and close": "Откатить и закрыть"
 }

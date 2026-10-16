@@ -338,6 +338,47 @@ pub fn statement_at(sql: &str, kind: DbKind, cursor: usize) -> Option<Range<usiz
         .cloned()
 }
 
+/// The statement that opens a transaction, or `None` on engines without them (ClickHouse).
+pub fn begin_statement(kind: DbKind) -> Option<&'static str> {
+    match kind {
+        DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb => Some("BEGIN"),
+        DbKind::MySql => Some("START TRANSACTION"),
+        DbKind::MsSql => Some("BEGIN TRANSACTION"),
+        DbKind::ClickHouse => None,
+    }
+}
+
+/// Whether a statement opens (`Some(true)`) or ends (`Some(false)`) a
+/// transaction, judged by its first words. MySQL commits before DDL.
+pub fn transaction_effect(kind: DbKind, sql: &str) -> Option<bool> {
+    let words: Vec<String> = tokenize(sql, kind)
+        .into_iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Comment))
+        .take(3)
+        .map(|t| sql[t.range].to_ascii_lowercase())
+        .collect();
+    let w = |i: usize| words.get(i).map(String::as_str).unwrap_or("");
+    let savepoint = words.iter().any(|w| w == "to");
+    match w(0) {
+        "start" if w(1) == "transaction" => Some(true),
+        "begin" => {
+            let opens = match kind {
+                DbKind::MsSql => matches!(w(1), "tran" | "transaction" | "distributed"),
+                _ => matches!(
+                    w(1),
+                    "" | ";" | "transaction" | "work" | "deferred" | "immediate" | "exclusive" | "isolation" | "read"
+                ),
+            };
+            opens.then_some(true)
+        }
+        "commit" => Some(false),
+        "rollback" if !savepoint => Some(false),
+        "end" | "abort" if matches!(kind, DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb) => Some(false),
+        "create" | "alter" | "drop" | "truncate" | "rename" if kind == DbKind::MySql => Some(false),
+        _ => None,
+    }
+}
+
 /// Quoting rules of one engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dialect(pub DbKind);
@@ -481,5 +522,23 @@ mod tests {
         assert_eq!(d.ident("a`b"), "`a\\`b`");
         assert_eq!(d.string("it's \\"), "'it''s \\\\'");
         assert_eq!(stmts("SELECT 'a\\';b'; SELECT `x\\`;`", DbKind::ClickHouse), ["SELECT 'a\\';b'", "SELECT `x\\`;`"]);
+    }
+
+    #[test]
+    fn transaction_statements() {
+        use DbKind::*;
+        assert_eq!(transaction_effect(Postgres, "BEGIN"), Some(true));
+        assert_eq!(transaction_effect(Postgres, "begin isolation level serializable"), Some(true));
+        assert_eq!(transaction_effect(MySql, "START TRANSACTION"), Some(true));
+        assert_eq!(transaction_effect(MsSql, "BEGIN TRAN"), Some(true));
+        assert_eq!(transaction_effect(MsSql, "BEGIN SELECT 1 END"), None);
+        assert_eq!(transaction_effect(Sqlite, "-- go\ncommit"), Some(false));
+        assert_eq!(transaction_effect(Postgres, "ROLLBACK"), Some(false));
+        assert_eq!(transaction_effect(Postgres, "ROLLBACK TO SAVEPOINT a"), None);
+        assert_eq!(transaction_effect(Postgres, "end"), Some(false));
+        assert_eq!(transaction_effect(MySql, "create table t (a int)"), Some(false));
+        assert_eq!(transaction_effect(Postgres, "create table t (a int)"), None);
+        assert_eq!(transaction_effect(Postgres, "select 1"), None);
+        assert_eq!(begin_statement(ClickHouse), None);
     }
 }

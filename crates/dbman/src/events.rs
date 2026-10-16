@@ -81,6 +81,8 @@ pub enum TabEvent {
     RunFinished,
     /// A cancel request was sent (`None`) or could not be sent.
     Cancelled(Option<String>),
+    /// The console opened a transaction before its run (`true`), or could not.
+    Transaction(bool),
     Page {
         /// Which load this answers; older loads are ignored.
         seq: u64,

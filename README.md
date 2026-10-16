@@ -54,6 +54,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - DuckDB: attached databases (`ATTACH`) → schemas → tables, views, sequences, macros and types. Lists, structs and maps show the way DuckDB prints them.
 - **SQL console** with syntax highlighting.
   - Every console has its own session, so its own transactions, as in DataGrip.
+  - **Manual commit**: the `Auto-commit` / `Manual commit` switch in the console toolbar. In manual mode the first run opens a transaction (`BEGIN`, `START TRANSACTION` on MySQL, `BEGIN TRANSACTION` on SQL Server), and the changes wait for `Commit` or `Rollback`, which appear next to a `transaction open` mark. A `BEGIN`, `COMMIT` or `ROLLBACK` typed in the script is followed too, in either mode, and so are MySQL's implicit commits before DDL. While a transaction is open the mode and the database cannot be switched, and closing the console asks first and rolls it back. `Explain analyze` runs inside the transaction as well. ClickHouse has no transactions, so it has no switch.
+
+![Manual commit](crates/dbman/tests/snapshots/transaction.png)
   - `Ctrl+Enter` runs the statement under the cursor or the selection. `Ctrl+Shift+Enter` runs the whole script.
   - Every statement gets its own result.
   - Autocomplete of tables, views, schemas, columns of the tables and aliases in the query, functions and keywords. It opens as you type a name or a `.` and on `Ctrl+Space`; `Tab` or `Enter` takes the selected item, and names are quoted where the engine needs it. Tables and columns load from the server on first use.
