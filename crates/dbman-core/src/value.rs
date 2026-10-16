@@ -159,6 +159,76 @@ pub fn size_label(n: usize) -> String {
     }
 }
 
+/// Count, sum, average, smallest and largest of a set of cells, as shown
+/// for the cells selected in a grid. Numbers are the values that parse as
+/// one; the rest only count.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Stats {
+    /// Cells that are not NULL.
+    pub count: usize,
+    pub nulls: usize,
+    /// How many of them are numbers.
+    pub numbers: usize,
+    sum: f64,
+    min: f64,
+    max: f64,
+    /// Most digits after the point among the numbers, for rounding the sum.
+    decimals: usize,
+}
+
+impl Stats {
+    pub fn of<'a>(cells: impl IntoIterator<Item = &'a Cell>) -> Self {
+        let mut s = Stats { min: f64::INFINITY, max: f64::NEG_INFINITY, ..Default::default() };
+        for c in cells {
+            let Cell::Text(t) = c else {
+                if c.is_null() {
+                    s.nulls += 1;
+                } else {
+                    s.count += 1;
+                }
+                continue;
+            };
+            s.count += 1;
+            let t = t.trim();
+            let Ok(v) = t.parse::<f64>() else { continue };
+            if !v.is_finite() || t.chars().any(|c| c.is_ascii_alphabetic() && c != 'e' && c != 'E') {
+                continue;
+            }
+            s.numbers += 1;
+            s.sum += v;
+            s.min = s.min.min(v);
+            s.max = s.max.max(v);
+            if !t.contains(['e', 'E']) {
+                s.decimals = s.decimals.max(t.split_once('.').map_or(0, |(_, f)| f.len()));
+            }
+        }
+        s
+    }
+
+    /// Sum, average, smallest and largest, written for reading; `None` without numbers.
+    pub fn numbers(&self) -> Option<[String; 4]> {
+        (self.numbers > 0).then(|| {
+            let avg = self.sum / self.numbers as f64;
+            [
+                number(self.sum, self.decimals),
+                number(avg, self.decimals.clamp(2, 6)),
+                number(self.min, self.decimals),
+                number(self.max, self.decimals),
+            ]
+        })
+    }
+}
+
+/// `v` rounded to `decimals` places, without trailing zeros after the point.
+fn number(v: f64, decimals: usize) -> String {
+    if v.abs() >= 1e15 {
+        return format!("{v:e}");
+    }
+    let s = format!("{v:.decimals$}");
+    let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
+    if s == "-0" { "0".into() } else { s }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +270,25 @@ mod tests {
         assert_eq!(show(&Cell::Null), Shown::Null);
         assert_eq!(show(&Cell::Text("plain".into())), Shown::Text("plain".into()));
         assert_eq!(size_label(2048), "2.0 KB");
+    }
+
+    #[test]
+    fn selection_stats() {
+        let cells = [
+            Cell::Text("0.1".into()),
+            Cell::Text("0.2".into()),
+            Cell::Text("12".into()),
+            Cell::Null,
+            Cell::Text("abc".into()),
+            Cell::Text("nan".into()),
+            Cell::Bytes(vec![1]),
+        ];
+        let s = Stats::of(&cells);
+        assert_eq!((s.count, s.nulls, s.numbers), (6, 1, 3));
+        assert_eq!(s.numbers().unwrap(), ["12.3", "4.1", "0.1", "12"]);
+        let s = Stats::of(&[Cell::Text("-3".into()), Cell::Text("3".into())]);
+        assert_eq!(s.numbers().unwrap(), ["0", "0", "-3", "3"]);
+        assert_eq!(Stats::of(&[Cell::Text("x".into())]).numbers(), None);
+        assert_eq!(Stats::of(&[Cell::Text("1".into()), Cell::Text("2".into())]).numbers().unwrap()[1], "1.5");
     }
 }

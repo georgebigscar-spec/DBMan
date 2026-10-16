@@ -95,6 +95,7 @@ pub struct DataView {
     preview: Option<String>,
     /// The clicked cell (row, column).
     current: Option<(usize, usize)>,
+    cells: grid::CellSelection,
     value_panel: ValuePanel,
 }
 
@@ -122,6 +123,7 @@ impl DataView {
             submit_error: None,
             preview: None,
             current: None,
+            cells: grid::CellSelection::default(),
             value_panel: ValuePanel::default(),
         }
     }
@@ -148,6 +150,7 @@ impl DataView {
                 self.selected.clear();
                 self.editing = None;
                 self.current = None;
+                self.cells.clear();
                 self.rebuild();
             }
             TabEvent::Details(r) => self.details = Load::from_result(r),
@@ -565,6 +568,7 @@ impl DataView {
         let t = Theme::get(ui.ctx());
         let ctx = ui.ctx().clone();
         let base = result.rows.len();
+        let ncols = result.columns.len();
         let id = egui::Id::new(("data-grid", tab));
         let mut cmds: Vec<GridCmd> = Vec::new();
         let mut editing = self.editing.take();
@@ -598,6 +602,8 @@ impl DataView {
         let height = (ui.available_height() - 110.0).max(120.0);
         let display = &self.display;
         let selected = &mut self.selected;
+        let cells = &self.cells;
+        let mut clicked = None;
         let mut table = DataTable::new(id, columns)
             .filter(tr("Filter rows..."))
             .min_column_width(grid::MIN_COLUMN_WIDTH)
@@ -646,6 +652,10 @@ impl DataView {
                 let r = ui.interact(cell_rect, id.with(("cell", row, col)), Sense::click());
                 if r.clicked() {
                     cmds.push(GridCmd::Current(row, col));
+                    clicked = Some((row, col, ui.input(|i| i.modifiers)));
+                }
+                if cells.contains(row, col) {
+                    grid::selection_fill(ui, cell_rect, &t);
                 }
                 if current == Some((row, col)) {
                     grid::current_outline(ui, cell_rect, &t);
@@ -695,11 +705,18 @@ impl DataView {
         if editable {
             table = table.selection(selected);
         }
-        table.show(ui, display);
+        let shown = table.show(ui, display);
         self.editing = editing;
         for c in cmds {
             self.apply(c, &ctx);
         }
+        self.cells.set_order(shown.visible);
+        if let Some((row, col, modifiers)) = clicked {
+            self.cells.click(row, col, modifiers);
+        }
+        let mut cells = std::mem::take(&mut self.cells);
+        cells.footer(ui, ncols, |row, col| self.value(row, col));
+        self.cells = cells;
     }
 
     fn preview_dialog(&mut self, ctx: &egui::Context) {
