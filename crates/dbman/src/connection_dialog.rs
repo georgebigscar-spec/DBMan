@@ -1,5 +1,7 @@
 //! "Data source" dialog: create or edit a connection and test it.
 
+use std::path::PathBuf;
+
 use dbman_core::{ConnectionConfig, DbKind, SslMode};
 use egui::{Context, RichText, Ui};
 use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label};
@@ -15,6 +17,8 @@ pub struct ConnectionDialog {
     pub test: Load<String>,
     /// The file dialog of "Browse…", while it is open.
     browsing: Option<files::PendingPath>,
+    /// Whether `browsing` is the save dialog of "Create new…".
+    creating: bool,
 }
 
 pub enum DialogOutcome {
@@ -44,7 +48,7 @@ fn field(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui)) {
 impl ConnectionDialog {
     pub fn new(cfg: ConnectionConfig, is_new: bool) -> Self {
         let port = if cfg.port == 0 { String::new() } else { cfg.port.to_string() };
-        Self { cfg, is_new, port, test: Load::Idle, browsing: None }
+        Self { cfg, is_new, port, test: Load::Idle, browsing: None, creating: false }
     }
 
     fn config(&self) -> ConnectionConfig {
@@ -53,6 +57,26 @@ impl ConnectionDialog {
         c.name = c.name.trim().to_string();
         c.host = c.host.trim().to_string();
         c
+    }
+
+    /// Points the dialog at a new database file at `path` and tests the
+    /// connection, which creates the file. An existing file is never replaced.
+    fn create_at(&mut self, mut path: PathBuf) -> Option<DialogOutcome> {
+        if path.extension().is_none() {
+            path.set_extension(if self.cfg.kind == DbKind::DuckDb { "duckdb" } else { "db" });
+        }
+        self.cfg.database = path.to_string_lossy().into_owned();
+        if self.cfg.name.trim().is_empty()
+            && let Some(stem) = path.file_stem()
+        {
+            self.cfg.name = stem.to_string_lossy().into_owned();
+        }
+        if path.exists() {
+            self.test =
+                Load::Failed(tr("This file already exists. Choose another name, or open it with Browse…").into());
+            return None;
+        }
+        Some(DialogOutcome::Test(self.config()))
     }
 
     pub fn show(&mut self, ctx: &Context) -> Option<DialogOutcome> {
@@ -91,23 +115,37 @@ impl ConnectionDialog {
                                     } else {
                                         tr("/path/to/database.db")
                                     })
-                                    .width(full - 110.0),
+                                    .width(full - 230.0),
                             );
                             if let Some(answer) = self.browsing.as_ref().and_then(files::PendingPath::poll) {
                                 self.browsing = None;
                                 if let Some(p) = answer {
-                                    self.cfg.database = p.to_string_lossy().into_owned();
+                                    if self.creating {
+                                        outcome = self.create_at(p);
+                                    } else {
+                                        self.cfg.database = p.to_string_lossy().into_owned();
+                                    }
                                 }
                             }
-                            if ui.add_enabled(self.browsing.is_none(), Button::outline(tr("Browse…"))).clicked() {
-                                let (name, exts): (&str, &[&str]) = match self.cfg.kind {
-                                    DbKind::DuckDb => ("DuckDB", &["duckdb", "ddb", "db"]),
-                                    _ => ("SQLite", &["db", "sqlite", "sqlite3", "db3"]),
-                                };
+                            let (name, exts): (&str, &[&str]) = match self.cfg.kind {
+                                DbKind::DuckDb => ("DuckDB", &["duckdb", "ddb", "db"]),
+                                _ => ("SQLite", &["db", "sqlite", "sqlite3", "db3"]),
+                            };
+                            let idle = self.browsing.is_none();
+                            if ui.add_enabled(idle, Button::outline(tr("Browse…"))).clicked() {
                                 let dialog = rfd::AsyncFileDialog::new()
                                     .add_filter(name, exts)
                                     .add_filter(tr("All files"), &["*"]);
+                                self.creating = false;
                                 self.browsing = Some(files::pick_file(ui.ctx(), dialog));
+                            }
+                            if ui.add_enabled(idle, Button::outline(tr("Create new…"))).clicked() {
+                                let dialog = rfd::AsyncFileDialog::new()
+                                    .set_title(tr("Create a new database file"))
+                                    .set_file_name(format!("database.{}", exts[0]))
+                                    .add_filter(name, exts);
+                                self.creating = true;
+                                self.browsing = Some(files::pick(ui.ctx(), dialog, files::Pick::SaveAs));
                             }
                         });
                     });

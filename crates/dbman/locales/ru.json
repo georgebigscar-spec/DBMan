@@ -569,5 +569,8 @@
   "… The preview stops here; Copy and Save give the whole script.": "… Предпросмотр обрезан; «Копировать» и «Сохранить» дают весь скрипт.",
   "− Delete": "− Удалить",
   "▶ Run": "▶ Выполнить",
-  "⟳ Refresh": "⟳ Обновить"
+  "⟳ Refresh": "⟳ Обновить",
+  "Create new…": "Создать…",
+  "Create a new database file": "Создать файл базы данных",
+  "This file already exists. Choose another name, or open it with Browse…": "Такой файл уже существует. Выберите другое имя или откройте его через «Обзор…»."
 }
