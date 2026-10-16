@@ -264,6 +264,25 @@ impl ToolCommand {
         Self { tool, args: Vec::new(), env: Vec::new(), stdin: None, stdout: None }
     }
 
+    /// Points the command at another host and port (an SSH tunnel's local end).
+    pub fn reroute(&mut self, host: &str, port: u16) {
+        let mut next = None;
+        for a in &mut self.args {
+            match next.take() {
+                Some("--host") => *a = host.to_string(),
+                Some("--port") => *a = port.to_string(),
+                _ => {}
+            }
+            if a == "--host" || a == "--port" {
+                next = Some(if a == "--host" { "--host" } else { "--port" });
+            } else if a.starts_with("--host=") {
+                *a = format!("--host={host}");
+            } else if a.starts_with("--port=") {
+                *a = format!("--port={port}");
+            }
+        }
+    }
+
     fn arg(&mut self, a: impl Into<String>) -> &mut Self {
         self.args.push(a.into());
         self
@@ -892,6 +911,19 @@ pub fn duck_file_name(database: &str, stamp: &str, method: DuckMethod) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reroute_moves_host_and_port() {
+        let mut cmd = pg_dump(&pg(), "shop", &PgDumpOptions::default(), Path::new("/tmp/x.dump"));
+        cmd.reroute("127.0.0.1", 40000);
+        let line = cmd.display();
+        assert!(line.contains("--host 127.0.0.1 --port 40000"), "{line}");
+        let mut my = ConnectionConfig::new(DbKind::MySql);
+        my.host = "db".into();
+        let mut cmd = my_dump(&my, Tool::MySqlDump, false, "shop", &MyDumpOptions::default(), Path::new("/tmp/x.sql"));
+        cmd.reroute("127.0.0.1", 40001);
+        assert!(cmd.args.contains(&"--host=127.0.0.1".to_string()) && cmd.args.contains(&"--port=40001".to_string()));
+    }
 
     fn pg() -> ConnectionConfig {
         let mut c = ConnectionConfig::new(DbKind::Postgres);

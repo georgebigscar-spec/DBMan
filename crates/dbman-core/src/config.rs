@@ -81,6 +81,54 @@ impl SslMode {
     }
 }
 
+/// How to sign in to an SSH server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SshAuth {
+    #[default]
+    Password,
+    /// A private key file, with its passphrase in `password` when it has one.
+    Key,
+}
+
+/// An SSH server the connection goes through: the database's host and port
+/// are reached from there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SshTunnel {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "ssh_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuth,
+    /// The password, or the key's passphrase. Stored only with `save_password`.
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub key_file: String,
+}
+
+fn ssh_port() -> u16 {
+    22
+}
+
+impl Default for SshTunnel {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: ssh_port(),
+            user: String::new(),
+            auth: SshAuth::default(),
+            password: String::new(),
+            key_file: String::new(),
+        }
+    }
+}
+
 /// A saved connection ("data source" in DataGrip terms).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
@@ -106,6 +154,8 @@ pub struct ConnectionConfig {
     /// Show only `database` in the explorer instead of every database on the server.
     #[serde(default)]
     pub only_default_database: bool,
+    #[serde(default)]
+    pub ssh: SshTunnel,
 }
 
 fn yes() -> bool {
@@ -126,6 +176,7 @@ impl ConnectionConfig {
             database: String::new(),
             ssl_mode: SslMode::default(),
             only_default_database: false,
+            ssh: SshTunnel::default(),
         }
     }
 
@@ -142,6 +193,11 @@ impl ConnectionConfig {
         }
         let db = if self.database.is_empty() { String::new() } else { format!("/{}", self.database) };
         format!("{}@{}{}", self.user, self.host, db)
+    }
+
+    /// Whether the connection goes through an SSH server.
+    pub fn uses_ssh(&self) -> bool {
+        self.ssh.enabled && !self.kind.is_file_based()
     }
 
     /// Switches the engine, resetting the port and user if they were the old defaults.

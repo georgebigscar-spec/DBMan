@@ -19,10 +19,19 @@ pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
+pub mod ssh;
 pub mod transfer;
 
-/// Opens a new session for `cfg`. Must be called inside a tokio runtime.
+/// Opens a new session for `cfg`, through its SSH server when it has one.
+/// Must be called inside a tokio runtime.
 pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {
+    match ssh::route(cfg).await? {
+        (local, Some(tunnel)) => Ok(Arc::new(ssh::Tunneled { inner: connect_direct(&local).await?, tunnel })),
+        (_, None) => connect_direct(cfg).await,
+    }
+}
+
+async fn connect_direct(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {
     Ok(match cfg.kind {
         DbKind::Postgres => Arc::new(postgres::PgConnection::connect(cfg).await?),
         DbKind::MySql => Arc::new(mysql::MySqlConnection::connect(cfg).await?),

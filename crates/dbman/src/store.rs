@@ -61,6 +61,11 @@ impl Settings {
         directories::ProjectDirs::from("", "", "DBMan").map(|d| d.config_dir().join("settings.json"))
     }
 
+    /// Where host keys of SSH servers are remembered.
+    pub fn known_hosts_path() -> Option<PathBuf> {
+        Self::path().map(|p| p.with_file_name("known_hosts"))
+    }
+
     /// Puts a script file first in the recent list.
     pub fn add_recent(&mut self, path: PathBuf) {
         self.recent_scripts.retain(|p| *p != path);
@@ -84,6 +89,7 @@ impl Settings {
         for c in &mut copy.connections {
             if !c.save_password {
                 c.password.clear();
+                c.ssh.password.clear();
             }
         }
         let json = serde_json::to_string_pretty(&copy).map_err(|e| e.to_string())?;

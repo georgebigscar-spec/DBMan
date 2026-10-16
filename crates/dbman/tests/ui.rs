@@ -643,4 +643,14 @@ fn browse_sqlite_database() {
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);
     snapshot(&mut h, "connection_dialog");
+
+    // The SSH tab: a tunnel through a bastion.
+    click(&mut h, "SSH");
+    click(&mut h, "Connect through an SSH server");
+    assert!(h.query_by_label("SSH (on)").is_some(), "the tab shows that SSH is on");
+    assert!(h.query_by_label("SSH host").is_some());
+    click(&mut h, "Password");
+    click(&mut h, "Private key file");
+    assert!(h.query_by_label("Passphrase").is_some());
+    snapshot(&mut h, "ssh_tunnel");
 }
