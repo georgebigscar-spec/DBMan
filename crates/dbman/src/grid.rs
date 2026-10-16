@@ -83,7 +83,7 @@ pub fn export_menu(
             menu_separator(ui);
         }
         menu_label(ui, tr("Copy to clipboard"));
-        for f in Format::ALL {
+        for f in Format::TEXT {
             if menu_item(ui, tr(f.label()), None).clicked() {
                 ui.ctx().copy_text(render(f));
                 toast(
@@ -101,7 +101,10 @@ pub fn export_menu(
                 let dialog =
                     rfd::AsyncFileDialog::new().set_file_name(name).add_filter(tr(f.label()), &[f.extension()]);
                 let (result, table) = (result.clone(), table.cloned());
-                files::save_file(ui.ctx(), dialog, move || export(&result, f, Dialect(kind), table.as_ref()));
+                files::save_to(ui.ctx(), dialog, move |path| {
+                    dbman_drivers::files::write_result(&result, path, f, Dialect(kind), table.as_ref())
+                        .map_err(|e| e.message)
+                });
             }
         }
     });

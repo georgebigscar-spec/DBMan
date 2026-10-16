@@ -56,6 +56,24 @@ pub fn pick_file(ctx: &Context, dialog: rfd::AsyncFileDialog) -> PendingPath {
 
 /// Asks where to save, then renders and writes the file, all off the UI thread,
 /// and reports the outcome with a toast.
+/// Like [`save_file`], for output that `write` puts at the chosen path itself.
+pub fn save_to(
+    ctx: &Context,
+    dialog: rfd::AsyncFileDialog,
+    write: impl FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
+) {
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let Some(handle) = pollster::block_on(dialog.save_file()) else { return };
+        let path = handle.path().to_path_buf();
+        match write(&path) {
+            Ok(()) => toast(&ctx, tr("Saved"), Some(&path.to_string_lossy())),
+            Err(e) => toast_error(&ctx, tr("Could not save the file"), Some(&e)),
+        }
+        ctx.request_repaint();
+    });
+}
+
 pub fn save_file(ctx: &Context, dialog: rfd::AsyncFileDialog, render: impl FnOnce() -> String + Send + 'static) {
     let ctx = ctx.clone();
     std::thread::spawn(move || {
