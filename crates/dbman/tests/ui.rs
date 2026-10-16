@@ -384,6 +384,29 @@ fn browse_sqlite_database() {
     let orders: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
     assert_eq!(count("orders"), orders, "replaced, not added");
 
+    // Test rows for orders: customer ids come from customers.
+    let orders_path = dbman_core::ObjectPath::new("main", "main", "orders");
+    h.state_mut().handle(Action::GenerateData(conn_id, orders_path), &ctx);
+    settle(&mut h);
+    let plan = h.state_mut().generate_dialog().expect("generator open").plan();
+    let customer_id = plan.iter().find(|p| p.column == "customer_id").unwrap();
+    assert!(matches!(&customer_id.kind, dbman_core::generate::Kind::Reference { table, .. } if table == "customers"));
+    h.state_mut().generate_dialog().unwrap().set_count(200);
+    settle(&mut h);
+    snapshot(&mut h, "generate_dialog");
+    let before: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
+    let jobs = h.state().jobs.list.len();
+    click(&mut h, "Generate");
+    settle(&mut h);
+    let job = &h.state().jobs.list[jobs];
+    assert_eq!(job.state, JobState::Done, "{:?}", job.log);
+    let after: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
+    assert_eq!(after - before, 200);
+    let orphans: i64 = source
+        .query_row("SELECT count(*) FROM orders WHERE customer_id NOT IN (SELECT id FROM customers)", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(orphans, 0);
+
     // The same window in Russian.
     h.state_mut().set_language(dbman::i18n::Lang::Ru);
     h.state_mut().active_copy().unwrap().select("orders");

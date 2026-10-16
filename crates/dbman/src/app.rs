@@ -17,6 +17,7 @@ use crate::er_view::ErView;
 use crate::events::{Event, JobEvent, TabId, Tasks};
 use crate::exec;
 use crate::explorer::{self, Action, ConnState, Load, Node};
+use crate::generate_dialog::GenerateDialog;
 use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
@@ -40,6 +41,7 @@ pub struct DbManApp {
     backup: Option<BackupDialog>,
     export: Option<ExportDialog>,
     import: Option<ImportDialog>,
+    generate: Option<GenerateDialog>,
     pub jobs: Jobs,
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
@@ -70,6 +72,7 @@ impl DbManApp {
             backup: None,
             export: None,
             import: None,
+            generate: None,
             jobs: Jobs::default(),
             status: tr("Ready").into(),
             runtime: Some(runtime),
@@ -344,6 +347,16 @@ impl DbManApp {
                 }
                 self.import = Some(dialog);
             }
+            Action::GenerateData(id, path) => {
+                let Some(c) = self.conn(id) else { return };
+                let mut dialog = GenerateDialog::new(id, c.cfg.clone(), path.clone());
+                match c.details.get(&path) {
+                    Some(Load::Ready(d)) => dialog.set_details(d.clone()),
+                    Some(Load::Loading) => {}
+                    _ => self.handle(Action::LoadDetails(id, path), ctx),
+                }
+                self.generate = Some(dialog);
+            }
             Action::CopyText(text) => {
                 ctx.copy_text(text.clone());
                 toast(ctx, tr("Copied"), Some(&text));
@@ -445,6 +458,11 @@ impl DbManApp {
     /// The open export dialog.
     pub fn export_dialog(&mut self) -> Option<&mut ExportDialog> {
         self.export.as_mut()
+    }
+
+    /// The open test data dialog.
+    pub fn generate_dialog(&mut self) -> Option<&mut GenerateDialog> {
+        self.generate.as_mut()
     }
 
     /// The open import dialog.
@@ -845,6 +863,22 @@ impl DbManApp {
                 Some(TransferOutcome::Start(job)) => {
                     self.start_transfer(*job);
                     self.import = None;
+                }
+                None => {}
+            }
+        }
+        if let Some(d) = &mut self.generate {
+            if d.needs_details()
+                && let Some(Load::Ready(details)) =
+                    self.conns.iter().find(|c| c.cfg.id == d.conn()).and_then(|c| c.details.get(d.table()))
+            {
+                d.set_details(details.clone());
+            }
+            match d.show(ctx) {
+                Some(TransferOutcome::Close) => self.generate = None,
+                Some(TransferOutcome::Start(job)) => {
+                    self.start_transfer(*job);
+                    self.generate = None;
                 }
                 None => {}
             }

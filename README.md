@@ -30,6 +30,8 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 |---|---|
 | ![copy](crates/dbman/tests/snapshots/copy_tables.png) | ![russian](crates/dbman/tests/snapshots/russian.png) |
 
+![Test data generator](crates/dbman/tests/snapshots/generate_dialog.png)
+
 ## Features
 
 - **Connections**: create, edit, duplicate, delete and test them.
@@ -102,6 +104,13 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - For tables the target already has, you can add the rows, replace them, or recreate the table. Replacing and recreating ask for confirmation.
   - Rows are read page by page by primary key and inserted in batches, one transaction per table (except on ClickHouse). SQL Server gets `IDENTITY_INSERT` and PostgreSQL gets sequence moves.
   - The copy runs as a background job with progress and `Cancel`.
+- **Test data generator** (`Generate test data…` in a table menu).
+  - Every column gets a generator picked from its name and type: sequences for keys, names, emails, phones, cities, companies, words, numbers and dates in a range, UUIDs, JSON and bytes.
+  - MySQL and ClickHouse enum values are picked from the type, and foreign keys take values from the parent table.
+  - Any generator and its settings can be changed. NULLs go into nullable columns at a chosen rate.
+  - Values of primary keys and unique columns never repeat, also when you add more rows later. Sequences go on after the largest value already there.
+  - A preview shows the first rows, and the same seed always makes the same rows.
+  - The rows go in batches in one transaction (except on ClickHouse) as a background job, optionally after deleting the rows already there.
 - **Structure and DDL** of any object: columns, indexes, foreign keys and the `CREATE` statement.
 - **Table editor** (`New → Table`, `Modify Table…`).
   - Edits columns (type, `NOT NULL`, default, auto-increment and comment), the primary key, indexes and foreign keys.
@@ -221,6 +230,7 @@ crates/
   | ER diagram | `er_view.rs` | model, layout and export in `dbman-core::er` |
   | Schema and data comparison | `compare_view.rs` | comparison and scripts in `dbman-core::compare`, reading and running in `dbman-drivers::compare` |
   | Copying between connections | `copy_view.rs` | type and value mapping in `dbman-core::copy`, the copy itself in `dbman-drivers::copy` |
+  | Test data dialog | `generate_dialog.rs` | generators in `dbman-core::generate`, inserting in `dbman-drivers::generate` |
   | Target choice for comparison and copying | `target_picker.rs` | |
   | Interface language | `i18n.rs` | |
   | Backup dialogs | `backup_dialog.rs` | |
@@ -252,7 +262,7 @@ cargo test --workspace
 1. More engine features, with their backups:
    - **ClickHouse**: partitions and mutations in the object tree, user-defined functions, and the native protocol.
    - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
-2. DBeaver-style features: import from Excel and Parquet, and a test data generator.
+2. DBeaver-style features: import from Excel and Parquet.
 3. Console autocomplete, query history, the execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
 
 ## License
