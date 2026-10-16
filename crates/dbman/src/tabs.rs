@@ -11,6 +11,7 @@ use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, tabs};
 
 use crate::data_view::DataView;
+use crate::er_view::ErView;
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
 use crate::grid::{self, Grid};
@@ -28,6 +29,7 @@ pub enum TabKind {
     Data(Box<DataView>),
     Object(ObjectView),
     TableEditor(Box<TableEditor>),
+    Diagram(Box<ErView>),
 }
 
 /// What a tab can reach while drawing.
@@ -47,6 +49,7 @@ impl Tab {
             TabKind::Data(d) => d.object.path.name.clone(),
             TabKind::Object(o) => format!("{} ({})", o.object.path.name, o.object.kind.label()),
             TabKind::TableEditor(e) => e.title(),
+            TabKind::Diagram(d) => d.title(),
         }
     }
 
@@ -57,6 +60,7 @@ impl Tab {
             TabKind::Data(d) => d.on_event(ev, ctx),
             TabKind::Object(o) => o.on_event(ev),
             TabKind::TableEditor(e) => return e.on_event(ev, ctx),
+            TabKind::Diagram(d) => d.on_event(ev),
         }
         Vec::new()
     }
@@ -68,6 +72,7 @@ impl Tab {
             TabKind::Data(d) => d.ui(ui, id, cx),
             TabKind::Object(o) => o.ui(ui, id, cx),
             TabKind::TableEditor(e) => e.ui(ui, id, cx),
+            TabKind::Diagram(d) => d.ui(ui, id, cx),
         }
     }
 }

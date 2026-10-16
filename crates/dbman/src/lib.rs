@@ -5,6 +5,7 @@ pub mod app;
 pub mod backup_dialog;
 pub mod connection_dialog;
 pub mod data_view;
+pub mod er_view;
 pub mod events;
 pub mod exec;
 pub mod explorer;

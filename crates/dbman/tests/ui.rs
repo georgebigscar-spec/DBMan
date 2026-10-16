@@ -231,6 +231,18 @@ fn browse_sqlite_database() {
     let n: i64 = check.query_row("SELECT count(*) FROM orders_copy", [], |r| r.get(0)).unwrap();
     assert_eq!((n, same), (4, 0));
 
+    // The schema's ER diagram: tables as boxes, foreign keys as links.
+    h.state_mut().handle(Action::OpenDiagram(conn_id, "main".into(), "main".into()), &ctx);
+    settle(&mut h);
+    settle(&mut h);
+    let d = h.state_mut().active_diagram().and_then(|v| v.diagram().cloned()).expect("diagram loaded");
+    let names: Vec<&str> = d.entities.iter().map(|e| e.path.name.as_str()).collect();
+    assert!(names.contains(&"customers") && names.contains(&"orders") && names.contains(&"orders_copy"), "{names:?}");
+    assert_eq!(d.links.len(), 1);
+    assert_eq!(d.entities[d.links[0].to].path.name, "customers");
+    assert!(h.query_by_label("ER diagram").is_none());
+    snapshot(&mut h, "er_diagram");
+
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);
     snapshot(&mut h, "connection_dialog");
