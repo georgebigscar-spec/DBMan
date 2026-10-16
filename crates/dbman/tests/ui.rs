@@ -374,6 +374,34 @@ fn browse_sqlite_database() {
     click(&mut h, "Value");
     assert_eq!(h.state().console_value_kind(), None);
 
+    // Shift+click selects a range of cells; the line under the grid sums it.
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().focus();
+    h.run_steps(2);
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().type_text(
+        "\nSELECT 1.5 AS price, 'a' AS name UNION ALL SELECT 2.25, 'b' UNION ALL SELECT NULL, 'c' UNION ALL SELECT 10, 'd';",
+    );
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    h.get_all_by_label("1.5").last().unwrap().click();
+    settle(&mut h);
+    h.get_all_by_label("10").last().unwrap().click_modifiers(Modifiers::SHIFT);
+    settle(&mut h);
+    for label in ["13.75", "4.58"] {
+        assert!(h.query_by_label(label).is_some(), "{label} in the stats line");
+    }
+    h.get_all_by_label("d").last().unwrap().click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    snapshot(&mut h, "selection_stats");
+    h.get_by_label("Copy").click();
+    h.step();
+    let copied = h.output().platform_output.commands.iter().find_map(|c| match c {
+        egui::OutputCommand::CopyText(t) => Some(t.clone()),
+        _ => None,
+    });
+    assert_eq!(copied.as_deref(), Some("1.5\t\n2.25\t\n\t\n10\td"));
+    settle(&mut h);
+
     // Manual commit: the run opens a transaction that Rollback undoes.
     let orders_count =
         |c: &rusqlite::Connection| c.query_row("SELECT count(*) FROM orders", [], |r| r.get::<_, i64>(0)).unwrap();

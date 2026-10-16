@@ -655,5 +655,12 @@
   "text": "текст",
   "Copy the value as it is": "Скопировать значение как есть",
   "Showing the first {size}.": "Показаны первые {size}.",
-  "The image could not be decoded.": "Не удалось прочитать изображение."
+  "The image could not be decoded.": "Не удалось прочитать изображение.",
+  "Count": "Количество",
+  "Sum": "Сумма",
+  "Average": "Среднее",
+  "Min": "Мин.",
+  "Max": "Макс.",
+  "Copied {n} cells": "Скопировано ячеек: {n}",
+  "Copy the selected cells as tab-separated text (Ctrl+C)": "Скопировать выделенные ячейки через табуляцию (Ctrl+C)"
 }

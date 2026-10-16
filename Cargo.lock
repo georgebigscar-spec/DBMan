@@ -5516,8 +5516,8 @@ dependencies = [
 
 [[package]]
 name = "shadcn_egui"
-version = "0.1.0"
-source = "git+https://github.com/georgebigscar-spec/shadcn_egui?rev=d83f9ba0f4398c7c3c651e8978463df5bd0c3864#d83f9ba0f4398c7c3c651e8978463df5bd0c3864"
+version = "0.1.1"
+source = "git+https://github.com/georgebigscar-spec/shadcn_egui?rev=c70b861436d632d75ae34fe6bf3220f0489c0def#c70b861436d632d75ae34fe6bf3220f0489c0def"
 dependencies = [
  "egui",
 ]
