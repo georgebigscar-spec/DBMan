@@ -56,6 +56,11 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - Autocomplete of tables, views, schemas, columns of the tables and aliases in the query, functions and keywords. It opens as you type a name or a `.` and on `Ctrl+Space`; `Tab` or `Enter` takes the selected item, and names are quoted where the engine needs it. Tables and columns load from the server on first use.
 
 ![Autocomplete](crates/dbman/tests/snapshots/autocomplete.png)
+
+- **Query history**: every statement run in a console is kept with its time, duration and result (the last 2000, in `history.jsonl` next to the settings). `History` in the console shows those of its connection, newest first, with a search; a click adds the statement to the script.
+- **Script files**: `Script` in the console opens a `.sql` file, saves it (`Ctrl+S`) or saves it under another name, and lists recent files. The tab shows the file name, with `•` while there are unsaved changes.
+
+![Query history](crates/dbman/tests/snapshots/query_history.png)
 - **Data view** of tables and views: pages, a `WHERE` filter, `ORDER BY`, quick filter and sort in the grid, and `NULL` stands out.
 - **Data editing** in tables.
   - Double-click a cell to edit it. `Set NULL` is in the context menu, and `+ Row` and `− Delete` add and delete rows.
@@ -187,6 +192,7 @@ Shortcuts:
 | `Ctrl+T` | New console |
 | `Ctrl+W` | Close the tab |
 | `Ctrl+Space` | Autocomplete in the console |
+| `Ctrl+S` | Save the console's script |
 | `F4` | Open the selected object |
 | Double click on a table | Open its data |
 
@@ -273,7 +279,7 @@ cargo test --workspace
 1. More engine features, with their backups:
    - **ClickHouse**: partitions and mutations in the object tree, user-defined functions, and the native protocol.
    - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
-2. Query history, the execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
+2. The execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
 
 ## License
 

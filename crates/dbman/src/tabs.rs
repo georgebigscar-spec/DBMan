@@ -1,5 +1,6 @@
 //! Editor tabs: SQL consoles, table data and object structure.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -8,7 +9,10 @@ use dbman_core::sql::{split_statements, statement_at};
 use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
 use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
-use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, tabs};
+use shadcn_egui::{
+    Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, dropdown_menu, menu_item, menu_label,
+    menu_separator, tabs, toast, toast_error,
+};
 
 use crate::compare_view::CompareView;
 use crate::copy_view::CopyView;
@@ -16,9 +20,11 @@ use crate::data_view::DataView;
 use crate::er_view::ErView;
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
+use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
 use crate::sql_editor;
+use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
 
 pub struct Tab {
@@ -28,9 +34,9 @@ pub struct Tab {
 }
 
 pub enum TabKind {
-    Console(Console),
+    Console(Box<Console>),
     Data(Box<DataView>),
-    Object(ObjectView),
+    Object(Box<ObjectView>),
     TableEditor(Box<TableEditor>),
     Diagram(Box<ErView>),
     Compare(Box<CompareView>),
@@ -47,12 +53,16 @@ pub struct TabCtx<'a> {
     pub conn_id: uuid::Uuid,
     /// Every saved connection (comparison targets).
     pub conns: &'a [ConnState],
+    /// Statements run in consoles.
+    pub history: &'a History,
+    /// Script files opened or saved lately, newest first.
+    pub recent_scripts: &'a [PathBuf],
 }
 
 impl Tab {
     pub fn title(&self) -> String {
         match &self.kind {
-            TabKind::Console(c) => c.title.clone(),
+            TabKind::Console(c) => c.title(),
             TabKind::Data(d) => d.object.path.name.clone(),
             TabKind::Object(o) => format!("{} ({})", o.object.path.name, tr(o.object.kind.label())),
             TabKind::TableEditor(e) => e.title(),
@@ -65,7 +75,7 @@ impl Tab {
     /// Applies a background result; may ask the app to do something (refresh the explorer).
     pub fn on_event(&mut self, ev: TabEvent, ctx: &egui::Context) -> Vec<Action> {
         match &mut self.kind {
-            TabKind::Console(c) => c.on_event(ev),
+            TabKind::Console(c) => return c.on_event(ev),
             TabKind::Data(d) => d.on_event(ev, ctx),
             TabKind::Object(o) => o.on_event(ev),
             TabKind::TableEditor(e) => return e.on_event(ev, ctx),
@@ -138,6 +148,14 @@ pub struct Console {
     /// Statements to run once the session is open.
     queued: Option<Vec<String>>,
     autocomplete: sql_editor::Autocomplete,
+    /// The script file the console was opened from or saved to.
+    pub file: Option<PathBuf>,
+    /// The text as it was last opened or saved, to tell unsaved changes.
+    saved_sql: String,
+    pending_open: Option<PendingPath>,
+    pending_save: Option<PendingPath>,
+    pub show_history: bool,
+    history_search: String,
 }
 
 impl Console {
@@ -156,7 +174,103 @@ impl Console {
             selection: None,
             queued: None,
             autocomplete: Default::default(),
+            file: None,
+            saved_sql: String::new(),
+            pending_open: None,
+            pending_save: None,
+            show_history: false,
+            history_search: String::new(),
         }
+    }
+
+    /// The script's file name (with a dot when it has unsaved changes), or the console's name.
+    pub fn title(&self) -> String {
+        match self.file.as_ref().and_then(|p| p.file_name()) {
+            Some(name) if self.sql != self.saved_sql => format!("{} •", name.to_string_lossy()),
+            Some(name) => name.to_string_lossy().into_owned(),
+            None => self.title.clone(),
+        }
+    }
+
+    /// Shows a script file's text, as saved.
+    pub fn set_file(&mut self, path: PathBuf, sql: String) {
+        self.sql = sql.clone();
+        self.saved_sql = sql;
+        self.file = Some(path);
+    }
+
+    /// Writes the script to its file, or asks where when it has none.
+    fn save(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(path) = self.file.clone() else {
+            self.save_as(ctx);
+            return;
+        };
+        match std::fs::write(&path, &self.sql) {
+            Ok(()) => {
+                self.saved_sql = self.sql.clone();
+                toast(ctx, tr("Saved"), Some(&path.to_string_lossy()));
+                actions.push(Action::RecentScript(path));
+            }
+            Err(e) => toast_error(ctx, tr("Could not save the file"), Some(&e.to_string())),
+        }
+    }
+
+    fn save_as(&mut self, ctx: &egui::Context) {
+        let name = self.file.as_ref().and_then(|p| p.file_name()).map_or("script.sql".into(), |n| n.to_string_lossy());
+        let dialog = rfd::AsyncFileDialog::new().set_file_name(name).add_filter("SQL", &["sql"]);
+        self.pending_save = Some(files::pick(ctx, dialog, Pick::SaveAs));
+    }
+
+    /// Opens a script here when the console is empty, otherwise in a new console.
+    fn open(&mut self, path: PathBuf, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if self.file.is_some() || !self.sql.trim().is_empty() {
+            actions.push(Action::OpenScript(self.cfg.id, self.database.clone(), path));
+            return;
+        }
+        match read_script(&path) {
+            Ok(sql) => {
+                self.set_file(path.clone(), sql);
+                actions.push(Action::RecentScript(path));
+            }
+            Err(e) => toast_error(ctx, tr("Could not open the file"), Some(&e)),
+        }
+    }
+
+    /// Answers of the open and save dialogs.
+    fn poll_dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if let Some(answer) = self.pending_open.as_ref().and_then(PendingPath::poll) {
+            self.pending_open = None;
+            if let Some(path) = answer {
+                self.open(path, ctx, actions);
+            }
+        }
+        if let Some(answer) = self.pending_save.as_ref().and_then(PendingPath::poll) {
+            self.pending_save = None;
+            if let Some(path) = answer {
+                self.file = Some(path);
+                self.save(ctx, actions);
+            }
+        }
+    }
+
+    /// Adds a statement from the history at the end of the script.
+    fn insert(&mut self, ctx: &egui::Context, editor_id: egui::Id, sql: &str) {
+        let sql = sql.trim_end();
+        if !self.sql.trim().is_empty() {
+            let trimmed = self.sql.trim_end().len();
+            self.sql.truncate(trimmed);
+            if !self.sql.ends_with(';') {
+                self.sql.push(';');
+            }
+            self.sql.push('\n');
+        }
+        self.sql.push_str(sql);
+        sql_editor::place_cursor(ctx, editor_id, self.sql.chars().count());
+    }
+
+    /// The history panel's statements (tests).
+    pub fn history_shown<'a>(&self, history: &'a History) -> Vec<&'a str> {
+        history.find(self.cfg.id, &self.history_search).take(HISTORY_SHOWN).map(|e| e.sql.as_str()).collect()
     }
 
     /// What the autocomplete popup offers (tests).
@@ -168,7 +282,8 @@ impl Console {
         self.outputs.iter().map(|o| o.summary.clone()).collect()
     }
 
-    fn on_event(&mut self, ev: TabEvent) {
+    fn on_event(&mut self, ev: TabEvent) -> Vec<Action> {
+        let mut actions = Vec::new();
         match ev {
             TabEvent::Session(r) => {
                 self.session = Load::from_result(r);
@@ -201,6 +316,18 @@ impl Console {
                     Err(e) => (tr("failed").into(), false, Some(e.message), None),
                 };
                 let has_grid = grid.is_some();
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                actions.push(Action::RecordQuery(Box::new(HistoryEntry {
+                    conn: self.cfg.id,
+                    database: self.database.clone(),
+                    sql: sql.clone(),
+                    at,
+                    millis: elapsed.as_millis() as u64,
+                    summary: summary.clone(),
+                    ok: error.is_none(),
+                })));
                 self.outputs.push(Output { sql, summary, cancelled, error: error.clone(), grid });
                 // Show the newest result set, or the error.
                 if has_grid || error.is_some() {
@@ -223,6 +350,7 @@ impl Console {
             }
             _ => {}
         }
+        actions
     }
 
     /// The selection's statements, the whole script, or the statement under the cursor.
@@ -298,6 +426,11 @@ impl Console {
 
     fn ui(&mut self, ui: &mut Ui, tab: TabId, cx: TabCtx<'_>) {
         let t = Theme::get(ui.ctx());
+        let ctx = ui.ctx().clone();
+        self.poll_dialogs(&ctx, cx.actions);
+        if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
+            self.save(&ctx, cx.actions);
+        }
         if let (Load::Ready(s), Some(stmts)) = (&self.session, self.queued.take()) {
             spawn_run(cx.tasks, tab, s.clone(), self.database.clone(), stmts, cx.page_size, self.stop.clone());
         }
@@ -359,8 +492,23 @@ impl Console {
             {
                 cx.actions.push(Action::LoadDatabases(c.cfg.id));
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let history = if self.show_history {
+                    ui.add(Button::secondary(tr("History")).size(ButtonSize::Sm))
+                } else {
+                    toolbar_button(ui, tr("History"))
+                };
+                if history.tooltip(tr("Statements run on this connection")).clicked() {
+                    self.show_history = !self.show_history;
+                }
+                self.script_menu(ui, &ctx, cx.recent_scripts, cx.actions);
+            });
         });
         ui.add_space(6.0);
+
+        if self.show_history {
+            self.history_panel(ui, tab, editor_id, cx.history);
+        }
 
         egui::Panel::top(egui::Id::new(("console-split", tab)))
             .resizable(true)
@@ -401,6 +549,117 @@ impl Console {
         self.results(ui, tab, cx.actions, cx.conn_id);
     }
 
+    fn script_menu(&mut self, ui: &mut Ui, ctx: &egui::Context, recent: &[PathBuf], actions: &mut Vec<Action>) {
+        let trigger = toolbar_button(ui, tr("Script"));
+        dropdown_menu(&trigger, 260.0, |ui| {
+            if menu_item(ui, tr("Open…"), None).clicked() {
+                let dialog = rfd::AsyncFileDialog::new().add_filter("SQL", &["sql"]);
+                self.pending_open = Some(files::pick_file(ctx, dialog));
+            }
+            if menu_item(ui, tr("Save"), Some("Ctrl+S")).clicked() {
+                self.save(ctx, actions);
+            }
+            if menu_item(ui, tr("Save as…"), None).clicked() {
+                self.save_as(ctx);
+            }
+            if !recent.is_empty() {
+                menu_separator(ui);
+                menu_label(ui, tr("Recent scripts"));
+                for path in recent {
+                    let name = path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy());
+                    if menu_item(ui, &name, None).on_hover_text(path.to_string_lossy()).clicked() {
+                        self.open(path.clone(), ctx, actions);
+                    }
+                }
+            }
+        });
+    }
+
+    /// The statements run on this connection, newest first; a click adds one to the script.
+    fn history_panel(&mut self, ui: &mut Ui, tab: TabId, editor_id: egui::Id, history: &History) {
+        let t = Theme::get(ui.ctx());
+        let mut picked = None;
+        egui::Panel::right(egui::Id::new(("console-history", tab)))
+            .resizable(true)
+            .default_size(340.0)
+            .min_size(220.0)
+            .frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, ..Default::default() }))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Query history")).strong().color(t.foreground));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(Button::ghost("×").size(ButtonSize::Sm)).clicked() {
+                            self.show_history = false;
+                        }
+                    });
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.history_search)
+                        .hint_text(tr("Search"))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.0);
+                let now = chrono::Local::now();
+                egui::ScrollArea::vertical().id_salt(("console-history-scroll", tab)).show(ui, |ui| {
+                    let mut any = false;
+                    for (i, e) in history.find(self.cfg.id, &self.history_search).take(HISTORY_SHOWN).enumerate() {
+                        any = true;
+                        let bg = ui.painter().add(egui::Shape::Noop);
+                        let inner = egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 6)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.spacing_mut().interact_size.y = 0.0;
+                            ui.horizontal(|ui| {
+                                let meta = format!("{} · {}", history_time(e.at, &now), e.summary);
+                                let color = if e.ok { t.muted_foreground } else { t.destructive };
+                                ui.label(RichText::new(meta).size(11.0).color(color));
+                                if let Some(db) = &e.database {
+                                    ui.label(RichText::new(db).size(11.0).color(t.muted_foreground));
+                                }
+                            });
+                            let preview: Vec<&str> =
+                                e.sql.lines().map(str::trim).filter(|l| !l.is_empty()).take(3).collect();
+                            for line in preview {
+                                ui.add(
+                                    egui::Label::new(RichText::new(line).monospace().size(12.0).color(t.foreground))
+                                        .truncate()
+                                        .selectable(false),
+                                );
+                            }
+                        });
+                        let r = ui
+                            .interact(
+                                inner.response.rect,
+                                egui::Id::new(("history-entry", tab, i)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .tooltip(tr("Click to add it to the script"));
+                        if r.hovered() {
+                            ui.painter().set(bg, egui::Shape::rect_filled(inner.response.rect, 6.0, t.accent));
+                        }
+                        if r.clicked() {
+                            picked = Some(e.sql.clone());
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button(tr("Add to the script")).clicked() {
+                                picked = Some(e.sql.clone());
+                            }
+                            if ui.button(tr("Copy")).clicked() {
+                                ui.ctx().copy_text(e.sql.clone());
+                            }
+                        });
+                    }
+                    if !any {
+                        ui.label(RichText::new(tr("Nothing here yet")).color(t.muted_foreground));
+                    }
+                });
+            });
+        if let Some(sql) = picked {
+            self.insert(ui.ctx(), editor_id, &sql);
+        }
+    }
+
     fn results(&mut self, ui: &mut Ui, tab: TabId, actions: &mut Vec<Action>, conn: uuid::Uuid) {
         let t = Theme::get(ui.ctx());
         if self.outputs.is_empty() {
@@ -423,10 +682,14 @@ impl Console {
         }
         let Some(o) = self.outputs.get(self.shown_output) else { return };
         ui.horizontal(|ui| {
-            let first_line = o.sql.lines().next().unwrap_or_default();
-            ui.add(egui::Label::new(RichText::new(first_line).monospace().color(t.muted_foreground)).truncate());
+            // The summary first, so the statement is cut to the width left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(&o.summary).color(t.muted_foreground));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let first_line = o.sql.lines().next().unwrap_or_default();
+                    let label = RichText::new(first_line).monospace().color(t.muted_foreground);
+                    ui.add(egui::Label::new(label).truncate());
+                });
             });
         });
         if let Some(e) = &o.error {
@@ -443,6 +706,29 @@ impl Console {
             g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output)));
         }
     }
+}
+
+/// History entries the panel shows at most.
+const HISTORY_SHOWN: usize = 300;
+
+/// "14:03:27" today, "2026-10-12 09:41" on other days, in local time.
+fn history_time(at: i64, now: &chrono::DateTime<chrono::Local>) -> String {
+    let Some(t) = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&chrono::Local)) else {
+        return String::new();
+    };
+    if t.date_naive() == now.date_naive() {
+        t.format("%H:%M:%S").to_string()
+    } else {
+        t.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
+/// Reads a script file as text.
+pub(crate) fn read_script(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    // A byte order mark from Windows editors is not part of the SQL.
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf".as_slice()).unwrap_or(&bytes);
+    String::from_utf8(bytes.to_vec()).map_err(|_| tr("The file is not UTF-8 text").to_string())
 }
 
 fn spawn_run(
