@@ -71,6 +71,12 @@ pub enum TabEvent {
         elapsed: Duration,
         result: DbResult<StatementOutcome>,
     },
+    /// The plan of a console statement.
+    Plan {
+        sql: String,
+        elapsed: Duration,
+        result: DbResult<dbman_core::explain::Plan>,
+    },
     /// The console run is over (all statements done or stopped at an error).
     RunFinished,
     /// A cancel request was sent (`None`) or could not be sent.

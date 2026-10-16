@@ -61,6 +61,10 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **Script files**: `Script` in the console opens a `.sql` file, saves it (`Ctrl+S`) or saves it under another name, and lists recent files. The tab shows the file name, with `•` while there are unsaved changes.
 
 ![Query history](crates/dbman/tests/snapshots/query_history.png)
+
+- **Execution plan**: `Explain` in the console shows the plan of the statement under the cursor as a tree with the estimated rows and cost, without running it. `Explain analyze` (PostgreSQL and DuckDB) runs the statement and adds the actual rows and times; a bar shows each step's share of the time, or of the cost. `Copy plan` copies the engine's own output. Each engine is asked its own way: `EXPLAIN (FORMAT JSON)` in PostgreSQL and DuckDB, `EXPLAIN` in MySQL and MariaDB, `EXPLAIN QUERY PLAN` in SQLite, `EXPLAIN indexes = 1` in ClickHouse, and `SET SHOWPLAN_ALL ON` in SQL Server.
+
+![Execution plan](crates/dbman/tests/snapshots/explain_plan.png)
 - **Data view** of tables and views: pages, a `WHERE` filter, `ORDER BY`, quick filter and sort in the grid, and `NULL` stands out.
 - **Data editing** in tables.
   - Double-click a cell to edit it. `Set NULL` is in the context menu, and `+ Row` and `− Delete` add and delete rows.
@@ -279,7 +283,7 @@ cargo test --workspace
 1. More engine features, with their backups:
    - **ClickHouse**: partitions and mutations in the object tree, user-defined functions, and the native protocol.
    - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
-2. The execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
+2. SSH tunnels, and passwords in the system keychain.
 
 ## License
 

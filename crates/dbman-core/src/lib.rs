@@ -14,6 +14,7 @@ pub mod dml;
 mod driver;
 pub mod er;
 mod error;
+pub mod explain;
 pub mod export;
 pub mod generate;
 pub mod import;

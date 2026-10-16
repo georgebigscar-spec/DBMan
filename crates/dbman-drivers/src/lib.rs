@@ -32,3 +32,37 @@ pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {
         DbKind::ClickHouse => Arc::new(clickhouse::ClickHouseConnection::connect(cfg).await?),
     })
 }
+
+/// The execution plan of a statement, asked on `conn`'s session. With `analyze`
+/// (where the engine supports it) the statement runs and the plan has the
+/// actual times and rows.
+pub async fn explain(
+    conn: &Arc<dyn Connection>,
+    database: Option<&str>,
+    kind: DbKind,
+    sql: &str,
+    analyze: bool,
+) -> DbResult<dbman_core::explain::Plan> {
+    let mut plan = None;
+    let mut failed = None;
+    let stmts = dbman_core::explain::statements(kind, sql, analyze);
+    let last = stmts.len() - 1;
+    for (i, s) in stmts.iter().enumerate() {
+        // After an error only the last statement runs: it switches SQL Server's SHOWPLAN off again.
+        if failed.is_some() && i != last {
+            continue;
+        }
+        match conn.execute(database, s, usize::MAX / 2).await {
+            Ok(dbman_core::StatementOutcome::Rows(r)) if !r.columns.is_empty() => plan = Some(r),
+            Ok(_) => {}
+            Err(e) => {
+                failed.get_or_insert(e);
+            }
+        }
+    }
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    let r = plan.ok_or_else(|| dbman_core::DbError::new("The server returned no plan."))?;
+    dbman_core::explain::parse(kind, &r).map_err(dbman_core::DbError::new)
+}
