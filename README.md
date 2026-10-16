@@ -170,7 +170,13 @@ Shortcuts:
 | `F4` | Open the selected object |
 | Double click on a table | Open its data |
 
-## Running
+## Download
+
+Every push to `main` builds the app for Linux (x86_64), Windows (x86_64) and macOS (Apple Silicon and Intel) in the [Release builds](../../actions/workflows/release.yml) workflow; the archives are in the run's artifacts. A tag like `v0.2.0` also publishes them as a [GitHub release](../../releases).
+
+The macOS app is not notarized: open it the first time with right click → Open.
+
+## Running from source
 
 ```sh
 cargo run --release
@@ -248,7 +254,6 @@ cargo test --workspace
    - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
 2. DBeaver-style features: import from Excel and Parquet, and a test data generator.
 3. Console autocomplete, query history, the execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
-4. App builds in GitHub Actions for Linux, Windows and macOS.
 
 ## License
 
