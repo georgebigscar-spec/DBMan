@@ -21,6 +21,7 @@ shadcn_egui = { git = "https://github.com/georgebigscar-spec/shadcn_egui", rev =
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 similar = "3.2.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }

@@ -26,6 +26,7 @@ use crate::i18n::{tr, trf};
 use crate::sql_editor;
 use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
+use crate::value_panel::ValuePanel;
 use dbman_core::explain::{self, Plan, PlanNode};
 
 pub struct Tab {
@@ -175,6 +176,7 @@ pub struct Console {
     pub manual: bool,
     /// A transaction is open in the session.
     pub in_tx: bool,
+    pub value: ValuePanel,
 }
 
 impl Console {
@@ -201,6 +203,7 @@ impl Console {
             history_search: String::new(),
             manual: false,
             in_tx: false,
+            value: ValuePanel::default(),
         }
     }
 
@@ -862,7 +865,7 @@ impl Console {
             tabs(ui, &mut self.shown_output, &refs);
             ui.add_space(6.0);
         }
-        let Some(o) = self.outputs.get(self.shown_output) else { return };
+        let Some(o) = self.outputs.get_mut(self.shown_output) else { return };
         ui.horizontal(|ui| {
             // The summary first, so the statement is cut to the width left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -880,15 +883,19 @@ impl Console {
         if let Some(p) = &o.plan {
             plan_view(ui, tab, p);
         }
-        if let Some(g) = &o.grid {
+        if let Some(g) = &mut o.grid {
             ui.horizontal(|ui| {
                 if grid::export_menu(ui, &g.result, self.cfg.kind, None, true) {
                     let source = ExportSource::Query { database: self.database.clone(), sql: o.sql.clone() };
                     actions.push(Action::ExportData(conn, source));
                 }
+                grid::value_button(ui, &mut self.value.open);
             });
             ui.add_space(4.0);
-            g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output)));
+            self.value.show(ui, egui::Id::new(("console-value", tab)), g.current_value());
+            if g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output))) {
+                self.value.open = true;
+            }
         }
     }
 }

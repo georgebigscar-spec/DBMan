@@ -645,5 +645,15 @@
   "Undo the transaction's changes": "Отменить изменения транзакции",
   "Close the console?": "Закрыть консоль?",
   "Its transaction is still open. Closing rolls back the changes that were not committed.": "В ней открыта транзакция. При закрытии незафиксированные изменения откатятся.",
-  "Roll back and close": "Откатить и закрыть"
+  "Roll back and close": "Откатить и закрыть",
+  "Value": "Значение",
+  "Show the whole value of the clicked cell": "Показать значение выбранной ячейки целиком",
+  "row {n}": "строка {n}",
+  "Click a cell to see its whole value.": "Щёлкните ячейку, чтобы увидеть её значение целиком.",
+  "{format} image": "изображение {format}",
+  "bytes": "байты",
+  "text": "текст",
+  "Copy the value as it is": "Скопировать значение как есть",
+  "Showing the first {size}.": "Показаны первые {size}.",
+  "The image could not be decoded.": "Не удалось прочитать изображение."
 }

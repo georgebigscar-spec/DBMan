@@ -22,6 +22,7 @@ use crate::grid;
 use crate::i18n::{tr, trf};
 use crate::sql_editor;
 use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, outcome_summary, toolbar_button};
+use crate::value_panel::{Current, ValuePanel};
 use dbman_drivers::transfer::ExportSource;
 use tokio::sync::OnceCell;
 
@@ -63,6 +64,8 @@ enum GridCmd {
     Revert(usize, usize),
     Delete(usize),
     Copy(String),
+    /// A cell was clicked: show it in the value panel.
+    Current(usize, usize),
 }
 
 pub struct DataView {
@@ -90,6 +93,9 @@ pub struct DataView {
     submitting: bool,
     submit_error: Option<String>,
     preview: Option<String>,
+    /// The clicked cell (row, column).
+    current: Option<(usize, usize)>,
+    value_panel: ValuePanel,
 }
 
 impl DataView {
@@ -115,6 +121,8 @@ impl DataView {
             submitting: false,
             submit_error: None,
             preview: None,
+            current: None,
+            value_panel: ValuePanel::default(),
         }
     }
 
@@ -139,6 +147,7 @@ impl DataView {
                 self.edits = Edits::default();
                 self.selected.clear();
                 self.editing = None;
+                self.current = None;
                 self.rebuild();
             }
             TabEvent::Details(r) => self.details = Load::from_result(r),
@@ -352,6 +361,7 @@ impl DataView {
     fn apply(&mut self, cmd: GridCmd, ctx: &egui::Context) {
         let base = self.base_len();
         match cmd {
+            GridCmd::Current(row, col) => self.current = Some((row, col)),
             GridCmd::StartEdit(row, col) => {
                 let text = self.value(row, col).and_then(|v| v.as_text().map(|t| t.into_owned())).unwrap_or_default();
                 self.editing = Some(Editing { row, col, text, focused: false });
@@ -453,6 +463,9 @@ impl DataView {
                 && grid::export_menu(ui, r, self.kind, Some(&self.object.path), true)
             {
                 cx.actions.push(Action::ExportData(cx.conn_id, self.export_source()));
+            }
+            if self.rows.ready().is_some() {
+                grid::value_button(ui, &mut self.value_panel.open);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(&self.summary).color(t.muted_foreground));
@@ -574,6 +587,14 @@ impl DataView {
                 if c.numeric { col.right() } else { col }
             })
             .collect();
+        let mut panel = std::mem::take(&mut self.value_panel);
+        let current = self.current;
+        let value = current.and_then(|(row, col)| Some((row, col, self.value(row, col)?)));
+        let shown = value
+            .as_ref()
+            .and_then(|(row, col, cell)| Some(Current { column: result.columns.get(*col)?, row: *row, cell }));
+        panel.show(ui, egui::Id::new(("data-value", tab)), shown);
+        self.value_panel = panel;
         let height = (ui.available_height() - 110.0).max(120.0);
         let display = &self.display;
         let selected = &mut self.selected;
@@ -623,6 +644,12 @@ impl DataView {
                     ui.painter().rect_filled(cell_rect, 0.0, bg);
                 }
                 let r = ui.interact(cell_rect, id.with(("cell", row, col)), Sense::click());
+                if r.clicked() {
+                    cmds.push(GridCmd::Current(row, col));
+                }
+                if current == Some((row, col)) {
+                    grid::current_outline(ui, cell_rect, &t);
+                }
                 let text = match value {
                     None if is_new => RichText::new(tr("<default>")).italics().color(t.muted_foreground),
                     None | Some(Cell::Null) => RichText::new("NULL").italics().color(t.muted_foreground),

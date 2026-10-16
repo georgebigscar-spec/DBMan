@@ -74,6 +74,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **SQL formatting**: `Format SQL` in the console (`Ctrl+Alt+L`) lays out the selection, or the whole script, one clause per line: select lists and `SET` assignments one item per line, `AND` / `OR` conditions on their own lines, subqueries and CTEs indented, `CREATE TABLE` one column per line, and keywords in upper case (on ClickHouse, whose names are case-sensitive, the case is kept). Other statements, such as procedure bodies, triggers and `GRANT`, are kept as written, and so are strings and comments. Only whitespace and the case of keywords change, so the formatted script means the same; a test runs queries as written and formatted on every engine and compares the results.
 
 ![SQL formatting](crates/dbman/tests/snapshots/format_sql.png)
+- **Value panel**: `Value` above a result grid or table data opens a panel with the whole value of the clicked cell (a double click in console results opens it too). JSON objects and arrays are indented, XML gets one element per line, long text wraps, and bytes are shown as a hex dump with offsets and ASCII. PNG, JPEG, GIF, BMP and WebP images are recognized by their first bytes and drawn above the dump. The panel names the column, its type, the row and the size, and `Copy` copies the value as it is. Values over 1 MB are cut for display.
+
+![Value panel](crates/dbman/tests/snapshots/value_panel.png)
 - **Data view** of tables and views: pages, a `WHERE` filter, `ORDER BY`, quick filter and sort in the grid, and `NULL` stands out.
 - **Data editing** in tables.
   - Double-click a cell to edit it. `Set NULL` is in the context menu, and `+ Row` and `− Delete` add and delete rows.
