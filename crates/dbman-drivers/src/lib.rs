@@ -11,6 +11,7 @@ use dbman_core::{Connection, ConnectionConfig, DbKind, DbResult};
 pub mod backup;
 pub mod clickhouse;
 pub mod compare;
+pub mod copy;
 pub mod duckdb;
 pub mod mssql;
 pub mod mysql;

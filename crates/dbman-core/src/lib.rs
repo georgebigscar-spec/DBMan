@@ -7,6 +7,7 @@
 pub mod backup;
 pub mod compare;
 mod config;
+pub mod copy;
 pub mod ddl;
 pub mod dml;
 mod driver;

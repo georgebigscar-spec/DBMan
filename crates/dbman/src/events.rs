@@ -96,6 +96,9 @@ pub enum TabEvent {
     Diagram(DbResult<Vec<(dbman_core::ObjectPath, TableDetails)>>),
     /// News for a comparison tab.
     Compare(Box<crate::compare_view::CompareEvent>),
+    Copy(Box<crate::copy_view::CopyEvent>),
+    /// Lists for a target picker.
+    Picker(crate::target_picker::PickerEvent),
 }
 
 /// Spawns futures on the runtime and wakes the UI when they finish.

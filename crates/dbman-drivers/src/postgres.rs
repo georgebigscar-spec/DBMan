@@ -535,6 +535,8 @@ impl Connection for PgConnection {
         pin_mut!(stream);
         let mut result: Option<QueryResult> = None;
         let mut affected = None;
+        // bytea arrives as `\x…` text; it becomes bytes, as other engines give them.
+        let bytea: Vec<bool> = types.iter().flatten().map(|t| t == "bytea").collect();
         while let Some(msg) = stream.try_next().await.map_err(pg_err)? {
             match msg {
                 SimpleQueryMessage::RowDescription(cols) => {
@@ -556,7 +558,13 @@ impl Connection for PgConnection {
                         break;
                     }
                     r.rows.push(
-                        (0..row.len()).map(|i| row.get(i).map_or(Cell::Null, |s| Cell::Text(s.to_string()))).collect(),
+                        (0..row.len())
+                            .map(|i| match row.get(i) {
+                                None => Cell::Null,
+                                Some(s) if bytea.get(i) == Some(&true) => decode_bytea(s),
+                                Some(s) => Cell::Text(s.to_string()),
+                            })
+                            .collect(),
                     );
                 }
                 SimpleQueryMessage::CommandComplete(n) => affected = Some(n),
@@ -567,5 +575,16 @@ impl Connection for PgConnection {
             Some(r) => StatementOutcome::Rows(r),
             None => StatementOutcome::Done { affected },
         })
+    }
+}
+
+/// `\x616263` (bytea's hex output) → bytes; other text stays text.
+fn decode_bytea(s: &str) -> Cell {
+    let Some(h) = s.strip_prefix("\\x") else { return Cell::Text(s.to_string()) };
+    let bytes: Option<Vec<u8>> =
+        (0..h.len()).step_by(2).map(|i| h.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok())).collect();
+    match bytes {
+        Some(b) if h.len() % 2 == 0 => Cell::Bytes(b),
+        _ => Cell::Text(s.to_string()),
     }
 }

@@ -353,7 +353,7 @@ impl Connection for DuckDbConnection {
         self.with(move |c| {
             strings(
                 c,
-                "SELECT schema_name FROM duckdb_schemas() WHERE database_name = ? AND NOT internal
+                "SELECT schema_name FROM duckdb_schemas() WHERE database_name = ? AND (NOT internal OR schema_name = 'main')
                  ORDER BY schema_name <> 'main', schema_name",
                 &[&db],
             )

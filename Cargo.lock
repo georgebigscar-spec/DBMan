@@ -1227,6 +1227,7 @@ dependencies = [
  "dbman-core",
  "dbman-drivers",
  "directories",
+ "duckdb",
  "eframe",
  "egui",
  "egui_kittest",

@@ -143,6 +143,8 @@ pub enum Action {
     OpenDiagram(Uuid, String, String),
     /// Opens a comparison of a schema with another one (database, schema).
     OpenCompare(Uuid, String, String),
+    /// Opens a copy of a schema's tables (or one table) to another connection.
+    OpenCopy(Uuid, String, String, Option<String>),
     /// Opens a console in a database with a script in it.
     OpenConsoleWith(Uuid, Option<String>, String),
     StartJob(Box<crate::transfer_dialog::Start>),
@@ -356,6 +358,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
                 if menu_item(ui, "Compare with…", None).clicked() {
                     actions.push(Action::OpenCompare(id, db.clone(), db.clone()));
                 }
+                if menu_item(ui, "Copy to another connection…", None).clicked() {
+                    actions.push(Action::OpenCopy(id, db.clone(), db.clone(), None));
+                }
                 if menu_item(ui, "Refresh", None).clicked() {
                     actions.push(Action::RefreshObjects(id, db.clone(), db.clone()));
                 }
@@ -410,6 +415,9 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
             }
             if menu_item(ui, "Compare with…", None).clicked() {
                 actions.push(Action::OpenCompare(id, db.to_string(), s.clone()));
+            }
+            if menu_item(ui, "Copy to another connection…", None).clicked() {
+                actions.push(Action::OpenCopy(id, db.to_string(), s.clone(), None));
             }
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::RefreshObjects(id, db.to_string(), s.clone()));
@@ -615,6 +623,10 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         }
         if o.kind == ObjectKind::Table && menu_item(ui, "Import data…", None).clicked() {
             actions.push(Action::ImportData(id, o.path.clone()));
+        }
+        if o.kind == ObjectKind::Table && menu_item(ui, "Copy to…", None).clicked() {
+            let p = &o.path;
+            actions.push(Action::OpenCopy(id, p.database.clone(), p.schema.clone(), Some(p.name.clone())));
         }
         if o.kind == ObjectKind::Table && menu_item(ui, "Truncate…", None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));
