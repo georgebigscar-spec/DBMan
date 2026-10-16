@@ -65,9 +65,11 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - The table is read page by page by primary key and written as it is read, so table size is not limited by memory.
   - In the data view, `WHERE` and `ORDER BY` apply.
   - Progress comes from `COUNT(*)`. `Cancel` stops the query on the server and deletes the unfinished file.
-- **Data import** (`Import data…` in a table menu) from CSV / TSV and JSON.
+- **Data import** (`Import data…` in a table menu) from CSV / TSV, JSON, Excel and Parquet.
   - CSV / TSV: any delimiter, header row, quoted fields with line breaks, and BOM.
   - JSON: an array of objects, or JSON Lines.
+  - Excel (`.xlsx`, `.xlsm`): pick the sheet; dates and times come out as `YYYY-MM-DD hh:mm:ss`, and formulas give their saved value. The sheet is read as it streams, never whole.
+  - Parquet: read through the bundled DuckDB, so nothing else is needed.
   - The dialog shows the first rows of the file and matches columns by name (ignoring case and `_`) or by position. Any column can be skipped.
   - The file is read in its own thread, and rows go in as batches of multi-row `INSERT`s (up to 1000 rows on SQL Server).
   - Options: empty fields as `NULL`, delete the rows first, and everything in one transaction that rolls back on error. The error message names the rows it happened on.
@@ -212,7 +214,7 @@ crates/
   - identifier and string quoting.
 - **`dbman-drivers`**:
   - one module per engine, plus `connect(&ConnectionConfig)`;
-  - `backup.rs` runs backups, and `transfer.rs` does data export and import. File formats and `INSERT` building live in `dbman-core::export` and `dbman-core::import`.
+  - `backup.rs` runs backups, and `transfer.rs` does data export and import. File formats and `INSERT` building live in `dbman-core::export`, `dbman-core::import` and `dbman-core::xlsx`; `files.rs` opens Parquet files through DuckDB.
   - To add an engine, you need a `DbKind` variant, a `Connection` implementation and a line in `connect`.
 - **`dbman`**: the interface never waits for the database. Queries run on a tokio runtime, and results come back as events through a channel that is drained every frame (`events.rs`). The modules:
 
@@ -262,8 +264,7 @@ cargo test --workspace
 1. More engine features, with their backups:
    - **ClickHouse**: partitions and mutations in the object tree, user-defined functions, and the native protocol.
    - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
-2. DBeaver-style features: import from Excel and Parquet.
-3. Console autocomplete, query history, the execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
+2. Console autocomplete, query history, the execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
 
 ## License
 
