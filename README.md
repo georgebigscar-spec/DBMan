@@ -40,7 +40,7 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - **SSH tunnels** (the `SSH` tab): a server connection can go through an SSH server, signing in with a password or a private key file (OpenSSH, PEM or PKCS#8, with an optional passphrase). The database's host and port are reached from the SSH server, so `localhost` there is the SSH server itself. The sessions of a connection share one SSH login, and backups, restores and exports go through it too. Host keys are checked against `~/.ssh/known_hosts` and DBMan's own `known_hosts` next to its settings: a new server's key is remembered on the first connection, and a changed key is refused. Through a tunnel DBMan connects to `127.0.0.1`, which does not match the server certificate's host name, so use SSL `require` rather than `verify-full`.
 
 ![SSH tunnel](crates/dbman/tests/snapshots/ssh_tunnel.png)
-  - Settings live in `settings.json` in the user's config directory. A password is saved only when "Save password" is ticked.
+  - Settings live in `settings.json` in the user's config directory. A password is saved only when "Save password" is ticked, and it goes to the system keychain: Keychain on macOS, Credential Manager on Windows, and the Secret Service (GNOME Keyring, KWallet) on Linux. Each connection is one item named `DBMan`, holding its database and SSH passwords. Without a keychain, or with `DBMAN_KEYCHAIN=off`, passwords stay in `settings.json` (readable only by its owner on Linux and macOS). Passwords already in `settings.json` move to the keychain on the next save.
 - **Database Explorer**: a tree of connection → database → schema (on PostgreSQL) → object groups → objects → columns, indexes and foreign keys. Everything loads lazily as you expand it.
   - PostgreSQL: tables, views, materialized views, foreign tables, sequences, functions and procedures (with overloads), triggers, and types (enum, domain, composite).
   - MySQL / MariaDB: tables, views, sequences (MariaDB), functions, procedures and triggers.
@@ -286,7 +286,6 @@ cargo test --workspace
 1. More engine features, with their backups:
    - **ClickHouse**: partitions and mutations in the object tree, user-defined functions, and the native protocol.
    - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
-2. Passwords in the system keychain.
 
 ## License
 

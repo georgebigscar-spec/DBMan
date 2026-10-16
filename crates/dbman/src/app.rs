@@ -94,8 +94,10 @@ impl DbManApp {
 
     fn save_settings(&mut self) {
         self.settings.connections = self.conns.iter().map(|c| c.cfg.clone()).collect();
-        if let Err(e) = self.settings.save() {
-            self.status = trf("Could not save settings: {error}", &[("error", &e)]);
+        match self.settings.save() {
+            Ok(None) => {}
+            Ok(Some(warning)) => self.status = warning,
+            Err(e) => self.status = trf("Could not save settings: {error}", &[("error", &e)]),
         }
     }
 

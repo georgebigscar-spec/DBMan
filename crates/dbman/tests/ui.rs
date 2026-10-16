@@ -126,6 +126,8 @@ fn browse_sqlite_database() {
     let dir = tempfile::tempdir().unwrap();
     // Keep the test away from the user's real settings.
     unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    // And away from the system keychain.
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
     let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
     cfg.name = "shop".into();
     cfg.database = sample_db(dir.path());

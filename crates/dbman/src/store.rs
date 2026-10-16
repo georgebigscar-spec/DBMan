@@ -1,13 +1,16 @@
 //! Saved connections and preferences, as JSON in the user's config directory,
-//! and the query history next to them.
+//! and the query history next to them. Saved passwords go to the system
+//! keychain when there is one, and into the JSON file otherwise.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 
 use dbman_core::ConnectionConfig;
 use serde::{Deserialize, Serialize};
 
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -74,22 +77,75 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::path()
+        let mut s: Self = Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(k) = keychain() {
+            s.read_secrets(k);
+        }
+        s
     }
 
-    pub fn save(&self) -> Result<(), String> {
+    /// Fills in the passwords kept in `store`.
+    pub fn read_secrets(&mut self, store: &dyn Secrets) {
+        for c in &mut self.connections {
+            let id = c.id.to_string();
+            if !c.save_password {
+                continue;
+            }
+            let Ok(Some(json)) = store.get(&id) else { continue };
+            let Ok(saved) = serde_json::from_str::<Saved>(&json) else { continue };
+            // A password still in the file is newer: it moves to the keychain on the next save.
+            if c.password.is_empty() && c.ssh.password.is_empty() {
+                c.password = saved.password;
+                c.ssh.password = saved.ssh;
+            }
+            WRITTEN.lock().unwrap().insert(id, json);
+        }
+    }
+
+    /// Writes the settings; passwords go to the system keychain when there is one.
+    /// `Ok(Some(warning))` when a password could not go there and stayed in the file.
+    pub fn save(&self) -> Result<Option<String>, String> {
+        self.save_with(keychain())
+    }
+
+    pub fn save_with(&self, store: Option<&dyn Secrets>) -> Result<Option<String>, String> {
         let path = Self::path().ok_or(tr("no config directory"))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let mut copy = self.clone();
+        let mut warning = None;
         for c in &mut copy.connections {
             if !c.save_password {
                 c.password.clear();
                 c.ssh.password.clear();
+            }
+            if let Some(store) = store {
+                match store_secret(store, c) {
+                    Ok(()) => {
+                        c.password.clear();
+                        c.ssh.password.clear();
+                    }
+                    Err(e) => {
+                        warning = Some(trf(
+                            "The system keychain did not take the password of {name}, so it is kept in settings.json: {error}",
+                            &[("name", &c.display_name()), ("error", &e)],
+                        ))
+                    }
+                }
+            }
+        }
+        if let Some(store) = store {
+            // Connections that were deleted.
+            let ids: Vec<String> = copy.connections.iter().map(|c| c.id.to_string()).collect();
+            let gone: Vec<String> = WRITTEN.lock().unwrap().keys().filter(|k| !ids.contains(k)).cloned().collect();
+            for id in gone {
+                if store.delete(&id).is_ok() {
+                    WRITTEN.lock().unwrap().remove(&id);
+                }
             }
         }
         let json = serde_json::to_string_pretty(&copy).map_err(|e| e.to_string())?;
@@ -102,8 +158,85 @@ impl Settings {
             // Passwords may be stored here.
             let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
         }
-        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        Ok(warning)
     }
+}
+
+/// The passwords of one connection, as one keychain item.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    ssh: String,
+}
+
+/// What was last written to the keychain, by connection id, so unchanged passwords are not written again.
+static WRITTEN: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+
+/// Puts a connection's passwords into `store`, or removes them when there are none to keep.
+fn store_secret(store: &dyn Secrets, c: &ConnectionConfig) -> Result<(), String> {
+    let id = c.id.to_string();
+    let empty = c.password.is_empty() && c.ssh.password.is_empty();
+    if !c.save_password || empty {
+        if WRITTEN.lock().unwrap().remove(&id).is_some() {
+            store.delete(&id)?;
+        }
+        return Ok(());
+    }
+    let json = serde_json::to_string(&Saved { password: c.password.clone(), ssh: c.ssh.password.clone() })
+        .map_err(|e| e.to_string())?;
+    if WRITTEN.lock().unwrap().get(&id) == Some(&json) {
+        return Ok(());
+    }
+    store.set(&id, &json)?;
+    WRITTEN.lock().unwrap().insert(id, json);
+    Ok(())
+}
+
+/// Where saved passwords are kept.
+pub trait Secrets: Send + Sync {
+    fn get(&self, id: &str) -> Result<Option<String>, String>;
+    fn set(&self, id: &str, secret: &str) -> Result<(), String>;
+    fn delete(&self, id: &str) -> Result<(), String>;
+}
+
+/// The name of DBMan's items in the system keychain.
+const SERVICE: &str = "DBMan";
+
+/// The system keychain: Keychain on macOS, Credential Manager on Windows, the Secret Service elsewhere.
+struct Keychain;
+
+impl Secrets for Keychain {
+    fn get(&self, id: &str) -> Result<Option<String>, String> {
+        match keyring::Entry::new(SERVICE, id).and_then(|e| e.get_password()) {
+            Ok(s) => Ok(Some(s)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn set(&self, id: &str, secret: &str) -> Result<(), String> {
+        keyring::Entry::new(SERVICE, id).and_then(|e| e.set_password(secret)).map_err(|e| e.to_string())
+    }
+
+    fn delete(&self, id: &str) -> Result<(), String> {
+        match keyring::Entry::new(SERVICE, id).and_then(|e| e.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// The system keychain, unless there is none or `DBMAN_KEYCHAIN=off`.
+pub fn keychain() -> Option<&'static dyn Secrets> {
+    static AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
+        let off = std::env::var("DBMAN_KEYCHAIN").is_ok_and(|v| matches!(v.as_str(), "0" | "off" | "no" | "false"));
+        // Reading a missing item shows whether the store answers at all.
+        !off && keyring::Entry::store_status().is_ok() && Keychain.get("availability-check").is_ok()
+    });
+    if *AVAILABLE { Some(&Keychain) } else { None }
 }
 
 /// One statement run in a console.
@@ -193,6 +326,65 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Memory(Mutex<HashMap<String, String>>, bool);
+
+    impl Secrets for Memory {
+        fn get(&self, id: &str) -> Result<Option<String>, String> {
+            Ok(self.0.lock().unwrap().get(id).cloned())
+        }
+        fn set(&self, id: &str, secret: &str) -> Result<(), String> {
+            if self.1 {
+                return Err("locked".into());
+            }
+            self.0.lock().unwrap().insert(id.into(), secret.into());
+            Ok(())
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.0.lock().unwrap().remove(id);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn passwords_go_to_the_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // SAFETY: only this test reads DBMAN_CONFIG in this test binary.
+        unsafe { std::env::set_var("DBMAN_CONFIG", &path) };
+        let mut a = ConnectionConfig::new(dbman_core::DbKind::Postgres);
+        a.password = "db secret".into();
+        a.ssh.password = "ssh secret".into();
+        let mut b = ConnectionConfig::new(dbman_core::DbKind::MySql);
+        b.password = "not kept".into();
+        b.save_password = false;
+        let settings = Settings { connections: vec![a.clone(), b], ..Default::default() };
+        let store = Memory::default();
+        assert_eq!(settings.save_with(Some(&store)), Ok(None));
+
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(!file.contains("secret") && !file.contains("not kept"), "{file}");
+        assert_eq!(store.0.lock().unwrap().len(), 1);
+
+        // Loading fills them back in.
+        let mut back: Settings = serde_json::from_str(&file).unwrap();
+        back.read_secrets(&store);
+        assert_eq!(back.connections[0].password, "db secret");
+        assert_eq!(back.connections[0].ssh.password, "ssh secret");
+        assert_eq!(back.connections[1].password, "");
+
+        // A deleted connection's item goes away.
+        back.connections.remove(0);
+        back.save_with(Some(&store)).unwrap();
+        assert!(store.0.lock().unwrap().is_empty());
+
+        // A keychain that refuses keeps the password in the file, with a warning.
+        let locked = Memory(Mutex::default(), true);
+        let warning = settings.save_with(Some(&locked)).unwrap();
+        assert!(warning.is_some_and(|w| w.contains("kept in settings.json")));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("db secret"));
+    }
 
     fn entry(conn: uuid::Uuid, sql: &str) -> HistoryEntry {
         HistoryEntry { conn, database: None, sql: sql.into(), at: 0, millis: 1, summary: String::new(), ok: true }
