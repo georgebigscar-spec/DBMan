@@ -98,6 +98,17 @@ fn settle(h: &mut Harness<'_, DbManApp>) {
     }
 }
 
+/// Settles until background job `i` is no longer running, so slow CI runners
+/// don't see it mid-way.
+fn wait_job(h: &mut Harness<'_, DbManApp>, i: usize) {
+    for _ in 0..50 {
+        settle(h);
+        if h.state().jobs.list.get(i).is_some_and(|j| j.state != JobState::Running) {
+            return;
+        }
+    }
+}
+
 /// Clicks the first node with this label (a tree row also contains its label text).
 fn click(h: &mut Harness<'_, DbManApp>, label: &str) {
     h.get_all_by_label(label).next().unwrap_or_else(|| panic!("no node {label}")).click();
@@ -496,7 +507,7 @@ fn browse_sqlite_database() {
     let jobs = h.state().jobs.list.len();
     click(&mut h, "Apply to target");
     click(&mut h, "Apply");
-    settle(&mut h);
+    wait_job(&mut h, jobs);
     let job = &h.state().jobs.list[jobs];
     assert_eq!(job.state, JobState::Done, "{:?}", job.log);
     let target = rusqlite::Connection::open(&staging).unwrap();
@@ -520,7 +531,7 @@ fn browse_sqlite_database() {
     let jobs = h.state().jobs.list.len();
     click(&mut h, "Apply to target");
     click(&mut h, "Apply");
-    settle(&mut h);
+    wait_job(&mut h, jobs);
     let job = &h.state().jobs.list[jobs];
     assert_eq!(job.state, JobState::Done, "{:?}", job.log);
     target.execute("ATTACH DATABASE ?1 AS src", [&db_path]).unwrap();
@@ -557,7 +568,7 @@ fn browse_sqlite_database() {
     snapshot(&mut h, "copy_tables");
     let jobs = h.state().jobs.list.len();
     click(&mut h, &format!("Copy {} tables", chosen.len()));
-    settle(&mut h);
+    wait_job(&mut h, jobs);
     let job = &h.state().jobs.list[jobs];
     assert_eq!(job.state, JobState::Done, "{:?}", job.log);
     let count = |table: &str| -> i64 {
@@ -576,7 +587,7 @@ fn browse_sqlite_database() {
     let jobs = h.state().jobs.list.len();
     click(&mut h, "Copy 1 table");
     click(&mut h, "Copy");
-    settle(&mut h);
+    wait_job(&mut h, jobs);
     let job = &h.state().jobs.list[jobs];
     assert_eq!(job.state, JobState::Done, "{:?}", job.log);
     let orders: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
@@ -595,7 +606,7 @@ fn browse_sqlite_database() {
     let before: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
     let jobs = h.state().jobs.list.len();
     click(&mut h, "Generate");
-    settle(&mut h);
+    wait_job(&mut h, jobs);
     let job = &h.state().jobs.list[jobs];
     assert_eq!(job.state, JobState::Done, "{:?}", job.log);
     let after: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
