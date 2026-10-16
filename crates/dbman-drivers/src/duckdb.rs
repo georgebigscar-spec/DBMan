@@ -551,11 +551,12 @@ impl Connection for DuckDbConnection {
         let sql = sql.to_string();
         let db = database.filter(|d| !d.is_empty()).map(String::from);
         self.with(move |c| {
-            if let Some(db) = db {
-                let current: String = c.query_row("SELECT current_database()", [], |r| r.get(0))?;
-                if current != db {
-                    c.execute_batch(&format!("USE {}", q(&db)))?;
-                }
+            // In an aborted transaction only ROLLBACK runs, so the lookup may fail; the statement goes on.
+            if let Some(db) = db
+                && let Ok(current) = c.query_row::<String, _, _>("SELECT current_database()", [], |r| r.get(0))
+                && current != db
+            {
+                c.execute_batch(&format!("USE {}", q(&db)))?;
             }
             run(c, &sql, max_rows)
         })

@@ -16,6 +16,7 @@ mod error;
 pub mod export;
 pub mod generate;
 pub mod import;
+pub mod infer;
 mod result;
 mod schema;
 pub mod sql;

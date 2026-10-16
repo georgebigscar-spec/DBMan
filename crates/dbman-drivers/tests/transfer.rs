@@ -153,6 +153,33 @@ fn import_job(table: &ObjectPath, path: &Path, details: &dbman_core::TableDetail
         clear_first: true,
         transaction: true,
         batch_rows: import::default_batch(kind),
+        create: Vec::new(),
+    }
+}
+
+/// An import into a new table with the types guessed from the whole file.
+fn new_table_job(table: &ObjectPath, path: &Path, kind: DbKind) -> ImportJob {
+    use dbman_core::infer::{self, Guess};
+    let (format, csv) = import::detect(path);
+    let mut source = dbman_drivers::files::open(path, format, &csv, Default::default()).unwrap();
+    let names = infer::column_names(source.columns());
+    let mut guess = Guess::new(names.len());
+    for row in import::preview(source.as_mut(), usize::MAX).unwrap() {
+        guess.add(&row);
+    }
+    let columns: Vec<(String, String)> = names
+        .iter()
+        .zip(guess.types(kind))
+        .map(|(n, g)| (n.clone(), dbman_core::copy::render(kind, g, false)))
+        .collect();
+    let def = infer::table_def(table.clone(), &columns);
+    let details =
+        dbman_core::TableDetails { columns: def.columns.iter().map(|c| c.col.clone()).collect(), ..Default::default() };
+    ImportJob {
+        create: dbman_core::ddl::create_table(kind, &def).statements,
+        clear_first: false,
+        columns: import::auto_map(&details.columns, &names, false),
+        ..import_job(table, path, &details, kind)
     }
 }
 
@@ -238,6 +265,54 @@ async fn round_trip(cfg: ConnectionConfig, db: &str, schema: &str, create: &str)
         export_to(&cfg, &dst, Format::Csv, &again).await;
         assert!(std::fs::read_to_string(&again).unwrap() == expected_text, "{kind:?} {name} differs");
     }
+
+    // A new table, its column types guessed from the file.
+    let fresh = ObjectPath::new(db, schema, "xfer_new");
+    exec(&c, db, &format!("DROP TABLE IF EXISTS {}", d.qualified(&fresh))).await;
+    let (report, _) = collect();
+    import(cfg.clone(), new_table_job(&fresh, &expected, kind), report, no_cancel())
+        .await
+        .unwrap_or_else(|e| panic!("{kind:?} import into a new table: {e}"));
+    let again = dir.path().join("again-new.csv");
+    let job = ExportJob {
+        source: ExportSource::Query {
+            database: Some(db.into()),
+            sql: format!("SELECT * FROM {} ORDER BY {}", d.qualified(&fresh), d.ident("id")),
+        },
+        format: Format::Csv,
+        path: again.clone(),
+        insert_into: None,
+    };
+    let (report, _) = collect();
+    export(cfg.clone(), job, report, no_cancel()).await.unwrap();
+    let got = std::fs::read_to_string(&again).unwrap();
+    assert!(
+        got == expected_text,
+        "{kind:?} new table differs:\n{}",
+        got.lines().take(3).collect::<Vec<_>>().join("\n")
+    );
+    exec(&c, db, &format!("DROP TABLE {}", d.qualified(&fresh))).await;
+
+    // A failing import drops the table it created: an id that is missing, or no number for ClickHouse,
+    // which takes NULL as 0.
+    let bad = dir.path().join("bad-new.csv");
+    let bad_id = if kind == DbKind::ClickHouse { "not a number" } else { "" };
+    std::fs::write(&bad, format!("id,name\n1,ok\n{bad_id},x\n")).unwrap();
+    let int = dbman_core::copy::render(kind, dbman_core::copy::Generic::Int32, false);
+    let mut def =
+        dbman_core::infer::table_def(fresh.clone(), &[("id".into(), int), ("name".into(), "varchar(20)".into())]);
+    def.columns[0].col.nullable = false;
+    let new_details =
+        dbman_core::TableDetails { columns: def.columns.iter().map(|c| c.col.clone()).collect(), ..Default::default() };
+    let job = ImportJob {
+        create: dbman_core::ddl::create_table(kind, &def).statements,
+        clear_first: false,
+        ..import_job(&fresh, &bad, &new_details, kind)
+    };
+    let (report, seen) = collect();
+    assert!(import(cfg.clone(), job, report, no_cancel()).await.is_err(), "{kind:?}");
+    let left = c.table_details(&fresh).await.map(|t| t.columns.len()).unwrap_or(0);
+    assert_eq!(left, 0, "{kind:?}: the new table is still there: {:?}", seen.lock().unwrap());
 
     // A failing batch rolls the whole import back.
     let bad = dir.path().join("bad.csv");
