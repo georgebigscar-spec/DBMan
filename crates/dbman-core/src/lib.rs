@@ -6,6 +6,7 @@
 
 pub mod backup;
 pub mod compare;
+pub mod complete;
 mod config;
 pub mod copy;
 pub mod ddl;

@@ -538,6 +538,17 @@ impl DbManApp {
     }
 
     /// Result summaries of every console ("4 rows in 1 ms"…).
+    /// The autocomplete items and the text of the first console (tests).
+    pub fn console_completion(&self) -> (Vec<String>, String) {
+        self.tabs
+            .iter()
+            .find_map(|t| match &t.kind {
+                TabKind::Console(c) => Some((c.completions(), c.sql.clone())),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     pub fn console_summaries(&self) -> Vec<String> {
         self.tabs
             .iter()

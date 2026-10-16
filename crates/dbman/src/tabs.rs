@@ -137,6 +137,7 @@ pub struct Console {
     selection: Option<std::ops::Range<usize>>,
     /// Statements to run once the session is open.
     queued: Option<Vec<String>>,
+    autocomplete: sql_editor::Autocomplete,
 }
 
 impl Console {
@@ -154,7 +155,13 @@ impl Console {
             shown_output: 0,
             selection: None,
             queued: None,
+            autocomplete: Default::default(),
         }
+    }
+
+    /// What the autocomplete popup offers (tests).
+    pub fn completions(&self) -> Vec<String> {
+        self.autocomplete.labels()
     }
 
     pub fn summaries(&self) -> Vec<String> {
@@ -362,9 +369,30 @@ impl Console {
             .frame(egui::Frame::new())
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().id_salt(("console-scroll", tab)).show(ui, |ui| {
-                    let out = sql_editor::editor(ui, editor_id, &mut self.sql, self.cfg.kind, ui.available_height());
+                    let conn = cx.conn;
+                    let db = conn.and_then(|c| catalog_database(c, self.database.as_deref()));
+                    let catalog = || match (conn, &db) {
+                        (Some(c), Some(db)) => c.catalog(db),
+                        _ => Default::default(),
+                    };
+                    let height = ui.available_height();
+                    let out = sql_editor::editor_with_completion(
+                        ui,
+                        editor_id,
+                        &mut self.sql,
+                        self.cfg.kind,
+                        height,
+                        &mut self.autocomplete,
+                        &catalog,
+                    );
                     if out.selection.is_some() {
-                        self.selection = out.selection;
+                        self.selection = out.selection.clone();
+                    }
+                    // Load the tables and columns the popup could offer.
+                    if let (Some(c), Some(db)) = (conn, &db)
+                        && ui.memory(|m| m.has_focus(editor_id))
+                    {
+                        cx.actions.extend(c.catalog_loads(db, &out.wants, &out.want_schemas));
                     }
                 });
             });
@@ -633,4 +661,15 @@ impl ObjectView {
             .max_height((ui.available_height() - 60.0).max(100.0))
             .show(ui, &rows);
     }
+}
+
+/// The database a console's names are looked up in: the one picked, the
+/// connection's own, or the only or first one listed.
+fn catalog_database(c: &ConnState, picked: Option<&str>) -> Option<String> {
+    let dbs = c.databases.ready()?;
+    picked
+        .filter(|p| dbs.iter().any(|d| d == p))
+        .or_else(|| Some(c.cfg.database.as_str()).filter(|d| dbs.iter().any(|x| x == d)))
+        .or_else(|| dbs.first().map(String::as_str))
+        .map(String::from)
 }
