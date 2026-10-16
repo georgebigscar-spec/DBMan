@@ -347,6 +347,10 @@ impl DbManApp {
                 }
                 self.import = Some(dialog);
             }
+            Action::ImportNewTable(id, db, schema) => {
+                let Some(c) = self.conn(id) else { return };
+                self.import = Some(ImportDialog::new_table(id, c.cfg.clone(), &db, &schema));
+            }
             Action::GenerateData(id, path) => {
                 let Some(c) = self.conn(id) else { return };
                 let mut dialog = GenerateDialog::new(id, c.cfg.clone(), path.clone());

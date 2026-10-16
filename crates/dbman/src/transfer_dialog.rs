@@ -9,6 +9,7 @@ use dbman_core::export::Format;
 use dbman_core::import::{self, ColumnMap, CsvOptions, Field, ImportFormat};
 use dbman_core::sql::Dialect;
 use dbman_core::{ConnectionConfig, ObjectPath, TableDetails};
+use dbman_core::{copy, ddl, infer};
 use dbman_drivers::transfer::{ExportJob, ExportSource, ImportJob};
 use egui::{Context, RichText, Ui};
 use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label};
@@ -216,6 +217,19 @@ struct Preview {
     rows: Vec<Vec<Field>>,
     /// A workbook's sheets.
     sheets: Vec<String>,
+    /// For a new table: column names and types guessed from the first rows.
+    guess: Vec<(String, String)>,
+    guessed_rows: u64,
+}
+
+/// Rows read to guess the column types of a new table.
+const GUESS_ROWS: usize = 10_000;
+
+/// The name and columns of the table an import creates.
+struct NewTable {
+    name: String,
+    columns: Vec<(String, String)>,
+    guessed_rows: u64,
 }
 
 /// What a preview was read with; a change re-reads it.
@@ -248,6 +262,8 @@ pub struct ImportDialog {
     browsing: Option<PendingPath>,
     /// The workbook's sheets, from the last preview.
     sheets: Vec<String>,
+    /// Set when the import creates its table.
+    new_table: Option<NewTable>,
 }
 
 impl ImportDialog {
@@ -271,7 +287,27 @@ impl ImportDialog {
             loading: None,
             browsing: None,
             sheets: Vec::new(),
+            new_table: None,
         }
+    }
+
+    /// An import into a new table in `database` / `schema`, its columns guessed from the file.
+    pub fn new_table(conn: Uuid, cfg: ConnectionConfig, database: &str, schema: &str) -> Self {
+        let mut me = Self::new(conn, cfg, ObjectPath::new(database, schema, ""));
+        me.new_table = Some(NewTable { name: String::new(), columns: Vec::new(), guessed_rows: 0 });
+        me
+    }
+
+    /// Names the new table (tests; the dialog has a field).
+    pub fn set_table_name(&mut self, name: &str) {
+        if let Some(nt) = &mut self.new_table {
+            nt.name = name.into();
+        }
+    }
+
+    /// The new table's columns as guessed or edited (tests).
+    pub fn new_columns(&self) -> Option<&[(String, String)]> {
+        self.new_table.as_ref().map(|n| n.columns.as_slice())
     }
 
     pub fn conn(&self) -> Uuid {
@@ -324,6 +360,13 @@ impl ImportDialog {
                 Ok(p) => {
                     if let Ok(p) = &p {
                         self.sheets = p.sheets.clone();
+                        if let Some(nt) = &mut self.new_table {
+                            nt.columns = p.guess.clone();
+                            nt.guessed_rows = p.guessed_rows;
+                            if nt.name.trim().is_empty() {
+                                nt.name = table_name_for(Path::new(self.path.trim()));
+                            }
+                        }
                     }
                     self.preview = Some(p);
                     self.loading = None;
@@ -345,6 +388,7 @@ impl ImportDialog {
         }
         let (tx, rx) = channel();
         let ctx = ctx.clone();
+        let guess_for = self.new_table.is_some().then_some(self.cfg.kind);
         std::thread::spawn(move || {
             let path = Path::new(&key.path);
             let result = dbman_drivers::files::open(path, key.format, &key.csv, Default::default())
@@ -354,7 +398,21 @@ impl ImportDialog {
                         ImportFormat::Excel => dbman_drivers::files::sheets(path)?,
                         _ => Vec::new(),
                     };
-                    Ok(Preview { columns: s.columns().to_vec(), rows, sheets })
+                    let (mut guess, mut guessed_rows) = (Vec::new(), 0);
+                    if let Some(kind) = guess_for {
+                        let names = infer::column_names(s.columns());
+                        let mut g = infer::Guess::new(names.len());
+                        rows.iter().for_each(|r| g.add(r));
+                        let more = GUESS_ROWS.saturating_sub(rows.len());
+                        import::preview(s.as_mut(), more)?.iter().for_each(|r| g.add(r));
+                        guessed_rows = g.rows();
+                        guess = names
+                            .into_iter()
+                            .zip(g.types(kind))
+                            .map(|(n, t)| (n, copy::render(kind, t, false)))
+                            .collect();
+                    }
+                    Ok(Preview { columns: s.columns().to_vec(), rows, sheets, guess, guessed_rows })
                 })
                 .map_err(|e| e.message);
             let _ = tx.send(result);
@@ -363,8 +421,23 @@ impl ImportDialog {
         self.loading = Some(rx);
     }
 
-    /// Matches the table's columns to the file's again.
+    /// Matches the table's columns to the file's again. A new table takes the
+    /// file's columns in order, with the names and types as edited.
     fn remap(&mut self) {
+        if let Some(nt) = &self.new_table {
+            self.table.name = nt.name.trim().to_string();
+            let def = infer::table_def(self.table.clone(), &nt.columns);
+            let details =
+                TableDetails { columns: def.columns.into_iter().map(|c| c.col).collect(), ..Default::default() };
+            self.columns = if matches!(&self.preview, Some(Ok(_))) {
+                let positions: Vec<String> = (0..details.columns.len()).map(|i| i.to_string()).collect();
+                import::auto_map(&details.columns, &positions, false)
+            } else {
+                Vec::new()
+            };
+            self.details = Some(details);
+            return;
+        }
         if let (Some(d), Some(Ok(p))) = (&self.details, &self.preview) {
             let named = self.format.named(&self.csv);
             self.columns = import::auto_map(&d.columns, &p.columns, named);
@@ -386,6 +459,18 @@ impl ImportDialog {
             Some(Err(e)) => return Err(e.clone()),
             Some(Ok(_)) => {}
         }
+        let mut create = Vec::new();
+        if let Some(nt) = &self.new_table {
+            if nt.name.trim().is_empty() {
+                return Err(tr("Name the new table.").into());
+            }
+            if nt.columns.iter().any(|(n, t)| n.trim().is_empty() || t.trim().is_empty()) {
+                return Err(tr("Every column needs a name and a type.").into());
+            }
+            let columns: Vec<(String, String)> =
+                nt.columns.iter().map(|(n, t)| (n.trim().to_string(), t.trim().to_string())).collect();
+            create = ddl::create_table(self.cfg.kind, &infer::table_def(self.table.clone(), &columns)).statements;
+        }
         if self.columns.iter().all(|c| c.source.is_none()) {
             return Err(tr("Map at least one column.").into());
         }
@@ -403,13 +488,17 @@ impl ImportDialog {
             csv: self.csv.clone(),
             columns: self.columns.clone(),
             empty_as_null: self.empty_as_null,
-            clear_first: self.clear_first,
+            clear_first: self.clear_first && self.new_table.is_none(),
             transaction: self.transaction,
             batch_rows,
+            create,
         })
     }
 
     fn title(&self) -> String {
+        if self.new_table.is_some() {
+            return tr("Import into a new table").into();
+        }
         trf("Import into {name}", &[("name", &self.table.name)])
     }
 
@@ -423,6 +512,9 @@ impl ImportDialog {
             }
         }
         self.refresh_preview(ctx);
+        if self.new_table.is_some() {
+            self.remap();
+        }
         let mut outcome = None;
         let r = Dialog::new(("import-dialog", self.conn), self.title())
             .description(tr("Reads the file in the background and inserts its rows in batches."))
@@ -450,11 +542,18 @@ impl ImportDialog {
                     if ui.add_enabled(job.is_ok(), button).clicked()
                         && let Ok(job) = job
                     {
+                        let refresh = self.new_table.is_some().then(|| {
+                            Action::RefreshObjects(self.conn, self.table.database.clone(), self.table.schema.clone())
+                        });
+                        let title = match &self.new_table {
+                            Some(_) => trf("Import into {name}", &[("name", &self.table.name)]),
+                            None => self.title(),
+                        };
                         outcome = Some(TransferOutcome::Start(Box::new(Start {
-                            title: self.title(),
+                            title,
                             spec: JobSpec::Import { cfg: Box::new(self.cfg.clone()), job },
                             output: None,
-                            refresh: None,
+                            refresh,
                         })));
                     }
                     if ui.add(Button::outline(tr("Cancel"))).clicked() {
@@ -469,6 +568,11 @@ impl ImportDialog {
     }
 
     fn options_ui(&mut self, ui: &mut Ui) {
+        if let Some(nt) = &mut self.new_table {
+            label(ui, tr("Table name"));
+            ui.add(Input::new(&mut nt.name).width(320.0));
+            ui.add_space(8.0);
+        }
         label(ui, tr("File"));
         ui.horizontal(|ui| {
             ui.add(Input::new(&mut self.path).width(ui.available_width() - 100.0));
@@ -536,7 +640,9 @@ impl ImportDialog {
             }
             ImportFormat::Json | ImportFormat::Parquet => {}
         }
-        ui.add(Checkbox::new(&mut self.clear_first).label(tr("Delete the table's rows first")));
+        if self.new_table.is_none() {
+            ui.add(Checkbox::new(&mut self.clear_first).label(tr("Delete the table's rows first")));
+        }
         if self.cfg.kind != dbman_core::DbKind::ClickHouse {
             ui.add(Checkbox::new(&mut self.transaction).label(tr("All or nothing: roll back everything on an error")));
         }
@@ -583,6 +689,28 @@ impl ImportDialog {
     fn mapping_ui(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
         let Some(Ok(p)) = &self.preview else { return };
+        if let Some(nt) = &mut self.new_table {
+            label(ui, tr("Columns"));
+            ui.label(
+                RichText::new(trf(
+                    "Types are guessed from the first {n} rows; change any of them.",
+                    &[("n", &nt.guessed_rows)],
+                ))
+                .size(12.0)
+                .color(t.muted_foreground),
+            );
+            ui.add_space(4.0);
+            egui::Grid::new("import-new-columns").spacing([12.0, 6.0]).show(ui, |ui| {
+                for (i, (name, ty)) in nt.columns.iter_mut().enumerate() {
+                    let from = p.columns.get(i).map_or("", String::as_str);
+                    ui.label(RichText::new(from).size(12.0).color(t.muted_foreground));
+                    ui.add(Input::new(name).width(200.0));
+                    ui.add(Input::new(ty).width(200.0));
+                    ui.end_row();
+                }
+            });
+            return;
+        }
         if self.details.is_none() {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
@@ -608,5 +736,24 @@ impl ImportDialog {
                 ui.end_row();
             }
         });
+    }
+}
+
+/// A table name from a file name: `Orders 2024.csv` gives `orders_2024`.
+fn table_name_for(path: &Path) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let mut name = String::new();
+    for c in stem.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            name.push(c);
+        } else if !name.ends_with('_') {
+            name.push('_');
+        }
+    }
+    let name = name.trim_matches('_');
+    match name.chars().next() {
+        None => "imported".into(),
+        Some(c) if c.is_ascii_digit() => format!("t_{name}"),
+        Some(_) => name.into(),
     }
 }

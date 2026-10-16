@@ -140,6 +140,8 @@ pub enum Action {
     Restore(Uuid, Scope),
     ExportData(Uuid, dbman_drivers::transfer::ExportSource),
     ImportData(Uuid, ObjectPath),
+    /// Import a file into a new table in a database and schema.
+    ImportNewTable(Uuid, String, String),
     /// Opens the test data generator for a table.
     GenerateData(Uuid, ObjectPath),
     /// Opens the ER diagram of a schema (database, schema).
@@ -456,6 +458,9 @@ fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions:
     let id = c.cfg.id;
     if menu_item(ui, tr("New table…"), None).clicked() {
         actions.push(Action::NewTable(id, db.to_string(), schema.to_string()));
+    }
+    if menu_item(ui, tr("New table from a file…"), None).clicked() {
+        actions.push(Action::ImportNewTable(id, db.to_string(), schema.to_string()));
     }
     let kinds: &[(ObjectKind, &str)] = match c.cfg.kind {
         DbKind::Postgres => &[

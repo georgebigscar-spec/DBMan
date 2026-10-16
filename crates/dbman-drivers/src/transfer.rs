@@ -51,6 +51,8 @@ pub struct ImportJob {
     /// All or nothing: roll back everything on an error or cancel.
     pub transaction: bool,
     pub batch_rows: usize,
+    /// Statements that create the table first; it is dropped again if the import fails.
+    pub create: Vec<String>,
 }
 
 pub(crate) fn cancelled() -> DbError {
@@ -182,6 +184,10 @@ pub async fn import(cfg: ConnectionConfig, job: ImportJob, report: Report, cance
     let conn = crate::connect(&cfg).await?;
     let db = Some(job.table.database.clone()).filter(|s| !s.is_empty());
     let db = db.as_deref();
+    for sql in &job.create {
+        report(Progress::Log(sql.clone()));
+        run(&conn, db, sql, 0, &cancel).await?;
+    }
     // ClickHouse has no transactions.
     let transaction = job.transaction && cfg.kind != DbKind::ClickHouse;
     if transaction {
@@ -205,8 +211,16 @@ pub async fn import(cfg: ConnectionConfig, job: ImportJob, report: Report, cance
                     Ok(_) => report(Progress::Log("Rolled back; the table is unchanged".into())),
                     Err(r) => report(Progress::Log(format!("Rollback failed: {}", r.message))),
                 }
-            } else {
+            } else if job.create.is_empty() {
                 report(Progress::Log("Rows inserted before the error stay in the table".into()));
+            }
+            if !job.create.is_empty() {
+                let idle: Cancel = Default::default();
+                let sql = format!("DROP TABLE {}", Dialect(cfg.kind).qualified(&job.table));
+                match run(&conn, db, &sql, 0, &idle).await {
+                    Ok(_) => report(Progress::Log("Dropped the new table".into())),
+                    Err(r) => report(Progress::Log(format!("Could not drop the new table: {}", r.message))),
+                }
             }
             Err(e)
         }

@@ -77,6 +77,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - Options: empty fields as `NULL`, delete the rows first, and everything in one transaction that rolls back on error. The error message names the rows it happened on.
   - Hex `0x…` in binary columns becomes bytes, so binary data survives an export and import round trip.
   - SQL Server turns on `IDENTITY_INSERT` when identity values are loaded, and PostgreSQL moves sequences past the largest loaded value.
+- **New table from a file** (`New table from a file…` in a schema menu, or the database menu on engines without schemas).
+  - The column types are guessed from the first 10,000 rows: whole numbers, decimals with their precision, floats, booleans, dates, timestamps, UUIDs, `0x…` bytes, and text otherwise. Codes with leading zeros such as `007` stay text.
+  - Names and types can be changed before the import. The table is created first and dropped again if the import fails.
 - **ER diagram** of a schema (`ER diagram` in the schema menu, or the database menu on engines without schemas).
   - Tables with their columns, primary keys (orange dot) and foreign keys (blue dot).
   - Links run from the foreign key column to the column it references.

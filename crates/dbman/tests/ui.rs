@@ -339,6 +339,34 @@ fn browse_sqlite_database() {
     let n: i64 = check.query_row("SELECT count(*) FROM orders_copy", [], |r| r.get(0)).unwrap();
     assert_eq!((n, same), (4, 0));
 
+    // A new table from the CSV file, its column types guessed from the values.
+    h.state_mut().handle(Action::ImportNewTable(conn_id, "main".into(), "main".into()), &ctx);
+    settle(&mut h);
+    h.state_mut().import_dialog().expect("import dialog").set_path(&csv);
+    wait(&mut h);
+    h.state_mut().import_dialog().unwrap().set_table_name("orders_imported");
+    settle(&mut h);
+    let types: Vec<(String, String)> = h.state_mut().import_dialog().unwrap().new_columns().unwrap().to_vec();
+    assert_eq!(
+        types,
+        [
+            ("id".to_string(), "INTEGER".to_string()),
+            ("customer_id".into(), "INTEGER".into()),
+            ("total".into(), "NUMERIC".into()),
+            ("created_at".into(), "TEXT".into()),
+            ("note".into(), "TEXT".into()),
+        ]
+    );
+    snapshot(&mut h, "import_new_table");
+    click(&mut h, "Start import");
+    settle(&mut h);
+    assert_eq!(h.state().jobs.list[5].state, JobState::Done, "{:?}", h.state().jobs.list[5].log);
+    let same: i64 = check
+        .query_row("SELECT count(*) FROM (SELECT * FROM orders EXCEPT SELECT * FROM orders_imported)", [], |r| r.get(0))
+        .unwrap();
+    let n: i64 = check.query_row("SELECT count(*) FROM orders_imported", [], |r| r.get(0)).unwrap();
+    assert_eq!((n, same), (4, 0));
+
     // The schema's ER diagram: tables as boxes, foreign keys as links.
     h.state_mut().handle(Action::OpenDiagram(conn_id, "main".into(), "main".into()), &ctx);
     settle(&mut h);
