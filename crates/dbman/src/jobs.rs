@@ -56,6 +56,13 @@ pub enum JobSpec {
         cfg: Box<dbman_core::ConnectionConfig>,
         job: dbman_drivers::transfer::ImportJob,
     },
+    /// A sync script run on a session of the target.
+    Script {
+        cfg: Box<dbman_core::ConnectionConfig>,
+        database: Option<String>,
+        statements: Vec<String>,
+        transaction: bool,
+    },
     /// Backup or restore statements run on a session of a DuckDB file.
     DuckDb {
         db: String,
@@ -84,6 +91,9 @@ impl JobSpec {
             }
             JobSpec::Export { cfg, job } => dbman_drivers::transfer::export(*cfg, job, report, cancel).await,
             JobSpec::Import { cfg, job } => dbman_drivers::transfer::import(*cfg, job, report, cancel).await,
+            JobSpec::Script { cfg, database, statements, transaction } => {
+                dbman_drivers::compare::run_script(*cfg, database, statements, transaction, report, cancel).await
+            }
         }
     }
 }

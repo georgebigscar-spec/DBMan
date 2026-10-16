@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod backup_dialog;
+pub mod compare_view;
 pub mod connection_dialog;
 pub mod data_view;
 pub mod er_view;

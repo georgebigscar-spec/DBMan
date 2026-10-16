@@ -53,7 +53,7 @@ pub struct ImportJob {
     pub batch_rows: usize,
 }
 
-fn cancelled() -> DbError {
+pub(crate) fn cancelled() -> DbError {
     DbError::new("cancelled")
 }
 
@@ -64,7 +64,7 @@ async fn wait_cancel(cancel: &Cancel) {
 }
 
 /// Runs a statement; a cancel request stops it on the server.
-async fn run(
+pub(crate) async fn run(
     conn: &Arc<dyn Connection>,
     database: Option<&str>,
     sql: &str,
@@ -83,7 +83,7 @@ async fn run(
     }
 }
 
-fn rows_of(outcome: StatementOutcome) -> dbman_core::QueryResult {
+pub(crate) fn rows_of(outcome: StatementOutcome) -> dbman_core::QueryResult {
     match outcome {
         StatementOutcome::Rows(r) => r,
         StatementOutcome::Done { .. } => Default::default(),

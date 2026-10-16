@@ -243,6 +243,91 @@ fn browse_sqlite_database() {
     assert!(h.query_by_label("ER diagram").is_none());
     snapshot(&mut h, "er_diagram");
 
+    // Compare the schema with a staging copy that lags behind, and sync it.
+    let staging = dir.path().join("staging.db");
+    rusqlite::Connection::open(&staging)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE);
+             CREATE TABLE legacy (id INTEGER PRIMARY KEY);
+             INSERT INTO customers (id, name, email) VALUES
+               (1, 'Alice', 'alice@example.com'), (2, 'Bob', 'bob@old.example.com'), (9, 'Zed', NULL);",
+        )
+        .unwrap();
+    let mut staging_cfg = ConnectionConfig::new(DbKind::Sqlite);
+    staging_cfg.name = "staging".into();
+    staging_cfg.database = staging.to_string_lossy().into_owned();
+    h.state_mut().add_connection(staging_cfg);
+    h.state_mut().handle(Action::OpenCompare(conn_id, "main".into(), "main".into()), &ctx);
+    settle(&mut h);
+    let wait_compare = |h: &mut Harness<'_, DbManApp>| {
+        for _ in 0..50 {
+            settle(h);
+            if !h.state_mut().active_compare().unwrap().is_running() {
+                break;
+            }
+        }
+    };
+    assert_eq!(h.state_mut().active_compare().unwrap().target_database(), Some("main"));
+    click(&mut h, "Compare structure");
+    wait_compare(&mut h);
+    let rows = h
+        .state_mut()
+        .active_compare()
+        .unwrap()
+        .structure()
+        .map(|r| r.into_iter().map(|(n, s)| (n.to_string(), s)).collect::<std::collections::HashMap<_, _>>());
+    let rows = rows.expect("structure compared");
+    use dbman_core::compare::Status;
+    assert_eq!(rows.get("customers"), Some(&Status::Changed), "{rows:?}");
+    assert_eq!(rows.get("orders"), Some(&Status::OnlySource));
+    assert_eq!(rows.get("big_orders"), Some(&Status::OnlySource));
+    assert_eq!(rows.get("legacy"), Some(&Status::OnlyTarget));
+    let script = h.state_mut().active_compare().unwrap().script_text();
+    assert!(script.contains("ALTER TABLE \"main\".\"customers\" ADD COLUMN \"city\" TEXT"), "{script}");
+    assert!(!script.contains("DROP TABLE"), "dropping is opt-in: {script}");
+    h.state_mut().active_compare().unwrap().select("customers");
+    settle(&mut h);
+    snapshot(&mut h, "compare_structure");
+    let jobs = h.state().jobs.list.len();
+    click(&mut h, "Apply to target");
+    click(&mut h, "Apply");
+    settle(&mut h);
+    let job = &h.state().jobs.list[jobs];
+    assert_eq!(job.state, JobState::Done, "{:?}", job.log);
+    let target = rusqlite::Connection::open(&staging).unwrap();
+    let n: i64 = target
+        .query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('orders', 'big_orders')", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+
+    // Rows: the new city column and Bob's email differ, Carol and Dmitry are missing, Zed is extra.
+    h.state_mut().active_compare().unwrap().set_mode(true);
+    settle(&mut h);
+    click(&mut h, "Compare data");
+    wait_compare(&mut h);
+    let data = h.state_mut().active_compare().unwrap().data().unwrap().to_vec();
+    let customers = data.iter().find(|r| r.name == "customers").unwrap();
+    let dbman::compare_view::DataState::Done(d) = &customers.state else { panic!("{customers:?}") };
+    assert_eq!((d.same, d.updated, d.inserted, d.deleted), (0, 2, 2, 1), "{d:?}");
+    h.state_mut().active_compare().unwrap().select("customers");
+    settle(&mut h);
+    snapshot(&mut h, "compare_data");
+    let jobs = h.state().jobs.list.len();
+    click(&mut h, "Apply to target");
+    click(&mut h, "Apply");
+    settle(&mut h);
+    let job = &h.state().jobs.list[jobs];
+    assert_eq!(job.state, JobState::Done, "{:?}", job.log);
+    target.execute("ATTACH DATABASE ?1 AS src", [&db_path]).unwrap();
+    for t in ["customers", "orders"] {
+        for (a, b) in [("src", "main"), ("main", "src")] {
+            let sql = format!("SELECT count(*) FROM (SELECT * FROM {a}.{t} EXCEPT SELECT * FROM {b}.{t})");
+            let diff: i64 = target.query_row(&sql, [], |r| r.get(0)).unwrap();
+            assert_eq!(diff, 0, "{t}: rows of {a} missing in {b}");
+        }
+    }
+
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);
     snapshot(&mut h, "connection_dialog");

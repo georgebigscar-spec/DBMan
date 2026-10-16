@@ -48,7 +48,7 @@ fn is_plain_number(s: &str) -> bool {
 }
 
 /// `a = 1 AND b IS NULL`
-fn condition(d: Dialect, key: &[Value<'_>]) -> String {
+pub fn condition(d: Dialect, key: &[Value<'_>]) -> String {
     key.iter()
         .map(|v| match v.cell {
             Cell::Null => format!("{} IS NULL", d.ident(v.column)),

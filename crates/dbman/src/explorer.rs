@@ -141,6 +141,11 @@ pub enum Action {
     ImportData(Uuid, ObjectPath),
     /// Opens the ER diagram of a schema (database, schema).
     OpenDiagram(Uuid, String, String),
+    /// Opens a comparison of a schema with another one (database, schema).
+    OpenCompare(Uuid, String, String),
+    /// Opens a console in a database with a script in it.
+    OpenConsoleWith(Uuid, Option<String>, String),
+    StartJob(Box<crate::transfer_dialog::Start>),
 }
 
 pub fn kind_color(kind: DbKind) -> Color32 {
@@ -348,6 +353,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
                 if menu_item(ui, "ER diagram", None).clicked() {
                     actions.push(Action::OpenDiagram(id, db.clone(), db.clone()));
                 }
+                if menu_item(ui, "Compare with…", None).clicked() {
+                    actions.push(Action::OpenCompare(id, db.clone(), db.clone()));
+                }
                 if menu_item(ui, "Refresh", None).clicked() {
                     actions.push(Action::RefreshObjects(id, db.clone(), db.clone()));
                 }
@@ -399,6 +407,9 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
             new_object_items(ui, c, db, s, actions);
             if menu_item(ui, "ER diagram", None).clicked() {
                 actions.push(Action::OpenDiagram(id, db.to_string(), s.clone()));
+            }
+            if menu_item(ui, "Compare with…", None).clicked() {
+                actions.push(Action::OpenCompare(id, db.to_string(), s.clone()));
             }
             if menu_item(ui, "Refresh", None).clicked() {
                 actions.push(Action::RefreshObjects(id, db.to_string(), s.clone()));
