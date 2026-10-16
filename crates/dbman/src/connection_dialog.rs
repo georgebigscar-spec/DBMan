@@ -269,7 +269,17 @@ impl ConnectionDialog {
                             });
                         });
                     });
-                    ui.add(Checkbox::new(&mut self.cfg.save_password).label(tr("Save password")));
+                    ui.horizontal(|ui| {
+                        ui.add(Checkbox::new(&mut self.cfg.save_password).label(tr("Save password")));
+                        if self.cfg.save_password {
+                            let place = if crate::store::keychain().is_some() {
+                                tr("in the system keychain")
+                            } else {
+                                tr("in settings.json (no system keychain found)")
+                            };
+                            ui.label(RichText::new(place).size(12.0).color(t.muted_foreground));
+                        }
+                    });
                     field(ui, "Database", |ui| {
                         let hint = if self.cfg.kind == DbKind::Postgres { "postgres" } else { tr("(none)") };
                         ui.add(Input::new(&mut self.cfg.database).placeholder(hint).width(full));
