@@ -90,6 +90,82 @@ impl ConnState {
     pub fn has_schemas(&self) -> bool {
         dbman_core::Capabilities::for_kind(self.cfg.kind).schemas
     }
+
+    /// Where unqualified names live in `db`: `public`, `dbo`, `main`, or the database itself.
+    pub fn default_schema(&self, db: &str) -> String {
+        if !self.has_schemas() {
+            return db.to_string();
+        }
+        let preferred = match self.cfg.kind {
+            DbKind::Postgres => "public",
+            DbKind::MsSql => "dbo",
+            _ => "main",
+        };
+        match self.schemas.get(db).and_then(Load::ready) {
+            Some(list) if !list.iter().any(|s| s == preferred) => list.first().cloned().unwrap_or_default(),
+            _ => preferred.to_string(),
+        }
+    }
+
+    /// What autocomplete knows of `db`: the tables and views loaded so far, with their columns where loaded.
+    pub fn catalog(&self, db: &str) -> dbman_core::complete::Catalog {
+        use dbman_core::complete::{Catalog, CatalogTable};
+        let mut tables = Vec::new();
+        for ((d, schema), objects) in &self.objects {
+            let Some(objects) = objects.ready().filter(|_| d == db) else { continue };
+            for o in objects {
+                let view = match o.kind {
+                    ObjectKind::Table | ObjectKind::ForeignTable => false,
+                    ObjectKind::View | ObjectKind::MaterializedView => true,
+                    _ => continue,
+                };
+                let columns = self
+                    .details
+                    .get(&o.path)
+                    .and_then(Load::ready)
+                    .map(|t| t.columns.iter().map(|c| (c.name.clone(), c.data_type.clone())).collect());
+                tables.push(CatalogTable { schema: schema.clone(), name: o.path.name.clone(), view, columns });
+            }
+        }
+        tables.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+        let schemas = if self.has_schemas() {
+            self.schemas.get(db).and_then(Load::ready).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Catalog { kind: Some(self.cfg.kind), schemas, default_schema: self.default_schema(db), tables }
+    }
+
+    /// Actions that load what autocomplete in `db` still lacks: the schemas,
+    /// the default schema's objects, and anything `wants` names.
+    pub fn catalog_loads(&self, db: &str, wants: &[(String, String)], want_schemas: &[String]) -> Vec<Action> {
+        let id = self.cfg.id;
+        let mut out = Vec::new();
+        if self.session().is_none() {
+            return out;
+        }
+        if self.has_schemas() && self.schemas.get(db).is_none_or(Load::is_idle) {
+            out.push(Action::LoadSchemas(id, db.to_string()));
+            return out;
+        }
+        let default = self.default_schema(db);
+        for schema in std::iter::once(&default).chain(want_schemas) {
+            if self.objects.get(&(db.to_string(), schema.clone())).is_none_or(Load::is_idle) {
+                out.push(Action::LoadObjects(id, db.to_string(), schema.clone()));
+            }
+        }
+        for (schema, name) in wants {
+            let loaded = self.objects.get(&(db.to_string(), schema.clone())).and_then(Load::ready);
+            let Some(path) = loaded.and_then(|l| l.iter().find(|o| o.path.name == *name)).map(|o| o.path.clone())
+            else {
+                continue;
+            };
+            if self.details.get(&path).is_none_or(Load::is_idle) {
+                out.push(Action::LoadDetails(id, path));
+            }
+        }
+        out
+    }
 }
 
 /// A row of the explorer tree.

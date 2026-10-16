@@ -282,6 +282,11 @@ const KEYWORDS: &[&str] = &[
     "with",
 ];
 
+/// The keywords the highlighter knows, lower case and sorted.
+pub fn keywords() -> &'static [&'static str] {
+    KEYWORDS
+}
+
 pub fn is_keyword(word: &str) -> bool {
     word.len() <= 17 && KEYWORDS.binary_search(&word.to_ascii_lowercase().as_str()).is_ok()
 }

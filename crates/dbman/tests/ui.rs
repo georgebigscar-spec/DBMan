@@ -229,6 +229,41 @@ fn browse_sqlite_database() {
     assert_eq!(h.state().console_summaries(), vec!["cancelled".to_string()]);
     assert!(h.query_by_label("Stop").is_none());
 
+    // Autocomplete: tables after FROM, an alias's columns after `c.`; Tab takes the selected one.
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("\nSELECT * FROM cust");
+    for _ in 0..10 {
+        h.run_steps(2);
+        settle(&mut h);
+        if !h.state().console_completion().0.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(h.state().console_completion().0, ["customers"], "{:?}", h.state().console_completion().1);
+    snapshot(&mut h, "autocomplete");
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert!(
+        h.state().console_completion().1.ends_with("SELECT * FROM customers"),
+        "{}",
+        h.state().console_completion().1
+    );
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text(" c WHERE c.ci");
+    for _ in 0..10 {
+        h.run_steps(2);
+        settle(&mut h);
+        if !h.state().console_completion().0.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(h.state().console_completion().0, ["city"]);
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    let (items, sql) = h.state().console_completion();
+    assert!(sql.ends_with("FROM customers c WHERE c.city"), "{sql}");
+    assert!(items.is_empty());
+
     // Back up the database in the background, damage it, restore it.
     let backup_file = dir.path().join("shop-backup.db");
     h.state_mut().handle(Action::Backup(conn_id, Scope { database: "main".into(), ..Default::default() }), &ctx);
