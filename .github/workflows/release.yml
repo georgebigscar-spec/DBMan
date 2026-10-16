@@ -1,0 +1,96 @@
+# Release builds of the app for Linux, Windows and macOS. Every push to main
+# leaves them as workflow artifacts; pushing a tag like v0.2.0 also publishes
+# them as a GitHub release.
+name: Release builds
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  # Changes to the packaging itself are checked on their pull request.
+  pull_request:
+    paths: [.github/workflows/release.yml, ci/macos/**]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - run: cargo build --release --locked -p dbman --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "dbman") | .version')
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then label="${GITHUB_REF_NAME}"; else label="$(git rev-parse --short HEAD)"; fi
+          out="dbman-${label}-${{ matrix.name }}"
+          bin="target/${{ matrix.target }}/release"
+          mkdir -p dist
+          case "${{ matrix.os }}" in
+            windows-*)
+              mkdir "$out" && cp "$bin/dbman.exe" README.md README.ru.md LICENSE "$out/"
+              7z a "dist/$out.zip" "$out" > /dev/null
+              ;;
+            macos-*)
+              app="$out/DBMan.app/Contents"
+              mkdir -p "$app/MacOS"
+              cp "$bin/dbman" "$app/MacOS/"
+              sed "s/VERSION/$version/g" ci/macos/Info.plist > "$app/Info.plist"
+              cp README.md README.ru.md LICENSE "$out/"
+              # Ad-hoc signature, so Apple Silicon runs it; the first launch still needs right click > Open.
+              codesign --force --deep --sign - "$out/DBMan.app"
+              ditto -c -k --keepParent "$out" "dist/$out.zip"
+              ;;
+            *)
+              mkdir "$out" && cp "$bin/dbman" README.md README.ru.md LICENSE "$out/"
+              tar -czf "dist/$out.tar.gz" "$out"
+              ;;
+          esac
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dbman-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
