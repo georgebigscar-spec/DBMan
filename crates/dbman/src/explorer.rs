@@ -140,6 +140,8 @@ pub enum Action {
     Restore(Uuid, Scope),
     ExportData(Uuid, dbman_drivers::transfer::ExportSource),
     ImportData(Uuid, ObjectPath),
+    /// Opens the test data generator for a table.
+    GenerateData(Uuid, ObjectPath),
     /// Opens the ER diagram of a schema (database, schema).
     OpenDiagram(Uuid, String, String),
     /// Opens a comparison of a schema with another one (database, schema).
@@ -624,6 +626,9 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         }
         if o.kind == ObjectKind::Table && menu_item(ui, tr("Import data…"), None).clicked() {
             actions.push(Action::ImportData(id, o.path.clone()));
+        }
+        if o.kind == ObjectKind::Table && menu_item(ui, tr("Generate test data…"), None).clicked() {
+            actions.push(Action::GenerateData(id, o.path.clone()));
         }
         if o.kind == ObjectKind::Table && menu_item(ui, tr("Copy to…"), None).clicked() {
             let p = &o.path;

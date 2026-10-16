@@ -12,6 +12,7 @@ pub mod events;
 pub mod exec;
 pub mod explorer;
 pub mod files;
+pub mod generate_dialog;
 pub mod grid;
 pub mod i18n;
 pub mod icons;

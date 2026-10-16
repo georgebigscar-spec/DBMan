@@ -70,6 +70,11 @@ pub enum JobSpec {
         target: Box<dbman_core::ConnectionConfig>,
         job: dbman_drivers::copy::CopyJob,
     },
+    /// Generated rows inserted into a table.
+    Generate {
+        cfg: Box<dbman_core::ConnectionConfig>,
+        job: dbman_drivers::generate::GenerateJob,
+    },
     /// Backup or restore statements run on a session of a DuckDB file.
     DuckDb {
         db: String,
@@ -101,6 +106,7 @@ impl JobSpec {
             JobSpec::Script { cfg, database, statements, transaction } => {
                 dbman_drivers::compare::run_script(*cfg, database, statements, transaction, report, cancel).await
             }
+            JobSpec::Generate { cfg, job } => dbman_drivers::generate::generate(*cfg, job, report, cancel).await,
             JobSpec::Copy { source, target, job } => {
                 dbman_drivers::copy::copy(*source, *target, job, report, cancel).await
             }
