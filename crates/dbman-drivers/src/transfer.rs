@@ -2,18 +2,18 @@
 //! their own session: export pages through a table by its primary key, import
 //! reads the file on a blocking thread and inserts batches of rows.
 
-use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use dbman_core::export::{Format, Writer};
+use dbman_core::export::Format;
 use dbman_core::import::{self, ColumnMap, CsvOptions, Field, ImportFormat};
 use dbman_core::sql::Dialect;
 use dbman_core::{Cell, Connection, ConnectionConfig, DbError, DbKind, DbResult, ObjectPath, StatementOutcome, dml};
 
 use crate::backup::{Cancel, Progress, Report};
+use crate::files::FileWriter;
 
 /// Rows fetched per page when exporting a table with a primary key.
 const PAGE: usize = 5000;
@@ -104,22 +104,18 @@ pub async fn export(cfg: ConnectionConfig, job: ExportJob, report: Report, cance
 async fn export_inner(cfg: &ConnectionConfig, job: &ExportJob, report: &Report, cancel: &Cancel) -> DbResult<()> {
     let d = Dialect(cfg.kind);
     let conn = crate::connect(cfg).await?;
-    let file = std::fs::File::create(&job.path)
-        .map_err(|e| DbError::new(format!("Could not create {}: {e}", job.path.display())))?;
     let insert_into = job.insert_into.clone().or_else(|| match &job.source {
         ExportSource::Table(t) => Some(t.clone()),
         ExportSource::Query { .. } => None,
     });
-    let mut writer = Writer::new(BufWriter::with_capacity(256 * 1024, file), job.format, d, insert_into);
-    let werr = |e: std::io::Error| DbError::new(format!("Could not write {}: {e}", job.path.display()));
-    let bytes = |w: &Writer<BufWriter<std::fs::File>>| w.get_ref().get_ref().metadata().map(|m| m.len()).ok();
+    let mut writer = FileWriter::create(&job.path, job.format, d, insert_into)?;
 
     match &job.source {
         ExportSource::Query { database, sql } => {
             report(Progress::Log(format!("Running {sql}")));
             let r = rows_of(run(&conn, database.as_deref(), sql, usize::MAX / 2, cancel).await?);
-            writer.begin(&r.columns).map_err(werr)?;
-            writer.rows(&r.rows).map_err(werr)?;
+            writer.begin(&r.columns)?;
+            writer.rows(&r.rows)?;
         }
         ExportSource::Table(t) => {
             let db = Some(t.database.as_str()).filter(|s| !s.is_empty());
@@ -142,19 +138,19 @@ async fn export_inner(cfg: &ConnectionConfig, job: &ExportJob, report: &Report, 
                 report(Progress::Log("No primary key: reading every row in one query".into()));
                 let sql = format!("SELECT * FROM {}", d.qualified(t));
                 let r = rows_of(run(&conn, db, &sql, usize::MAX / 2, cancel).await?);
-                writer.begin(&r.columns).map_err(werr)?;
-                writer.rows(&r.rows).map_err(werr)?;
+                writer.begin(&r.columns)?;
+                writer.rows(&r.rows)?;
             } else {
                 let mut offset = 0;
                 loop {
                     let sql = d.select_page(t, "", &key, PAGE, offset);
                     let r = rows_of(run(&conn, db, &sql, PAGE, cancel).await?);
                     if offset == 0 {
-                        writer.begin(&r.columns).map_err(werr)?;
+                        writer.begin(&r.columns)?;
                     }
-                    writer.rows(&r.rows).map_err(werr)?;
+                    writer.rows(&r.rows)?;
                     offset += r.rows.len();
-                    if let Some(b) = bytes(&writer) {
+                    if let Some(b) = writer.bytes() {
                         report(Progress::Bytes(b));
                     }
                     if let Some(n) = total.filter(|n| *n > 0) {
@@ -168,8 +164,11 @@ async fn export_inner(cfg: &ConnectionConfig, job: &ExportJob, report: &Report, 
         }
     }
     let rows = writer.written();
-    let out = writer.finish().map_err(werr)?;
-    let size = out.get_ref().metadata().map(|m| m.len()).unwrap_or(0);
+    if job.format == Format::Parquet {
+        report(Progress::Log("Writing Parquet".into()));
+    }
+    writer.finish()?;
+    let size = std::fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0);
     report(Progress::Bytes(size));
     report(Progress::Log(format!("Wrote {rows} rows to {}", job.path.display())));
     Ok(())

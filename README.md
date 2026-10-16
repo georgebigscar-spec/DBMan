@@ -59,7 +59,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - Changes stay highlighted until submitted. `Preview SQL` shows the resulting `INSERT / UPDATE / DELETE`.
   - `Submit` runs them in one transaction in a separate session.
   - Rows are found by primary key, or by all columns when there is none. If an `UPDATE` or `DELETE` touches anything other than exactly one row, everything rolls back.
-- **Export** of the rows on screen to CSV, TSV, JSON, JSON Lines, SQL `INSERT` or Markdown, to the clipboard or a file.
+- **Export** of the rows on screen to CSV, TSV, JSON, JSON Lines, SQL `INSERT` or Markdown, to the clipboard or a file, and to Excel or Parquet files.
+  - Excel (`.xlsx`): numbers, dates, timestamps and booleans keep their cell types, the header row is bold and frozen with a filter, and past 1,048,575 rows a new sheet begins. The workbook is written as rows arrive.
+  - Parquet: rows are gathered in a temporary DuckDB file and written with zstd. Columns keep their types (integers, decimals, dates, timestamps, booleans, UUIDs, bytes) wherever every value fits, and become text otherwise.
 - **Whole-table export** (`Export data…` in a table or view menu, and `All rows to a file…` in the export menu of the console and the data view) to the same formats.
   - It runs as a background job in its own session.
   - The table is read page by page by primary key and written as it is read, so table size is not limited by memory.
@@ -214,7 +216,7 @@ crates/
   - identifier and string quoting.
 - **`dbman-drivers`**:
   - one module per engine, plus `connect(&ConnectionConfig)`;
-  - `backup.rs` runs backups, and `transfer.rs` does data export and import. File formats and `INSERT` building live in `dbman-core::export`, `dbman-core::import` and `dbman-core::xlsx`; `files.rs` opens Parquet files through DuckDB.
+  - `backup.rs` runs backups, and `transfer.rs` does data export and import. File formats and `INSERT` building live in `dbman-core::export`, `dbman-core::import` and `dbman-core::xlsx`; `files.rs` reads and writes Parquet files through DuckDB.
   - To add an engine, you need a `DbKind` variant, a `Connection` implementation and a line in `connect`.
 - **`dbman`**: the interface never waits for the database. Queries run on a tokio runtime, and results come back as events through a channel that is drained every frame (`events.rs`). The modules:
 

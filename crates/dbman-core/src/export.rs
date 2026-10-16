@@ -1,9 +1,10 @@
-//! Exports rows as CSV, TSV, JSON, JSON Lines, SQL INSERT statements or Markdown.
+//! Exports rows as CSV, TSV, JSON, JSON Lines, SQL INSERT statements,
+//! Markdown or an Excel workbook. Parquet is written by `dbman-drivers`.
 
-use std::io::{self, Write};
+use std::io::{self, Cursor, Seek, Write};
 
 use crate::sql::Dialect;
-use crate::{Cell, ColumnMeta, ObjectPath, QueryResult, dml};
+use crate::{Cell, ColumnMeta, ObjectPath, QueryResult, dml, xlsx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -15,11 +16,31 @@ pub enum Format {
     /// INSERT statements into the given table.
     SqlInserts,
     Markdown,
+    /// An Excel workbook (.xlsx).
+    Excel,
+    /// An Apache Parquet file, written by `dbman-drivers` through DuckDB.
+    Parquet,
 }
 
 impl Format {
-    pub const ALL: [Format; 6] =
+    pub const ALL: [Format; 8] = [
+        Format::Csv,
+        Format::Tsv,
+        Format::Json,
+        Format::JsonLines,
+        Format::SqlInserts,
+        Format::Markdown,
+        Format::Excel,
+        Format::Parquet,
+    ];
+
+    /// The formats that are text, for the clipboard.
+    pub const TEXT: [Format; 6] =
         [Format::Csv, Format::Tsv, Format::Json, Format::JsonLines, Format::SqlInserts, Format::Markdown];
+
+    pub fn is_text(self) -> bool {
+        !matches!(self, Format::Excel | Format::Parquet)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -29,6 +50,8 @@ impl Format {
             Format::JsonLines => "JSON Lines",
             Format::SqlInserts => "SQL INSERT statements",
             Format::Markdown => "Markdown table",
+            Format::Excel => "Excel (.xlsx)",
+            Format::Parquet => "Parquet",
         }
     }
 
@@ -40,23 +63,30 @@ impl Format {
             Format::JsonLines => "jsonl",
             Format::SqlInserts => "sql",
             Format::Markdown => "md",
+            Format::Excel => "xlsx",
+            Format::Parquet => "parquet",
         }
     }
 }
 
-/// Renders `r`. `table` names the target of SQL inserts (`None`: `exported`).
+/// Renders `r` in a text format. `table` names the target of SQL inserts (`None`: `exported`).
 pub fn export(r: &QueryResult, format: Format, dialect: Dialect, table: Option<&ObjectPath>) -> String {
-    let mut w = Writer::new(Vec::new(), format, dialect, table.cloned());
+    let mut w = Writer::new(Cursor::new(Vec::new()), format, dialect, table.cloned());
     // Writing to memory cannot fail.
     let _ = w.begin(&r.columns).and_then(|()| w.rows(&r.rows));
-    String::from_utf8(w.finish().unwrap_or_default()).unwrap_or_default()
+    String::from_utf8(w.finish().map(Cursor::into_inner).unwrap_or_default()).unwrap_or_default()
+}
+
+enum Out<W: Write + Seek> {
+    Text(W),
+    Excel(Box<xlsx::Writer<W>>),
 }
 
 /// Writes rows to `out` as they arrive, so a table of any size can be
 /// exported page by page: [`begin`](Writer::begin) with the columns, then
 /// [`rows`](Writer::rows) any number of times, then [`finish`](Writer::finish).
-pub struct Writer<W: Write> {
-    out: W,
+pub struct Writer<W: Write + Seek> {
+    out: Out<W>,
     format: Format,
     dialect: Dialect,
     table: ObjectPath,
@@ -64,16 +94,24 @@ pub struct Writer<W: Write> {
     rows: u64,
 }
 
-impl<W: Write> Writer<W> {
-    /// `table` names the target of SQL inserts (`None`: `exported`).
+impl<W: Write + Seek> Writer<W> {
+    /// `table` names the target of SQL inserts (`None`: `exported`) and the
+    /// sheets of a workbook. Parquet is not written here: see `dbman-drivers`.
     pub fn new(out: W, format: Format, dialect: Dialect, table: Option<ObjectPath>) -> Self {
         let table = table.unwrap_or_else(|| ObjectPath::new("", "", "exported"));
+        let out = match format {
+            Format::Excel => Out::Excel(Box::new(xlsx::Writer::new(out, &table.name))),
+            _ => Out::Text(out),
+        };
         Self { out, format, dialect, table, columns: Vec::new(), rows: 0 }
     }
 
     /// The output being written.
-    pub fn get_ref(&self) -> &W {
-        &self.out
+    pub fn get_ref(&self) -> Option<&W> {
+        match &self.out {
+            Out::Text(w) => Some(w),
+            Out::Excel(x) => x.get_ref(),
+        }
     }
 
     /// Rows written so far.
@@ -83,27 +121,40 @@ impl<W: Write> Writer<W> {
 
     pub fn begin(&mut self, columns: &[ColumnMeta]) -> io::Result<()> {
         self.columns = columns.to_vec();
+        let out = match &mut self.out {
+            Out::Text(w) => w,
+            Out::Excel(x) => return x.begin(columns),
+        };
         match self.format {
             Format::Csv => {
                 let line = delimited_line(columns.iter().map(|c| Some(c.name.as_str())), ',', true);
-                self.out.write_all(line.as_bytes())
+                out.write_all(line.as_bytes())
             }
             Format::Tsv => {
                 let line = delimited_line(columns.iter().map(|c| Some(c.name.as_str())), '\t', false);
-                self.out.write_all(line.as_bytes())
+                out.write_all(line.as_bytes())
             }
-            Format::Json => self.out.write_all(b"["),
-            Format::JsonLines | Format::SqlInserts => Ok(()),
+            Format::Json => out.write_all(b"["),
+            Format::JsonLines | Format::SqlInserts | Format::Excel => Ok(()),
+            Format::Parquet => Err(io::Error::other("Parquet files are written through DuckDB.")),
             Format::Markdown => {
                 let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
                 let head = columns.iter().map(|c| esc(&c.name)).collect::<Vec<_>>().join(" | ");
                 let align: String = columns.iter().map(|c| if c.numeric { " ---: |" } else { " --- |" }).collect();
-                write!(self.out, "| {head} |\n|{align}\n")
+                write!(out, "| {head} |\n|{align}\n")
             }
         }
     }
 
     pub fn rows(&mut self, rows: &[Vec<Cell>]) -> io::Result<()> {
+        let out = match &mut self.out {
+            Out::Text(w) => w,
+            Out::Excel(x) => {
+                x.rows(rows)?;
+                self.rows += rows.len() as u64;
+                return Ok(());
+            }
+        };
         for row in rows {
             match self.format {
                 Format::Csv | Format::Tsv => {
@@ -111,15 +162,15 @@ impl<W: Write> Writer<W> {
                     let texts: Vec<Option<std::borrow::Cow<'_, str>>> = row.iter().map(Cell::as_text).collect();
                     // NULL becomes an empty field.
                     let line = delimited_line(texts.iter().map(|t| t.as_deref()), sep, quote);
-                    self.out.write_all(line.as_bytes())?;
+                    out.write_all(line.as_bytes())?;
                 }
                 Format::Json | Format::JsonLines => {
                     let obj = json_object(&self.columns, row);
                     let text = serde_json::to_string(&obj).unwrap_or_default();
                     match self.format {
-                        Format::Json if self.rows == 0 => write!(self.out, "\n  {text}")?,
-                        Format::Json => write!(self.out, ",\n  {text}")?,
-                        _ => writeln!(self.out, "{text}")?,
+                        Format::Json if self.rows == 0 => write!(out, "\n  {text}")?,
+                        Format::Json => write!(out, ",\n  {text}")?,
+                        _ => writeln!(out, "{text}")?,
                     }
                 }
                 Format::SqlInserts => {
@@ -129,12 +180,13 @@ impl<W: Write> Writer<W> {
                         .zip(row)
                         .map(|(c, cell)| dml::Value::new(&c.name, cell, c.numeric))
                         .collect();
-                    writeln!(self.out, "{};", dml::insert(self.dialect, &self.table, &values))?;
+                    writeln!(out, "{};", dml::insert(self.dialect, &self.table, &values))?;
                 }
+                Format::Excel | Format::Parquet => {}
                 Format::Markdown => {
                     let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
                     let cells = row.iter().map(|c| esc(&c.display())).collect::<Vec<_>>().join(" | ");
-                    writeln!(self.out, "| {cells} |")?;
+                    writeln!(out, "| {cells} |")?;
                 }
             }
             self.rows += 1;
@@ -143,12 +195,17 @@ impl<W: Write> Writer<W> {
     }
 
     /// Closes the document and flushes; returns the output.
-    pub fn finish(mut self) -> io::Result<W> {
-        if self.format == Format::Json {
-            self.out.write_all(if self.rows == 0 { b"]\n" } else { b"\n]\n" })?;
+    pub fn finish(self) -> io::Result<W> {
+        match self.out {
+            Out::Excel(x) => x.finish(),
+            Out::Text(mut out) => {
+                if self.format == Format::Json {
+                    out.write_all(if self.rows == 0 { b"]\n" } else { b"\n]\n" })?;
+                }
+                out.flush()?;
+                Ok(out)
+            }
         }
-        self.out.flush()?;
-        Ok(self.out)
     }
 }
 
@@ -231,6 +288,53 @@ mod tests {
         assert_eq!(s, "{\"id\":1,\"name\":\"a,\\\"b\\\"\"}\n{\"id\":2,\"name\":null}\n");
         let empty = QueryResult { columns: sample().columns, ..Default::default() };
         assert_eq!(export(&empty, Format::Json, Dialect(DbKind::Postgres), None), "[]\n");
+    }
+
+    #[test]
+    fn excel_reads_back() {
+        let dir = std::env::temp_dir().join(format!("dbman-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.xlsx");
+        let columns = vec![
+            ColumnMeta::new("id", "int4"),
+            ColumnMeta::new("name", "text"),
+            ColumnMeta::new("born", "date"),
+            ColumnMeta::new("seen", "timestamp"),
+            ColumnMeta::new("ok", "bool"),
+            ColumnMeta::new("data", "bytea"),
+        ];
+        let t = |s: &str| Cell::Text(s.into());
+        let rows = vec![
+            vec![
+                t("1"),
+                t("Анна & <Co>"),
+                t("2024-02-29"),
+                t("2024-03-01 09:30:15"),
+                t("t"),
+                Cell::Bytes(vec![1, 255]),
+            ],
+            vec![t("12345678901234567"), Cell::Null, t("1800-01-01"), Cell::Null, t("false"), Cell::Null],
+        ];
+        let file = std::fs::File::create(&path).unwrap();
+        let mut w =
+            Writer::new(file, Format::Excel, Dialect(crate::DbKind::Postgres), Some(ObjectPath::new("", "", "people")));
+        w.begin(&columns).unwrap();
+        w.rows(&rows).unwrap();
+        assert_eq!(w.written(), 2);
+        w.finish().unwrap();
+        assert_eq!(xlsx::sheets(&path).unwrap(), ["people"]);
+        let mut src = xlsx::open(&path, "", true, Default::default()).unwrap();
+        assert_eq!(src.columns(), ["id", "name", "born", "seen", "ok", "data"]);
+        let got = crate::import::preview(src.as_mut(), 10).unwrap();
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(
+            got,
+            [
+                vec![s("1"), s("Анна & <Co>"), s("2024-02-29"), s("2024-03-01 09:30:15"), s("true"), s("0x01FF")],
+                vec![s("12345678901234567"), None, s("1800-01-01"), None, s("false"), None],
+            ]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

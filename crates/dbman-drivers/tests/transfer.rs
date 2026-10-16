@@ -75,6 +75,13 @@ fn source_csv(path: &Path) {
     std::fs::write(path, s).unwrap();
 }
 
+/// The column types of a Parquet file.
+fn parquet_types(path: &Path) -> Vec<String> {
+    let db = duckdb::Connection::open_in_memory().unwrap();
+    let mut st = db.prepare(&format!("DESCRIBE SELECT * FROM read_parquet('{}')", path.display())).unwrap();
+    st.query_map([], |r| r.get::<_, String>(1)).unwrap().map(Result::unwrap).collect()
+}
+
 /// A Parquet copy of a CSV file, every column as text.
 fn csv_to_parquet(csv: &Path, out: &Path) {
     let db = duckdb::Connection::open_in_memory().unwrap();
@@ -190,9 +197,19 @@ async fn round_trip(cfg: ConnectionConfig, db: &str, schema: &str, create: &str)
     let expected_text = std::fs::read_to_string(&expected).unwrap();
     assert!(expected_text.contains("\"line one\nline 1\""), "{kind:?}");
 
-    for format in [Format::Csv, Format::Tsv, Format::Json, Format::JsonLines] {
+    for format in [Format::Csv, Format::Tsv, Format::Json, Format::JsonLines, Format::Excel, Format::Parquet] {
         let file = dir.path().join(format!("out.{}", format.extension()));
         export_to(&cfg, &src, format, &file).await;
+        if format == Format::Parquet {
+            // The columns keep number and byte types.
+            let types = parquet_types(&file);
+            assert!(types[0].contains("INT"), "{kind:?} {types:?}");
+            assert!(types[2].starts_with("DECIMAL") || types[2] == "DOUBLE", "{kind:?} {types:?}");
+            // ClickHouse keeps bytes in a String column.
+            if kind != DbKind::ClickHouse {
+                assert_eq!(types[4], "BLOB", "{kind:?} {types:?}");
+            }
+        }
         let (report, _) = collect();
         import(cfg.clone(), import_job(&dst, &file, &details, kind), report, no_cancel())
             .await

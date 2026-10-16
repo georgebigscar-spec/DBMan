@@ -149,6 +149,17 @@ impl ExportDialog {
                     label(ui, tr("Insert into table"));
                     ui.add(Input::new(&mut self.insert_into).width(240.0));
                 }
+                let hint = match self.format {
+                    Format::Excel => Some(tr(
+                        "Numbers, dates and booleans keep their cell types. Past 1,048,575 rows, a new sheet begins.",
+                    )),
+                    Format::Parquet => Some(tr("Columns keep their types wherever every value fits them.")),
+                    _ => None,
+                };
+                if let Some(hint) = hint {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(hint).size(12.0).color(t.muted_foreground));
+                }
                 ui.add_space(8.0);
                 label(ui, tr("File"));
                 ui.horizontal(|ui| {

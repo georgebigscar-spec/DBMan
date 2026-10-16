@@ -14,6 +14,9 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesRef, BytesStart, Event};
 use zip::ZipArchive;
 
+mod write;
+pub use write::Writer;
+
 use crate::DbError;
 use crate::DbResult;
 use crate::import::{Field, RecordSource};
