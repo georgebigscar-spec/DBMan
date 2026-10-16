@@ -247,7 +247,7 @@ async fn import_rows(
             (job.path.clone(), job.format, job.csv.clone(), job.batch_rows.max(1), read.clone());
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
-            let mut source = match import::open(&path, format, &csv, read) {
+            let mut source = match crate::files::open(&path, format, &csv, read) {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = tx.blocking_send(Err(e));

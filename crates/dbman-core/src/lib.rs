@@ -19,6 +19,7 @@ pub mod import;
 mod result;
 mod schema;
 pub mod sql;
+pub mod xlsx;
 
 pub use config::{ConnectionConfig, DbKind, SslMode};
 pub use driver::{Capabilities, Connection};

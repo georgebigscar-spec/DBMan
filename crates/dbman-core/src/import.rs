@@ -1,5 +1,6 @@
-//! Reads CSV, TSV, JSON and JSON Lines files record by record and turns
-//! records into multi-row INSERT statements for a table.
+//! Reads CSV, TSV, JSON, JSON Lines and Excel files record by record and turns
+//! records into multi-row INSERT statements for a table. Parquet files are
+//! read by the drivers crate, which has DuckDB.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -16,30 +17,47 @@ pub enum ImportFormat {
     Delimited,
     /// An array of objects, or JSON Lines (one object per line).
     Json,
+    /// An Excel workbook (.xlsx): one sheet.
+    Excel,
+    /// An Apache Parquet file.
+    Parquet,
 }
 
 impl ImportFormat {
-    pub const ALL: [ImportFormat; 2] = [ImportFormat::Delimited, ImportFormat::Json];
+    pub const ALL: [ImportFormat; 4] =
+        [ImportFormat::Delimited, ImportFormat::Json, ImportFormat::Excel, ImportFormat::Parquet];
 
     pub fn label(self) -> &'static str {
         match self {
             ImportFormat::Delimited => "CSV / TSV",
             ImportFormat::Json => "JSON / JSON Lines",
+            ImportFormat::Excel => "Excel (.xlsx)",
+            ImportFormat::Parquet => "Parquet",
+        }
+    }
+
+    /// Whether the file names its columns whatever the options say.
+    pub fn named(self, csv: &CsvOptions) -> bool {
+        match self {
+            ImportFormat::Delimited | ImportFormat::Excel => csv.header,
+            ImportFormat::Json | ImportFormat::Parquet => true,
         }
     }
 }
 
-/// How a delimited file is laid out.
+/// How a delimited file or a workbook is laid out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsvOptions {
     pub delimiter: char,
     /// The first record holds column names.
     pub header: bool,
+    /// The workbook's sheet; empty for the first.
+    pub sheet: String,
 }
 
 impl Default for CsvOptions {
     fn default() -> Self {
-        Self { delimiter: ',', header: true }
+        Self { delimiter: ',', header: true, sheet: String::new() }
     }
 }
 
@@ -48,7 +66,9 @@ pub fn detect(path: &Path) -> (ImportFormat, CsvOptions) {
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "json" | "jsonl" | "ndjson" => (ImportFormat::Json, CsvOptions::default()),
-        "tsv" | "tab" => (ImportFormat::Delimited, CsvOptions { delimiter: '\t', header: true }),
+        "tsv" | "tab" => (ImportFormat::Delimited, CsvOptions { delimiter: '\t', ..Default::default() }),
+        "xlsx" | "xlsm" => (ImportFormat::Excel, CsvOptions::default()),
+        "parquet" | "parq" => (ImportFormat::Parquet, CsvOptions::default()),
         _ => (ImportFormat::Delimited, CsvOptions::default()),
     }
 }
@@ -89,6 +109,9 @@ pub fn open(
     csv: &CsvOptions,
     read: Arc<AtomicU64>,
 ) -> DbResult<Box<dyn RecordSource>> {
+    if format == ImportFormat::Excel {
+        return crate::xlsx::open(path, &csv.sheet, csv.header, read);
+    }
     let file = File::open(path).map_err(io_err)?;
     let reader = BufReader::with_capacity(256 * 1024, Counting { inner: file, read });
     from_reader(reader, format, csv)
@@ -104,6 +127,9 @@ pub fn from_reader(
     match format {
         ImportFormat::Delimited => Ok(Box::new(CsvSource::new(reader, csv)?)),
         ImportFormat::Json => Ok(Box::new(JsonSource::new(reader)?)),
+        ImportFormat::Excel | ImportFormat::Parquet => {
+            Err(DbError::new(format!("{} files are read from a path.", format.label())))
+        }
     }
 }
 
@@ -490,7 +516,7 @@ mod tests {
 
     #[test]
     fn tsv_without_header() {
-        let o = CsvOptions { delimiter: '\t', header: false };
+        let o = CsvOptions { delimiter: '\t', header: false, ..Default::default() };
         let (cols, rows) = read("1\ta\n2\tb\n", ImportFormat::Delimited, &o);
         assert_eq!(cols, ["column1", "column2"]);
         assert_eq!(rows, [[f("1"), f("a")], [f("2"), f("b")]]);

@@ -35,6 +35,62 @@ fn sample_db(dir: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// A cell of a test workbook.
+enum Value {
+    Number(String),
+    Text(String),
+    Empty,
+}
+
+/// A workbook with a "Summary" sheet and a sheet of rows (numbers as numbers, text inline).
+fn workbook(path: &std::path::Path, columns: &[&str], rows: &[Vec<Value>]) {
+    use std::io::Write;
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let text = |r: String, s: &str| format!(r#"<c r="{r}" t="inlineStr"><is><t>{}</t></is></c>"#, esc(s));
+    let sheet = |body: String| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{body}</sheetData></worksheet>"#
+        )
+    };
+    let col = |j: usize| ((b'A' + j as u8) as char).to_string();
+    let mut body = String::from(r#"<row r="1">"#);
+    for (j, c) in columns.iter().enumerate() {
+        body.push_str(&text(format!("{}1", col(j)), c));
+    }
+    body.push_str("</row>");
+    for (i, row) in rows.iter().enumerate() {
+        let n = i + 2;
+        body.push_str(&format!(r#"<row r="{n}">"#));
+        for (j, cell) in row.iter().enumerate() {
+            let r = format!("{}{n}", col(j));
+            match cell {
+                Value::Number(v) => body.push_str(&format!(r#"<c r="{r}"><v>{v}</v></c>"#)),
+                Value::Text(v) => body.push_str(&text(r, v)),
+                Value::Empty => {}
+            }
+        }
+        body.push_str("</row>");
+    }
+    let parts = [
+        (
+            "xl/workbook.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Orders" sheetId="2" r:id="rId2"/></sheets></workbook>"#.to_string(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>"#.to_string(),
+        ),
+        ("xl/worksheets/sheet1.xml", sheet(format!(r#"<row r="1">{}</row>"#, text("A1".into(), "Orders by month")))),
+        ("xl/worksheets/sheet2.xml", sheet(body)),
+    ];
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    for (name, part) in parts {
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(part.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
 fn settle(h: &mut Harness<'_, DbManApp>) {
     for _ in 0..30 {
         h.run_steps(2);
@@ -231,6 +287,52 @@ fn browse_sqlite_database() {
     click(&mut h, "Start import");
     settle(&mut h);
     assert_eq!(h.state().jobs.list[3].state, JobState::Done, "{:?}", h.state().jobs.list[3].log);
+    let same: i64 = check
+        .query_row("SELECT count(*) FROM (SELECT * FROM orders EXCEPT SELECT * FROM orders_copy)", [], |r| r.get(0))
+        .unwrap();
+    let n: i64 = check.query_row("SELECT count(*) FROM orders_copy", [], |r| r.get(0)).unwrap();
+    assert_eq!((n, same), (4, 0));
+
+    // The same rows from a sheet of an Excel workbook, replacing the copy's rows.
+    let xlsx = dir.path().join("orders.xlsx");
+    let mut st = check.prepare("SELECT id, customer_id, total, created_at, note FROM orders").unwrap();
+    let rows: Vec<Vec<Value>> = st
+        .query_map([], |r| {
+            Ok((0..5)
+                .map(|i| match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Integer(v) => Value::Number(v.to_string()),
+                    rusqlite::types::ValueRef::Real(v) => Value::Number(v.to_string()),
+                    rusqlite::types::ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+                    _ => Value::Empty,
+                })
+                .collect())
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(st);
+    workbook(&xlsx, &["id", "customer_id", "total", "created_at", "note"], &rows);
+    let copy = ObjectPath::new("main", "", "orders_copy");
+    h.state_mut().handle(Action::ImportData(conn_id, copy), &ctx);
+    settle(&mut h);
+    let wait = |h: &mut Harness<'_, DbManApp>| {
+        for _ in 0..50 {
+            settle(h);
+            if h.state_mut().import_dialog().is_some_and(|d| d.preview_ready()) {
+                break;
+            }
+        }
+    };
+    h.state_mut().import_dialog().expect("import dialog").set_path(&xlsx);
+    wait(&mut h);
+    h.state_mut().import_dialog().unwrap().set_sheet("Orders");
+    h.state_mut().import_dialog().unwrap().set_clear_first(true);
+    wait(&mut h);
+    settle(&mut h);
+    snapshot(&mut h, "import_excel");
+    click(&mut h, "Start import");
+    settle(&mut h);
+    assert_eq!(h.state().jobs.list[4].state, JobState::Done, "{:?}", h.state().jobs.list[4].log);
     let same: i64 = check
         .query_row("SELECT count(*) FROM (SELECT * FROM orders EXCEPT SELECT * FROM orders_copy)", [], |r| r.get(0))
         .unwrap();

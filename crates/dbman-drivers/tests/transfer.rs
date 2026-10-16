@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use dbman_core::export::Format;
-use dbman_core::import::{self, ImportFormat};
+use dbman_core::import;
 use dbman_core::{Cell, Connection, ConnectionConfig, DbKind, ObjectPath, StatementOutcome};
 use dbman_drivers::backup::{Progress, Report};
 use dbman_drivers::transfer::{ExportJob, ExportSource, ImportJob, export, import};
@@ -75,10 +75,66 @@ fn source_csv(path: &Path) {
     std::fs::write(path, s).unwrap();
 }
 
+/// A Parquet copy of a CSV file, every column as text.
+fn csv_to_parquet(csv: &Path, out: &Path) {
+    let db = duckdb::Connection::open_in_memory().unwrap();
+    db.execute_batch(&format!(
+        "COPY (SELECT * FROM read_csv('{}', header = true, all_varchar = true)) TO '{}' (FORMAT parquet)",
+        csv.display(),
+        out.display()
+    ))
+    .unwrap();
+}
+
+/// An Excel copy of a CSV file: one sheet of inline strings, empty fields left out.
+fn csv_to_xlsx(csv: &Path, out: &Path) {
+    use std::io::Write;
+    let (format, opts) = import::detect(csv);
+    let mut source = import::open(csv, format, &opts, Default::default()).unwrap();
+    let header: Vec<_> = source.columns().iter().cloned().map(Some).collect();
+    let rows = import::preview(source.as_mut(), usize::MAX).unwrap();
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let mut sheet = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+    );
+    for (i, row) in std::iter::once(header).chain(rows).enumerate() {
+        sheet.push_str(&format!(r#"<row r="{}">"#, i + 1));
+        for (j, field) in row.iter().enumerate() {
+            if let Some(v) = field.as_deref().filter(|v| !v.is_empty()) {
+                let col = (b'A' + j as u8) as char;
+                sheet.push_str(&format!(
+                    r#"<c r="{col}{}" t="inlineStr"><is><t xml:space="preserve">{}</t></is></c>"#,
+                    i + 1,
+                    esc(v)
+                ));
+            }
+        }
+        sheet.push_str("</row>");
+    }
+    sheet.push_str("</sheetData></worksheet>");
+    let parts = [
+        (
+            "xl/workbook.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"#.to_string(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.to_string(),
+        ),
+        ("xl/worksheets/sheet1.xml", sheet),
+    ];
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(out).unwrap());
+    for (name, body) in parts {
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
 fn import_job(table: &ObjectPath, path: &Path, details: &dbman_core::TableDetails, kind: DbKind) -> ImportJob {
     let (format, csv) = import::detect(path);
-    let mut source = import::open(path, format, &csv, Default::default()).unwrap();
-    let columns = import::auto_map(&details.columns, source.columns(), format == ImportFormat::Json || csv.header);
+    let mut source = dbman_drivers::files::open(path, format, &csv, Default::default()).unwrap();
+    let columns = import::auto_map(&details.columns, source.columns(), format.named(&csv));
     let _ = source.next_record();
     ImportJob {
         table: table.clone(),
@@ -151,6 +207,19 @@ async fn round_trip(cfg: ConnectionConfig, db: &str, schema: &str, create: &str)
         } else {
             assert!(got == expected_text, "{kind:?} {format:?} differs");
         }
+    }
+
+    // Parquet and Excel copies of the first export.
+    for (name, write) in [("copy.parquet", csv_to_parquet as fn(&Path, &Path)), ("copy.xlsx", csv_to_xlsx)] {
+        let file = dir.path().join(name);
+        write(&expected, &file);
+        let (report, _) = collect();
+        import(cfg.clone(), import_job(&dst, &file, &details, kind), report, no_cancel())
+            .await
+            .unwrap_or_else(|e| panic!("{kind:?} import {name}: {e}"));
+        let again = dir.path().join(format!("again-{name}.csv"));
+        export_to(&cfg, &dst, Format::Csv, &again).await;
+        assert!(std::fs::read_to_string(&again).unwrap() == expected_text, "{kind:?} {name} differs");
     }
 
     // A failing batch rolls the whole import back.

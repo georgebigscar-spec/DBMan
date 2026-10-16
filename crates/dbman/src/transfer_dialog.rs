@@ -203,6 +203,8 @@ impl ExportDialog {
 struct Preview {
     columns: Vec<String>,
     rows: Vec<Vec<Field>>,
+    /// A workbook's sheets.
+    sheets: Vec<String>,
 }
 
 /// What a preview was read with; a change re-reads it.
@@ -233,6 +235,8 @@ pub struct ImportDialog {
     preview_key: Option<PreviewKey>,
     loading: Option<Receiver<Result<Preview, String>>>,
     browsing: Option<PendingPath>,
+    /// The workbook's sheets, from the last preview.
+    sheets: Vec<String>,
 }
 
 impl ImportDialog {
@@ -255,6 +259,7 @@ impl ImportDialog {
             preview_key: None,
             loading: None,
             browsing: None,
+            sheets: Vec::new(),
         }
     }
 
@@ -274,6 +279,11 @@ impl ImportDialog {
     pub fn set_details(&mut self, details: TableDetails) {
         self.details = Some(details);
         self.remap();
+    }
+
+    /// Picks a workbook's sheet (tests; the dialog has a list).
+    pub fn set_sheet(&mut self, sheet: &str) {
+        self.csv.sheet = sheet.into();
     }
 
     /// Picks a file and its format by extension (tests; the dialog has a Browse button).
@@ -301,6 +311,9 @@ impl ImportDialog {
         if let Some(rx) = &self.loading {
             match rx.try_recv() {
                 Ok(p) => {
+                    if let Ok(p) = &p {
+                        self.sheets = p.sheets.clone();
+                    }
                     self.preview = Some(p);
                     self.loading = None;
                     self.remap();
@@ -322,10 +335,15 @@ impl ImportDialog {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let result = import::open(Path::new(&key.path), key.format, &key.csv, Default::default())
+            let path = Path::new(&key.path);
+            let result = dbman_drivers::files::open(path, key.format, &key.csv, Default::default())
                 .and_then(|mut s| {
                     let rows = import::preview(s.as_mut(), 8)?;
-                    Ok(Preview { columns: s.columns().to_vec(), rows })
+                    let sheets = match key.format {
+                        ImportFormat::Excel => dbman_drivers::files::sheets(path)?,
+                        _ => Vec::new(),
+                    };
+                    Ok(Preview { columns: s.columns().to_vec(), rows, sheets })
                 })
                 .map_err(|e| e.message);
             let _ = tx.send(result);
@@ -337,7 +355,7 @@ impl ImportDialog {
     /// Matches the table's columns to the file's again.
     fn remap(&mut self) {
         if let (Some(d), Some(Ok(p))) = (&self.details, &self.preview) {
-            let named = self.format == ImportFormat::Json || self.csv.header;
+            let named = self.format.named(&self.csv);
             self.columns = import::auto_map(&d.columns, &p.columns, named);
         }
     }
@@ -445,7 +463,10 @@ impl ImportDialog {
             ui.add(Input::new(&mut self.path).width(ui.available_width() - 100.0));
             if ui.add_enabled(self.browsing.is_none(), Button::outline(tr("Browse…"))).clicked() {
                 let d = rfd::AsyncFileDialog::new()
-                    .add_filter("CSV, TSV, JSON", &["csv", "tsv", "txt", "json", "jsonl", "ndjson"])
+                    .add_filter(
+                        "CSV, TSV, JSON, Excel, Parquet",
+                        &["csv", "tsv", "txt", "json", "jsonl", "ndjson", "xlsx", "xlsm", "parquet"],
+                    )
                     .add_filter(tr("All files"), &["*"]);
                 self.browsing = Some(files::pick(ui.ctx(), d, Pick::OpenFile));
             }
@@ -461,6 +482,22 @@ impl ImportDialog {
                     self.format = ImportFormat::ALL[i];
                 }
             });
+            if self.format == ImportFormat::Excel && !self.sheets.is_empty() {
+                ui.vertical(|ui| {
+                    label(ui, tr("Sheet"));
+                    let labels: Vec<&str> = self.sheets.iter().map(String::as_str).collect();
+                    let mut idx = match self.csv.sheet.as_str() {
+                        "" => Some(0),
+                        s => self.sheets.iter().position(|n| n == s),
+                    };
+                    ui.add(Select::new(&mut idx, &labels).width(160.0));
+                    if let Some(i) = idx
+                        && (i > 0 || !self.csv.sheet.is_empty())
+                    {
+                        self.csv.sheet = self.sheets[i].clone();
+                    }
+                });
+            }
             if self.format == ImportFormat::Delimited {
                 ui.vertical(|ui| {
                     label(ui, tr("Separator"));
@@ -478,9 +515,15 @@ impl ImportDialog {
             });
         });
         ui.add_space(6.0);
-        if self.format == ImportFormat::Delimited {
-            ui.add(Checkbox::new(&mut self.csv.header).label(tr("The first line holds column names")));
-            ui.add(Checkbox::new(&mut self.empty_as_null).label(tr("Empty fields are NULL")));
+        match self.format {
+            ImportFormat::Delimited => {
+                ui.add(Checkbox::new(&mut self.csv.header).label(tr("The first line holds column names")));
+                ui.add(Checkbox::new(&mut self.empty_as_null).label(tr("Empty fields are NULL")));
+            }
+            ImportFormat::Excel => {
+                ui.add(Checkbox::new(&mut self.csv.header).label(tr("The first row holds column names")));
+            }
+            ImportFormat::Json | ImportFormat::Parquet => {}
         }
         ui.add(Checkbox::new(&mut self.clear_first).label(tr("Delete the table's rows first")));
         if self.cfg.kind != dbman_core::DbKind::ClickHouse {

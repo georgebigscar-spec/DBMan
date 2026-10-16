@@ -13,6 +13,7 @@ pub mod clickhouse;
 pub mod compare;
 pub mod copy;
 pub mod duckdb;
+pub mod files;
 pub mod generate;
 pub mod mssql;
 pub mod mysql;
