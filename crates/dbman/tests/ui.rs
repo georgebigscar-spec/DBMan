@@ -322,6 +322,14 @@ fn browse_sqlite_database() {
     assert_eq!(h.state().console_history().len(), runs, "explaining is not a run");
     snapshot(&mut h, "explain_plan");
 
+    // Formatting lays the script out one clause per line.
+    click(&mut h, "Format SQL");
+    settle(&mut h);
+    let (_, sql) = h.state().console_completion();
+    assert!(sql.contains("\nFROM customers c\nLEFT JOIN orders o ON o.customer_id = c.id"), "{sql}");
+    assert_eq!(dbman_core::format::format_sql(&sql, DbKind::Sqlite), sql, "formatting again changes nothing");
+    snapshot(&mut h, "format_sql");
+
     // A script file opens in a new console and saves back with Ctrl+S.
     let script = dir.path().join("report.sql");
     std::fs::write(&script, "SELECT 1;\n").unwrap();
