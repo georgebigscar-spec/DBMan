@@ -10,6 +10,7 @@ use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Alert, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, tabs};
 
+use crate::compare_view::CompareView;
 use crate::data_view::DataView;
 use crate::er_view::ErView;
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
@@ -30,6 +31,7 @@ pub enum TabKind {
     Object(ObjectView),
     TableEditor(Box<TableEditor>),
     Diagram(Box<ErView>),
+    Compare(Box<CompareView>),
 }
 
 /// What a tab can reach while drawing.
@@ -40,6 +42,8 @@ pub struct TabCtx<'a> {
     pub page_size: usize,
     /// The connection the tab belongs to (even when it is not connected).
     pub conn_id: uuid::Uuid,
+    /// Every saved connection (comparison targets).
+    pub conns: &'a [ConnState],
 }
 
 impl Tab {
@@ -50,6 +54,7 @@ impl Tab {
             TabKind::Object(o) => format!("{} ({})", o.object.path.name, o.object.kind.label()),
             TabKind::TableEditor(e) => e.title(),
             TabKind::Diagram(d) => d.title(),
+            TabKind::Compare(c) => c.title(),
         }
     }
 
@@ -61,6 +66,7 @@ impl Tab {
             TabKind::Object(o) => o.on_event(ev),
             TabKind::TableEditor(e) => return e.on_event(ev, ctx),
             TabKind::Diagram(d) => d.on_event(ev),
+            TabKind::Compare(c) => c.on_event(ev),
         }
         Vec::new()
     }
@@ -73,6 +79,7 @@ impl Tab {
             TabKind::Object(o) => o.ui(ui, id, cx),
             TabKind::TableEditor(e) => e.ui(ui, id, cx),
             TabKind::Diagram(d) => d.ui(ui, id, cx),
+            TabKind::Compare(c) => c.ui(ui, id, cx),
         }
     }
 }

@@ -19,6 +19,7 @@ use crate::explorer::Action;
 use crate::files::{self, PendingPath, Pick};
 use crate::jobs::JobSpec;
 
+#[derive(Debug, Clone)]
 pub struct Start {
     pub title: String,
     pub spec: JobSpec,

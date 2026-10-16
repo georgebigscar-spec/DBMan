@@ -5,7 +5,7 @@ use std::time::Duration;
 ///
 /// Values are kept as text (as the server formats them), which is what a
 /// client shows and edits; binary values stay as bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Cell {
     Null,
     Text(String),

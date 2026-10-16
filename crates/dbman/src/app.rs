@@ -8,6 +8,7 @@ use shadcn_egui::{Button, ButtonSize, Switch, Theme, Toaster, TooltipExt, alert_
 use uuid::Uuid;
 
 use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
+use crate::compare_view::CompareView;
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
 use crate::data_view::DataView;
 use crate::er_view::ErView;
@@ -313,6 +314,13 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::Diagram(Box::new(ErView::new(cfg, db, schema)))),
                 }
             }
+            Action::OpenCompare(id, db, schema) => {
+                let Some(c) = self.conn(id) else { return };
+                let cfg = c.cfg.clone();
+                self.add_tab(id, TabKind::Compare(Box::new(CompareView::new(cfg, db, schema))));
+            }
+            Action::OpenConsoleWith(id, db, sql) => self.open_console(id, db, Some(sql)),
+            Action::StartJob(job) => self.start_transfer(*job),
             Action::ExportData(id, source) => {
                 if let Some(c) = self.conn(id) {
                     self.export = Some(ExportDialog::new(id, c.cfg.clone(), source));
@@ -459,6 +467,21 @@ impl DbManApp {
         }
     }
 
+    /// The comparison tab on screen, if the active tab is one.
+    pub fn active_compare(&mut self) -> Option<&mut CompareView> {
+        let active = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
+            TabKind::Compare(c) => Some(c.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// Adds a saved connection, as the connection dialog does.
+    pub fn add_connection(&mut self, cfg: ConnectionConfig) {
+        self.conns.push(ConnState::new(cfg));
+        self.save_settings();
+    }
+
     /// The data tab on screen, if the active tab is one.
     pub fn active_data_view(&mut self) -> Option<&mut DataView> {
         let active = self.active?;
@@ -588,7 +611,10 @@ impl DbManApp {
             let Some(tab) = self.tabs.iter_mut().find(|t| t.id == active) else { return };
             let conn = self.conns.iter().find(|c| c.cfg.id == tab.conn);
             let conn_id = tab.conn;
-            tab.ui(ui, TabCtx { tasks: &self.tasks, conn, actions: &mut actions, page_size, conn_id });
+            tab.ui(
+                ui,
+                TabCtx { tasks: &self.tasks, conn, actions: &mut actions, page_size, conn_id, conns: &self.conns },
+            );
         });
 
         for a in actions {
@@ -626,6 +652,7 @@ impl DbManApp {
                                     TabKind::Object(_) => Icon::Info,
                                     TabKind::TableEditor(_) => Icon::Table,
                                     TabKind::Diagram(_) => Icon::ForeignKey,
+                                    TabKind::Compare(_) => Icon::Schema,
                                 };
                                 let color = if active { t.foreground } else { t.muted_foreground };
                                 icons::icon(ui, icon, color);

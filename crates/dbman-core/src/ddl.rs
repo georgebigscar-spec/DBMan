@@ -325,13 +325,16 @@ fn ms_drop_default(table: &ObjectPath, column: &str) -> String {
     )
 }
 
-/// A ClickHouse column: `NULL` makes it Nullable; no NOT NULL, identity or keys.
+/// A ClickHouse column: nullable ones become `Nullable(T)`; no NOT NULL, identity or keys.
 fn ch_column(c: &ColumnInfo) -> String {
     let d = Dialect(DbKind::ClickHouse);
-    let mut s = format!("{} {}", d.ident(&c.name), c.data_type.trim());
-    if c.nullable && !c.data_type.trim().starts_with("Nullable(") {
-        s.push_str(" NULL");
-    }
+    let ty = c.data_type.trim();
+    // `T NULL` is not accepted by ALTER TABLE … ADD COLUMN; `Nullable(T)` is.
+    let mut s = if c.nullable && !ty.starts_with("Nullable(") {
+        format!("{} Nullable({ty})", d.ident(&c.name))
+    } else {
+        format!("{} {ty}", d.ident(&c.name))
+    };
     if let Some(def) = c.default.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         s.push_str(&format!(" DEFAULT {def}"));
     }
@@ -500,11 +503,11 @@ pub fn create_table(kind: DbKind, def: &TableDef) -> Plan {
     plan
 }
 
-fn same_index(a: &IndexInfo, b: &IndexInfo) -> bool {
+pub(crate) fn same_index(a: &IndexInfo, b: &IndexInfo) -> bool {
     a.columns == b.columns && a.unique == b.unique
 }
 
-fn same_fk(a: &ForeignKeyInfo, b: &ForeignKeyInfo) -> bool {
+pub(crate) fn same_fk(a: &ForeignKeyInfo, b: &ForeignKeyInfo) -> bool {
     let action = |s: &str| if is_no_action(s) { String::new() } else { s.to_ascii_uppercase() };
     a.columns == b.columns
         && a.ref_schema == b.ref_schema
@@ -1167,7 +1170,7 @@ mod tests {
         let plan = create_table(DbKind::ClickHouse, &def);
         assert_eq!(
             plan.statements[0],
-            "CREATE TABLE `app`.`users` (\n    `id` UInt64,\n    `email` String COMMENT 'login',\n    `team_id` UInt32 NULL DEFAULT 1,\n    INDEX `users_email_key` email TYPE minmax GRANULARITY 1\n)\nENGINE = MergeTree\nORDER BY (`id`)"
+            "CREATE TABLE `app`.`users` (\n    `id` UInt64,\n    `email` String COMMENT 'login',\n    `team_id` Nullable(UInt32) DEFAULT 1,\n    INDEX `users_email_key` email TYPE minmax GRANULARITY 1\n)\nENGINE = MergeTree\nORDER BY (`id`)"
         );
         assert_eq!(plan.notes.len(), 2, "{:?}", plan.notes);
 

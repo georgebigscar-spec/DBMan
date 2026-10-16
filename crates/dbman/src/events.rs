@@ -94,6 +94,8 @@ pub enum TabEvent {
     },
     /// Every table of a diagram's schema with its structure.
     Diagram(DbResult<Vec<(dbman_core::ObjectPath, TableDetails)>>),
+    /// News for a comparison tab.
+    Compare(Box<crate::compare_view::CompareEvent>),
 }
 
 /// Spawns futures on the runtime and wakes the UI when they finish.
