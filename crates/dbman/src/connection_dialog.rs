@@ -299,7 +299,7 @@ impl ConnectionDialog {
                     Load::Idle => {}
                     Load::Loading => {
                         ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new());
+                            ui.add(shadcn_egui::Spinner::new());
                             ui.label(RichText::new(tr("Connecting…")).color(t.muted_foreground));
                         });
                     }

@@ -201,7 +201,7 @@ impl Prompt {
                     outcome = Some(PromptOutcome::Close);
                 }
                 if self.running {
-                    ui.add(egui::Spinner::new());
+                    ui.add(shadcn_egui::Spinner::new());
                 }
             });
         });

@@ -498,7 +498,7 @@ impl DataView {
                         self.rebuild();
                     }
                     if self.submitting {
-                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.add(shadcn_egui::Spinner::new().size(14.0));
                     }
                 }
                 let (_, has_pk) = self.key_columns();
@@ -528,7 +528,7 @@ impl DataView {
         match &self.rows {
             Load::Idle | Load::Loading => {
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new());
+                    ui.add(shadcn_egui::Spinner::new());
                     if let Some(t0) = self.load_started {
                         ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
                         ui.ctx().request_repaint_after(Duration::from_millis(100));

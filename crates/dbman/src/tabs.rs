@@ -541,7 +541,7 @@ impl Console {
                 {
                     self.stop(cx.tasks, tab);
                 }
-                ui.add(egui::Spinner::new().size(14.0));
+                ui.add(shadcn_egui::Spinner::new().size(14.0));
                 if let Some(t0) = self.started {
                     ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -1045,7 +1045,7 @@ impl ObjectView {
                 }
                 Load::Failed(e) => error_alert(ui, tr("Could not get DDL"), e),
                 _ => {
-                    ui.add(egui::Spinner::new());
+                    ui.add(shadcn_egui::Spinner::new());
                 }
             }
             return;
@@ -1054,7 +1054,7 @@ impl ObjectView {
             Load::Ready(d) => d,
             Load::Failed(e) => return error_alert(ui, tr("Could not read the structure"), e),
             _ => {
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
                 return;
             }
         };

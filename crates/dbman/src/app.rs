@@ -20,6 +20,7 @@ use crate::explorer::{self, Action, ConnState, Load, Node};
 use crate::generate_dialog::GenerateDialog;
 use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
+use crate::palette::{self, Pick};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::store::{History, Settings};
 use crate::table_editor::TableEditor;
@@ -43,6 +44,8 @@ pub struct DbManApp {
     export: Option<ExportDialog>,
     import: Option<ImportDialog>,
     generate: Option<GenerateDialog>,
+    /// The command palette (Ctrl+K) is open.
+    palette: bool,
     pub jobs: Jobs,
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
@@ -78,6 +81,7 @@ impl DbManApp {
             export: None,
             import: None,
             generate: None,
+            palette: false,
             jobs: Jobs::default(),
             status: tr("Ready").into(),
             runtime: Some(runtime),
@@ -632,6 +636,9 @@ impl DbManApp {
         let t = Theme::get(&ctx);
         let mut actions = Vec::new();
 
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::K)) {
+            self.palette = !self.palette;
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T))
             && let Some(id) = self.current_conn()
         {
@@ -669,6 +676,14 @@ impl DbManApp {
                 {
                     actions.push(Action::OpenConsole(id, None));
                 }
+                ui.add_space(4.0);
+                if ui
+                    .add(Button::ghost(tr("Search…")).size(ButtonSize::Sm))
+                    .tooltip(tr("Search tables, tabs and commands (Ctrl+K)"))
+                    .clicked()
+                {
+                    self.palette = true;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut dark = self.settings.dark;
                     if ui.add(Switch::new(&mut dark).label(tr("Dark"))).changed() {
@@ -703,7 +718,7 @@ impl DbManApp {
                             self.jobs.open = !self.jobs.open;
                         }
                         if running > 0 {
-                            ui.add(egui::Spinner::new().size(12.0));
+                            ui.add(shadcn_egui::Spinner::new().size(12.0));
                         }
                     }
                     let open = self.conns.iter().filter(|c| c.session.ready().is_some()).count();
@@ -756,6 +771,35 @@ impl DbManApp {
                 },
             );
         });
+
+        let current = self.current_conn();
+        let picked = palette::show(
+            &ctx,
+            &mut self.palette,
+            palette::Ctx {
+                conns: &self.conns,
+                tabs: &self.tabs,
+                active: self.active,
+                current,
+                dark: self.settings.dark,
+            },
+        );
+        match picked {
+            Some(Pick::Action(a)) => actions.push(a),
+            Some(Pick::Tab(id)) => self.active = Some(id),
+            Some(Pick::CloseTab(id)) => self.close_tab(id),
+            Some(Pick::Conn(id)) => {
+                self.selected = Some(Node::Conn(id));
+                if self.conn(id).is_some_and(|c| c.session.is_idle()) {
+                    actions.push(Action::Connect(id));
+                }
+            }
+            Some(Pick::ToggleDark) => {
+                self.settings.dark = !self.settings.dark;
+                self.save_settings();
+            }
+            None => {}
+        }
 
         for a in actions {
             self.handle(a, &ctx);
@@ -843,6 +887,7 @@ impl DbManApp {
             ui.add_space(16.0);
             for (keys, what) in [
                 ("Double-click a table", "open its data"),
+                ("Ctrl+K", "search tables, tabs and commands"),
                 ("Ctrl+T", "new SQL console"),
                 ("Ctrl+Enter", "run the statement under the cursor"),
                 ("Ctrl+Shift+Enter", "run the whole script"),

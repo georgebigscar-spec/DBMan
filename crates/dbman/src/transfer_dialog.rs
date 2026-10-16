@@ -653,7 +653,7 @@ impl ImportDialog {
         match &self.preview {
             None if self.loading.is_some() => {
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.add(shadcn_egui::Spinner::new().size(14.0));
                     ui.label(RichText::new(tr("Reading the file…")).color(t.muted_foreground));
                 });
             }
@@ -713,7 +713,7 @@ impl ImportDialog {
         }
         if self.details.is_none() {
             ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(14.0));
+                ui.add(shadcn_egui::Spinner::new().size(14.0));
                 ui.label(RichText::new(tr("Reading the table's columns…")).color(t.muted_foreground));
             });
             return;

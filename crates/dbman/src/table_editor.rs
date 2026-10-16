@@ -272,7 +272,7 @@ impl TableEditor {
         }
         match &self.existing {
             Some(Load::Loading | Load::Idle) => {
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
                 return;
             }
             Some(Load::Failed(e)) => {
@@ -323,7 +323,7 @@ impl TableEditor {
                     self.existing = Some(Load::Idle);
                 }
                 if self.running {
-                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.add(shadcn_egui::Spinner::new().size(14.0));
                 }
             });
             ui.add_space(6.0);

@@ -270,7 +270,7 @@ impl Jobs {
                 ui.horizontal(|ui| {
                     match &job.state {
                         JobState::Running => {
-                            ui.add(egui::Spinner::new().size(14.0));
+                            ui.add(shadcn_egui::Spinner::new().size(14.0));
                         }
                         JobState::Done => {
                             ui.label(RichText::new("✔").color(t.primary));

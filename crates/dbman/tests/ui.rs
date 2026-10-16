@@ -157,6 +157,22 @@ fn browse_sqlite_database() {
     click(&mut h, "tables");
     click(&mut h, "orders");
 
+    // The command palette finds a loaded table and opens it, then closes the tab.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
+    settle(&mut h);
+    h.event(egui::Event::Text("custo".into()));
+    settle(&mut h);
+    snapshot(&mut h, "command_palette");
+    click(&mut h, "main.customers");
+    assert_eq!(h.state().tab_titles(), ["customers"]);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
+    settle(&mut h);
+    h.event(egui::Event::Text("close".into()));
+    settle(&mut h);
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    assert!(h.state().tab_titles().is_empty(), "{:?}", h.state().tab_titles());
+
     let orders = DbObject {
         kind: ObjectKind::Table,
         path: ObjectPath::new("main", "main", "orders"),
