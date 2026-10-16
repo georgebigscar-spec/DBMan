@@ -209,6 +209,8 @@
   "Existing tables": "Существующие таблицы",
   "Explain": "План",
   "Explain analyze": "План с замером",
+  "Format SQL": "Форматировать",
+  "Lay out the selection or the whole script, one clause per line (Ctrl+Alt+L)": "Разложить выделенное или весь скрипт по строкам, по предложению на строку (Ctrl+Alt+L)",
   "Export": "Экспорт",
   "Export data…": "Экспорт данных…",
   "Export folder (CSV)": "Папка экспорта (CSV)",

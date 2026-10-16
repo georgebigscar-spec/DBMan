@@ -277,6 +277,19 @@ impl Console {
         sql_editor::place_cursor(ctx, editor_id, self.sql.chars().count());
     }
 
+    /// Formats the selection, or the whole script when nothing is selected.
+    pub fn format(&mut self, ctx: &egui::Context, editor_id: egui::Id) {
+        let range = match &self.selection {
+            Some(r) if !r.is_empty() && r.end <= self.sql.len() => r.clone(),
+            _ => 0..self.sql.len(),
+        };
+        let formatted = dbman_core::format::format_sql(&self.sql[range.clone()], self.cfg.kind);
+        let end = range.start + formatted.len();
+        self.sql.replace_range(range, &formatted);
+        self.selection = None;
+        sql_editor::place_cursor(ctx, editor_id, self.sql[..end].chars().count());
+    }
+
     /// The shown plan's steps, indented by depth (tests).
     pub fn plan_outline(&self) -> Vec<String> {
         let plan = self.outputs.get(self.shown_output).and_then(|o| o.plan.as_ref());
@@ -504,6 +517,9 @@ impl Console {
             if all || one {
                 self.run(cx.tasks, tab, all, cx.page_size);
             }
+            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::L)) {
+                self.format(&ctx, editor_id);
+            }
         }
 
         ui.horizontal(|ui| {
@@ -532,6 +548,12 @@ impl Console {
                 if analyze.clicked() {
                     self.explain(cx.tasks, tab, true);
                 }
+            }
+            let format = ui
+                .add(Button::outline(tr("Format SQL")).size(ButtonSize::Sm))
+                .tooltip(tr("Lay out the selection or the whole script, one clause per line (Ctrl+Alt+L)"));
+            if format.clicked() {
+                self.format(&ctx, editor_id);
             }
             if self.running {
                 if ui

@@ -68,6 +68,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **Execution plan**: `Explain` in the console shows the plan of the statement under the cursor as a tree with the estimated rows and cost, without running it. `Explain analyze` (PostgreSQL and DuckDB) runs the statement and adds the actual rows and times; a bar shows each step's share of the time, or of the cost. `Copy plan` copies the engine's own output. Each engine is asked its own way: `EXPLAIN (FORMAT JSON)` in PostgreSQL and DuckDB, `EXPLAIN` in MySQL and MariaDB, `EXPLAIN QUERY PLAN` in SQLite, `EXPLAIN indexes = 1` in ClickHouse, and `SET SHOWPLAN_ALL ON` in SQL Server.
 
 ![Execution plan](crates/dbman/tests/snapshots/explain_plan.png)
+- **SQL formatting**: `Format SQL` in the console (`Ctrl+Alt+L`) lays out the selection, or the whole script, one clause per line: select lists and `SET` assignments one item per line, `AND` / `OR` conditions on their own lines, subqueries and CTEs indented, `CREATE TABLE` one column per line, and keywords in upper case (on ClickHouse, whose names are case-sensitive, the case is kept). Other statements, such as procedure bodies, triggers and `GRANT`, are kept as written, and so are strings and comments. Only whitespace and the case of keywords change, so the formatted script means the same; a test runs queries as written and formatted on every engine and compares the results.
+
+![SQL formatting](crates/dbman/tests/snapshots/format_sql.png)
 - **Data view** of tables and views: pages, a `WHERE` filter, `ORDER BY`, quick filter and sort in the grid, and `NULL` stands out.
 - **Data editing** in tables.
   - Double-click a cell to edit it. `Set NULL` is in the context menu, and `+ Row` and `− Delete` add and delete rows.
