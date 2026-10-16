@@ -1,4 +1,4 @@
-//! Background jobs (backups, restores): they run on the runtime while the
+//! Background jobs (backups, restores, exports, imports): they run on the runtime while the
 //! window stays usable, and show up in a panel above the status bar with
 //! progress, elapsed time, a log and a Cancel button.
 
@@ -46,6 +46,16 @@ pub enum JobSpec {
         cfg: Box<dbman_core::ConnectionConfig>,
         job: runner::MsJob,
     },
+    /// Rows of a table or query written to a file.
+    Export {
+        cfg: Box<dbman_core::ConnectionConfig>,
+        job: dbman_drivers::transfer::ExportJob,
+    },
+    /// Rows of a file inserted into a table.
+    Import {
+        cfg: Box<dbman_core::ConnectionConfig>,
+        job: dbman_drivers::transfer::ImportJob,
+    },
     /// Backup or restore statements run on a session of a DuckDB file.
     DuckDb {
         db: String,
@@ -72,6 +82,8 @@ impl JobSpec {
             JobSpec::DuckDb { db, statements, watch } => {
                 runner::duckdb_run(db, statements, watch, report, cancel).await
             }
+            JobSpec::Export { cfg, job } => dbman_drivers::transfer::export(*cfg, job, report, cancel).await,
+            JobSpec::Import { cfg, job } => dbman_drivers::transfer::import(*cfg, job, report, cancel).await,
         }
     }
 }
@@ -248,10 +260,7 @@ impl Jobs {
                     ui.label(RichText::new(info).size(12.0).color(t.muted_foreground));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if job.state == JobState::Running {
-                            if ui
-                                .add(Button::outline("Cancel").size(ButtonSize::Sm))
-                                .tooltip("Stop the job; a partial backup file is left as is")
-                                .clicked()
+                            if ui.add(Button::outline("Cancel").size(ButtonSize::Sm)).tooltip("Stop the job").clicked()
                             {
                                 job.cancel.store(true, Ordering::Relaxed);
                             }

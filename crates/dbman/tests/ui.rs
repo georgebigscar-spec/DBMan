@@ -10,6 +10,7 @@ use dbman::explorer::Action;
 use dbman::jobs::JobState;
 use dbman::store::Settings;
 use dbman_core::{Cell, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath};
+use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers};
 use egui_kittest::{Harness, kittest::Queryable as _};
 
@@ -191,6 +192,44 @@ fn browse_sqlite_database() {
     assert_eq!(h.state().jobs.list[1].state, JobState::Done, "{:?}", h.state().jobs.list[1].log);
     let n: i64 = check.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 4);
+
+    // Export a table to CSV and load the file into another table, both in the background.
+    let orders = ObjectPath::new("main", "", "orders");
+    let csv = dir.path().join("orders.csv");
+    h.state_mut().handle(Action::ExportData(conn_id, ExportSource::Table(orders.clone())), &ctx);
+    settle(&mut h);
+    h.state_mut().export_dialog().expect("export dialog").set_path(&csv);
+    settle(&mut h);
+    snapshot(&mut h, "export_dialog");
+    click(&mut h, "Start export");
+    settle(&mut h);
+    assert_eq!(h.state().jobs.list[2].state, JobState::Done, "{:?}", h.state().jobs.list[2].log);
+    let text = std::fs::read_to_string(&csv).unwrap();
+    assert!(text.starts_with("id,customer_id,total,created_at,note\n1,1,"), "{text}");
+    assert_eq!(text.lines().count(), 5, "{text}");
+
+    check.execute("CREATE TABLE orders_copy AS SELECT * FROM orders WHERE 0", []).unwrap();
+    h.state_mut().handle(Action::RefreshObjects(conn_id, "main".into(), "main".into()), &ctx);
+    let copy = ObjectPath::new("main", "", "orders_copy");
+    h.state_mut().handle(Action::ImportData(conn_id, copy), &ctx);
+    settle(&mut h);
+    h.state_mut().import_dialog().expect("import dialog").set_path(&csv);
+    for _ in 0..50 {
+        settle(&mut h);
+        if h.state_mut().import_dialog().is_some_and(|d| d.preview_ready()) {
+            break;
+        }
+    }
+    settle(&mut h);
+    snapshot(&mut h, "import_dialog");
+    click(&mut h, "Start import");
+    settle(&mut h);
+    assert_eq!(h.state().jobs.list[3].state, JobState::Done, "{:?}", h.state().jobs.list[3].log);
+    let same: i64 = check
+        .query_row("SELECT count(*) FROM (SELECT * FROM orders EXCEPT SELECT * FROM orders_copy)", [], |r| r.get(0))
+        .unwrap();
+    let n: i64 = check.query_row("SELECT count(*) FROM orders_copy", [], |r| r.get(0)).unwrap();
+    assert_eq!((n, same), (4, 0));
 
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);

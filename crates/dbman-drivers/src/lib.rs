@@ -15,6 +15,7 @@ pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
+pub mod transfer;
 
 /// Opens a new session for `cfg`. Must be called inside a tokio runtime.
 pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {

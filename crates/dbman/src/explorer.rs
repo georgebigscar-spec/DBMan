@@ -137,6 +137,8 @@ pub enum Action {
     Truncate(Uuid, DbObject),
     Backup(Uuid, Scope),
     Restore(Uuid, Scope),
+    ExportData(Uuid, dbman_drivers::transfer::ExportSource),
+    ImportData(Uuid, ObjectPath),
 }
 
 pub fn kind_color(kind: DbKind) -> Color32 {
@@ -588,6 +590,12 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         menu_separator(ui);
         if dbman_core::ddl::rename(c.cfg.kind, o, "x").is_some() && menu_item(ui, "Rename…", None).clicked() {
             actions.push(Action::RenameObject(id, o.clone()));
+        }
+        if o.kind.has_data() && menu_item(ui, "Export data…", None).clicked() {
+            actions.push(Action::ExportData(id, dbman_drivers::transfer::ExportSource::Table(o.path.clone())));
+        }
+        if o.kind == ObjectKind::Table && menu_item(ui, "Import data…", None).clicked() {
+            actions.push(Action::ImportData(id, o.path.clone()));
         }
         if o.kind == ObjectKind::Table && menu_item(ui, "Truncate…", None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));

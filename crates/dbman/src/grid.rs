@@ -62,11 +62,25 @@ impl Grid {
 
 /// "Export" button with a menu: copy the rows to the clipboard or save them to
 /// a file as CSV, TSV, JSON, SQL INSERTs or Markdown. `table` is the target of
-/// the INSERT statements.
-pub fn export_menu(ui: &mut Ui, result: &QueryResult, kind: DbKind, table: Option<&ObjectPath>) {
+/// the INSERT statements. With `all_rows`, the menu also offers to export every
+/// row (not just the ones shown); returns true when that was chosen.
+pub fn export_menu(
+    ui: &mut Ui,
+    result: &QueryResult,
+    kind: DbKind,
+    table: Option<&ObjectPath>,
+    all_rows: bool,
+) -> bool {
     let trigger = ui.add(Button::outline("Export").size(ButtonSize::Sm));
     let render = |f: Format| export(result, f, Dialect(kind), table);
+    let mut export_all = false;
     dropdown_menu(&trigger, 240.0, |ui| {
+        if all_rows {
+            if menu_item(ui, "All rows to a file…", None).clicked() {
+                export_all = true;
+            }
+            menu_separator(ui);
+        }
         menu_label(ui, "Copy to clipboard");
         for f in Format::ALL {
             if menu_item(ui, f.label(), None).clicked() {
@@ -85,4 +99,5 @@ pub fn export_menu(ui: &mut Ui, result: &QueryResult, kind: DbKind, table: Optio
             }
         }
     });
+    export_all
 }
