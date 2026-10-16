@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::backup_dialog::timestamp;
 use crate::explorer::Action;
 use crate::files::{self, PendingPath, Pick};
+use crate::i18n::{tr, trf};
 use crate::jobs::JobSpec;
 
 #[derive(Debug, Clone)]
@@ -75,8 +76,8 @@ impl ExportDialog {
 
     fn title(&self) -> String {
         match &self.source {
-            ExportSource::Table(t) => format!("Export {}", t.name),
-            ExportSource::Query { .. } => "Export query result".into(),
+            ExportSource::Table(t) => trf("Export {name}", &[("name", &t.name)]),
+            ExportSource::Query { .. } => tr("Export query result").into(),
         }
     }
 
@@ -91,11 +92,11 @@ impl ExportDialog {
 
     fn job(&self) -> Result<ExportJob, String> {
         if self.path.trim().is_empty() {
-            return Err("Choose a file.".into());
+            return Err(tr("Choose a file.").into());
         }
         let path = PathBuf::from(self.path.trim());
         if path.parent().is_some_and(|p| !p.as_os_str().is_empty() && !p.is_dir()) {
-            return Err("The folder does not exist.".into());
+            return Err(tr("The folder does not exist.").into());
         }
         let insert_into = (self.format == Format::SqlInserts).then(|| {
             let name = self.insert_into.trim();
@@ -118,22 +119,22 @@ impl ExportDialog {
         }
         let mut outcome = None;
         let description = match &self.source {
-            ExportSource::Table(_) => "Writes every row of the table, page by page, in the background.",
-            ExportSource::Query { .. } => "Runs the query again on its own session and writes all of its rows.",
+            ExportSource::Table(_) => tr("Writes every row of the table, page by page, in the background."),
+            ExportSource::Query { .. } => tr("Runs the query again on its own session and writes all of its rows."),
         };
         let r = Dialog::new(("export-dialog", self.conn), self.title()).description(description).width(560.0).show(
             ctx,
             |ui| {
                 let t = Theme::get(ui.ctx());
                 if let ExportSource::Query { sql, .. } = &self.source {
-                    label(ui, "Query");
+                    label(ui, tr("Query"));
                     let first = sql.lines().next().unwrap_or_default();
                     ui.add(egui::Label::new(RichText::new(first).monospace().color(t.muted_foreground)).truncate());
                     ui.add_space(8.0);
                 }
-                label(ui, "Format");
+                label(ui, tr("Format"));
                 let before = self.format;
-                let labels: Vec<&str> = Format::ALL.iter().map(|f| f.label()).collect();
+                let labels: Vec<&str> = Format::ALL.iter().map(|f| tr(f.label())).collect();
                 let mut idx = Format::ALL.iter().position(|f| *f == self.format);
                 ui.add(Select::new(&mut idx, &labels).width(240.0));
                 if let Some(i) = idx {
@@ -145,17 +146,17 @@ impl ExportDialog {
                 }
                 if self.format == Format::SqlInserts {
                     ui.add_space(8.0);
-                    label(ui, "Insert into table");
+                    label(ui, tr("Insert into table"));
                     ui.add(Input::new(&mut self.insert_into).width(240.0));
                 }
                 ui.add_space(8.0);
-                label(ui, "File");
+                label(ui, tr("File"));
                 ui.horizontal(|ui| {
                     ui.add(Input::new(&mut self.path).width(ui.available_width() - 100.0));
-                    if ui.add_enabled(self.browsing.is_none(), Button::outline("Browse…")).clicked() {
+                    if ui.add_enabled(self.browsing.is_none(), Button::outline(tr("Browse…"))).clicked() {
                         let mut d = rfd::AsyncFileDialog::new()
                             .set_file_name(self.file_name())
-                            .add_filter(self.format.label(), &[self.format.extension()]);
+                            .add_filter(tr(self.format.label()), &[self.format.extension()]);
                         if let Some(dir) = Path::new(self.path.trim()).parent().filter(|d| d.is_dir()) {
                             d = d.set_directory(dir);
                         }
@@ -164,17 +165,17 @@ impl ExportDialog {
                 });
                 if Path::new(self.path.trim()).is_file() {
                     ui.label(
-                        RichText::new("The file exists and will be replaced.").size(12.0).color(t.muted_foreground),
+                        RichText::new(tr("The file exists and will be replaced.")).size(12.0).color(t.muted_foreground),
                     );
                 }
                 let job = self.job();
                 if let Err(e) = &job {
                     ui.add_space(8.0);
-                    error_alert(ui, "Not ready", e);
+                    error_alert(ui, tr("Not ready"), e);
                 }
                 ui.add_space(12.0);
                 footer(ui, |ui| {
-                    if ui.add_enabled(job.is_ok(), Button::new("Start export")).clicked()
+                    if ui.add_enabled(job.is_ok(), Button::new(tr("Start export"))).clicked()
                         && let Ok(job) = job
                     {
                         let output = Some(job.path.clone());
@@ -185,7 +186,7 @@ impl ExportDialog {
                             refresh: None,
                         })));
                     }
-                    if ui.add(Button::outline("Cancel")).clicked() {
+                    if ui.add(Button::outline(tr("Cancel"))).clicked() {
                         outcome = Some(TransferOutcome::Close);
                     }
                 });
@@ -343,21 +344,21 @@ impl ImportDialog {
 
     fn job(&self) -> Result<ImportJob, String> {
         if self.path.trim().is_empty() {
-            return Err("Choose a file.".into());
+            return Err(tr("Choose a file.").into());
         }
         if !Path::new(self.path.trim()).is_file() {
-            return Err("The file does not exist.".into());
+            return Err(tr("The file does not exist.").into());
         }
         if self.details.is_none() {
-            return Err("Reading the table's columns…".into());
+            return Err(tr("Reading the table's columns…").into());
         }
         match &self.preview {
-            None => return Err("Reading the file…".into()),
+            None => return Err(tr("Reading the file…").into()),
             Some(Err(e)) => return Err(e.clone()),
             Some(Ok(_)) => {}
         }
         if self.columns.iter().all(|c| c.source.is_none()) {
-            return Err("Map at least one column.".into());
+            return Err(tr("Map at least one column.").into());
         }
         let batch_rows = self
             .batch_text
@@ -365,7 +366,7 @@ impl ImportDialog {
             .parse::<usize>()
             .ok()
             .filter(|n| *n > 0)
-            .ok_or("Rows per INSERT must be a number.")?;
+            .ok_or_else(|| tr("Rows per INSERT must be a number.").to_string())?;
         Ok(ImportJob {
             table: self.table.clone(),
             path: PathBuf::from(self.path.trim()),
@@ -380,7 +381,7 @@ impl ImportDialog {
     }
 
     fn title(&self) -> String {
-        format!("Import into {}", self.table.name)
+        trf("Import into {name}", &[("name", &self.table.name)])
     }
 
     pub fn show(&mut self, ctx: &Context) -> Option<TransferOutcome> {
@@ -395,7 +396,7 @@ impl ImportDialog {
         self.refresh_preview(ctx);
         let mut outcome = None;
         let r = Dialog::new(("import-dialog", self.conn), self.title())
-            .description("Reads the file in the background and inserts its rows in batches.")
+            .description(tr("Reads the file in the background and inserts its rows in batches."))
             .width(680.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).show(ui, |ui| {
@@ -408,14 +409,14 @@ impl ImportDialog {
                 let job = self.job();
                 if let Err(e) = &job {
                     ui.add_space(8.0);
-                    error_alert(ui, "Not ready", e);
+                    error_alert(ui, tr("Not ready"), e);
                 }
                 ui.add_space(12.0);
                 footer(ui, |ui| {
                     let button = if self.clear_first {
-                        Button::destructive("Start import")
+                        Button::destructive(tr("Start import"))
                     } else {
-                        Button::new("Start import")
+                        Button::new(tr("Start import"))
                     };
                     if ui.add_enabled(job.is_ok(), button).clicked()
                         && let Ok(job) = job
@@ -427,7 +428,7 @@ impl ImportDialog {
                             refresh: None,
                         })));
                     }
-                    if ui.add(Button::outline("Cancel")).clicked() {
+                    if ui.add(Button::outline(tr("Cancel"))).clicked() {
                         outcome = Some(TransferOutcome::Close);
                     }
                 });
@@ -439,21 +440,21 @@ impl ImportDialog {
     }
 
     fn options_ui(&mut self, ui: &mut Ui) {
-        label(ui, "File");
+        label(ui, tr("File"));
         ui.horizontal(|ui| {
             ui.add(Input::new(&mut self.path).width(ui.available_width() - 100.0));
-            if ui.add_enabled(self.browsing.is_none(), Button::outline("Browse…")).clicked() {
+            if ui.add_enabled(self.browsing.is_none(), Button::outline(tr("Browse…"))).clicked() {
                 let d = rfd::AsyncFileDialog::new()
                     .add_filter("CSV, TSV, JSON", &["csv", "tsv", "txt", "json", "jsonl", "ndjson"])
-                    .add_filter("All files", &["*"]);
+                    .add_filter(tr("All files"), &["*"]);
                 self.browsing = Some(files::pick(ui.ctx(), d, Pick::OpenFile));
             }
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                label(ui, "Format");
-                let labels: Vec<&str> = ImportFormat::ALL.iter().map(|f| f.label()).collect();
+                label(ui, tr("Format"));
+                let labels: Vec<&str> = ImportFormat::ALL.iter().map(|f| tr(f.label())).collect();
                 let mut idx = ImportFormat::ALL.iter().position(|f| *f == self.format);
                 ui.add(Select::new(&mut idx, &labels).width(200.0));
                 if let Some(i) = idx {
@@ -462,8 +463,8 @@ impl ImportDialog {
             });
             if self.format == ImportFormat::Delimited {
                 ui.vertical(|ui| {
-                    label(ui, "Separator");
-                    let labels: Vec<&str> = DELIMITERS.iter().map(|(_, l)| *l).collect();
+                    label(ui, tr("Separator"));
+                    let labels: Vec<&str> = DELIMITERS.iter().map(|(_, l)| tr(l)).collect();
                     let mut idx = DELIMITERS.iter().position(|(c, _)| *c == self.csv.delimiter);
                     ui.add(Select::new(&mut idx, &labels).width(160.0));
                     if let Some(i) = idx {
@@ -472,18 +473,18 @@ impl ImportDialog {
                 });
             }
             ui.vertical(|ui| {
-                label(ui, "Rows per INSERT");
+                label(ui, tr("Rows per INSERT"));
                 ui.add(Input::new(&mut self.batch_text).width(110.0));
             });
         });
         ui.add_space(6.0);
         if self.format == ImportFormat::Delimited {
-            ui.add(Checkbox::new(&mut self.csv.header).label("The first line holds column names"));
-            ui.add(Checkbox::new(&mut self.empty_as_null).label("Empty fields are NULL"));
+            ui.add(Checkbox::new(&mut self.csv.header).label(tr("The first line holds column names")));
+            ui.add(Checkbox::new(&mut self.empty_as_null).label(tr("Empty fields are NULL")));
         }
-        ui.add(Checkbox::new(&mut self.clear_first).label("Delete the table's rows first"));
+        ui.add(Checkbox::new(&mut self.clear_first).label(tr("Delete the table's rows first")));
         if self.cfg.kind != dbman_core::DbKind::ClickHouse {
-            ui.add(Checkbox::new(&mut self.transaction).label("All or nothing: roll back everything on an error"));
+            ui.add(Checkbox::new(&mut self.transaction).label(tr("All or nothing: roll back everything on an error")));
         }
     }
 
@@ -493,13 +494,13 @@ impl ImportDialog {
             None if self.loading.is_some() => {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(14.0));
-                    ui.label(RichText::new("Reading the file…").color(t.muted_foreground));
+                    ui.label(RichText::new(tr("Reading the file…")).color(t.muted_foreground));
                 });
             }
             None => {}
-            Some(Err(e)) => error_alert(ui, "Could not read the file", e),
+            Some(Err(e)) => error_alert(ui, tr("Could not read the file"), e),
             Some(Ok(p)) => {
-                label(ui, "Preview");
+                label(ui, tr("Preview"));
                 egui::ScrollArea::horizontal().id_salt("import-preview").show(ui, |ui| {
                     egui::Grid::new("import-preview-grid").striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
                         for c in &p.columns {
@@ -531,12 +532,12 @@ impl ImportDialog {
         if self.details.is_none() {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
-                ui.label(RichText::new("Reading the table's columns…").color(t.muted_foreground));
+                ui.label(RichText::new(tr("Reading the table's columns…")).color(t.muted_foreground));
             });
             return;
         }
-        label(ui, "Columns");
-        let mut options: Vec<&str> = vec!["— skip (default value) —"];
+        label(ui, tr("Columns"));
+        let mut options: Vec<&str> = vec![tr("— skip (default value) —")];
         options.extend(p.columns.iter().map(String::as_str));
         let d = Dialect(self.cfg.kind);
         egui::Grid::new("import-mapping").spacing([12.0, 6.0]).show(ui, |ui| {
@@ -546,7 +547,7 @@ impl ImportDialog {
                     text = text.color(t.muted_foreground);
                 }
                 ui.label(text);
-                ui.label(RichText::new("from").size(12.0).color(t.muted_foreground));
+                ui.label(RichText::new(tr("from")).size(12.0).color(t.muted_foreground));
                 let mut idx = Some(c.source.map_or(0, |s| s + 1));
                 ui.add(Select::new(&mut idx, &options).width(260.0));
                 c.source = idx.and_then(|i| i.checked_sub(1));

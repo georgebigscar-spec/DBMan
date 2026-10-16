@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::explorer::Action;
 use crate::files::{self, PendingPath, Pick};
+use crate::i18n::{tr, trf};
 use crate::jobs::JobSpec;
 use dbman_drivers::backup::MsJob;
 
@@ -184,15 +185,22 @@ impl BackupDialog {
     }
 
     fn title(&self) -> String {
-        let what = match (&self.scope.table, &self.scope.schema) {
-            (Some(t), _) => format!("table {t}"),
-            (None, Some(s)) => format!("schema {s}"),
-            _ if self.kind().is_file_based() => self.cfg.display_name(),
-            _ => format!("database {}", self.scope.database),
-        };
-        match self.mode {
-            Mode::Backup => format!("Back up {what}"),
-            Mode::Restore => format!("Restore into {what}"),
+        let backup = self.mode == Mode::Backup;
+        match (&self.scope.table, &self.scope.schema) {
+            (Some(t), _) if backup => trf("Back up table {name}", &[("name", t)]),
+            (Some(t), _) => trf("Restore into table {name}", &[("name", t)]),
+            (None, Some(s)) if backup => trf("Back up schema {name}", &[("name", s)]),
+            (None, Some(s)) => trf("Restore into schema {name}", &[("name", s)]),
+            _ if self.kind().is_file_based() => {
+                let name = self.cfg.display_name();
+                if backup {
+                    trf("Back up {name}", &[("name", &name)])
+                } else {
+                    trf("Restore into {name}", &[("name", &name)])
+                }
+            }
+            _ if backup => trf("Back up database {name}", &[("name", &self.scope.database)]),
+            _ => trf("Restore into database {name}", &[("name", &self.scope.database)]),
         }
     }
 
@@ -213,9 +221,9 @@ impl BackupDialog {
     fn pick_tool(&self, candidates: &[Tool]) -> Result<(Tool, PathBuf), String> {
         candidates.iter().find_map(|t| find_tool(*t, self.tool_dir()).map(|p| (*t, p))).ok_or_else(|| {
             let names: Vec<&str> = candidates.iter().map(|t| t.program()).collect();
-            format!(
-                "{} not found. Install the client tools or set the folder that contains them below.",
-                names.join(" / ")
+            trf(
+                "{tools} not found. Install the client tools or set the folder that contains them below.",
+                &[("tools", &names.join(" / "))],
             )
         })
     }
@@ -231,7 +239,7 @@ impl BackupDialog {
             ChDestination::S3 { url, .. } => url.trim().is_empty(),
         };
         if missing {
-            return Err("Fill in where the backup is.".into());
+            return Err(tr("Fill in where the backup is.").into());
         }
         let (sql, shown) = match self.mode {
             Mode::Backup => (
@@ -253,7 +261,7 @@ impl BackupDialog {
         }
         let path = PathBuf::from(self.path.trim());
         if self.path.trim().is_empty() {
-            return Err("Choose a file.".into());
+            return Err(tr("Choose a file.").into());
         }
         let db = &self.scope.database;
         match (self.kind(), self.mode) {
@@ -267,7 +275,7 @@ impl BackupDialog {
                 Ok(JobSpec::Tool { program, cmd, watch: Some(path) })
             }
             (DbKind::Postgres, Mode::Restore) => {
-                let format = self.detected.ok_or("Choose an existing dump file or directory.")?;
+                let format = self.detected.ok_or(tr("Choose an existing dump file or directory."))?;
                 let tool = if format == PgFormat::Plain { Tool::Psql } else { Tool::PgRestore };
                 let (_, program) = self.pick_tool(&[tool])?;
                 let mut o = self.pg_restore.clone();
@@ -290,7 +298,7 @@ impl BackupDialog {
             }
             (DbKind::MySql, Mode::Restore) => {
                 if !path.is_file() {
-                    return Err("Choose an existing SQL file.".into());
+                    return Err(tr("Choose an existing SQL file.").into());
                 }
                 let order: &[Tool] =
                     if self.mariadb { &[Tool::MariaDb, Tool::MySql] } else { &[Tool::MySql, Tool::MariaDb] };
@@ -301,13 +309,13 @@ impl BackupDialog {
             (DbKind::Sqlite, Mode::Backup) => {
                 let source = PathBuf::from(self.cfg.database.trim());
                 if source == path {
-                    return Err("The backup cannot overwrite the database itself.".into());
+                    return Err(tr("The backup cannot overwrite the database itself.").into());
                 }
                 Ok(JobSpec::SqliteBackup { db: source, target: path, method: self.sqlite_method })
             }
             (DbKind::Sqlite, Mode::Restore) => {
                 if !path.is_file() {
-                    return Err("Choose an existing backup file.".into());
+                    return Err(tr("Choose an existing backup file.").into());
                 }
                 Ok(JobSpec::SqliteRestore { source: path, db: PathBuf::from(self.cfg.database.trim()) })
             }
@@ -322,7 +330,7 @@ impl BackupDialog {
             }),
             (DbKind::MsSql, Mode::Restore) => {
                 if db.trim().is_empty() {
-                    return Err("Choose the database to restore into.".into());
+                    return Err(tr("Choose the database to restore into.").into());
                 }
                 Ok(JobSpec::MsSql {
                     cfg: Box::new(self.cfg.clone()),
@@ -335,18 +343,19 @@ impl BackupDialog {
             }
             (DbKind::DuckDb, Mode::Backup) => {
                 if path.exists() {
-                    return Err(format!(
-                        "{} already exists; DuckDB writes a new {}.",
-                        path.display(),
-                        if self.duck_method.writes_folder() { "folder" } else { "file" }
-                    ));
+                    let path = path.display();
+                    return Err(if self.duck_method.writes_folder() {
+                        trf("{path} already exists; DuckDB writes a new folder.", &[("path", &path)])
+                    } else {
+                        trf("{path} already exists; DuckDB writes a new file.", &[("path", &path)])
+                    });
                 }
                 let statements = backup::duck_backup(&self.duck_database(), self.duck_method, &path);
                 Ok(JobSpec::DuckDb { db: self.cfg.database.trim().to_string(), statements, watch: Some(path) })
             }
             (DbKind::DuckDb, Mode::Restore) => {
                 if !path.exists() {
-                    return Err("Choose an export folder or a database file.".into());
+                    return Err(tr("Choose an export folder or a database file.").into());
                 }
                 let statements = backup::duck_restore(&self.duck_database(), &path);
                 Ok(JobSpec::DuckDb { db: self.cfg.database.trim().to_string(), statements, watch: None })
@@ -357,15 +366,17 @@ impl BackupDialog {
     fn preview(&self, job: &JobSpec) -> String {
         match job {
             JobSpec::Tool { cmd, .. } => cmd.display(),
-            JobSpec::SqliteBackup { db, target, method: SqliteMethod::OnlineBackup } => {
-                format!("online backup API: copy every page of {} to {}", db.display(), target.display())
-            }
+            JobSpec::SqliteBackup { db, target, method: SqliteMethod::OnlineBackup } => trf(
+                "online backup API: copy every page of {source} to {target}",
+                &[("source", &db.display()), ("target", &target.display())],
+            ),
             JobSpec::SqliteBackup { target, method: SqliteMethod::VacuumInto, .. } => {
                 format!("VACUUM INTO '{}'", target.display())
             }
-            JobSpec::SqliteRestore { source, db } => {
-                format!("online backup API: copy every page of {} over {}", source.display(), db.display())
-            }
+            JobSpec::SqliteRestore { source, db } => trf(
+                "online backup API: copy every page of {source} over {target}",
+                &[("source", &source.display()), ("target", &db.display())],
+            ),
             JobSpec::ClickHouse { shown, .. } => format!("{shown};"),
             JobSpec::MsSql { job: MsJob::Backup { database, options, path }, .. } => {
                 backup::ms_backup(database, options, path)
@@ -415,14 +426,14 @@ impl BackupDialog {
             );
         } else if kind == Pick::OpenFile {
             let (name, exts): (&str, &[&str]) = match self.kind() {
-                DbKind::Postgres => ("PostgreSQL dumps", &["dump", "backup", "sql", "tar", "pgdump"]),
-                DbKind::MySql => ("SQL scripts", &["sql"]),
-                DbKind::Sqlite => ("SQLite databases", &["db", "sqlite", "sqlite3", "db3", "bak"]),
-                DbKind::DuckDb => ("DuckDB databases", &["duckdb", "ddb", "db"]),
-                DbKind::MsSql => ("SQL Server backups", &["bak", "trn"]),
-                DbKind::ClickHouse => ("ClickHouse backups", &["zip", "tar"]),
+                DbKind::Postgres => (tr("PostgreSQL dumps"), &["dump", "backup", "sql", "tar", "pgdump"]),
+                DbKind::MySql => (tr("SQL scripts"), &["sql"]),
+                DbKind::Sqlite => (tr("SQLite databases"), &["db", "sqlite", "sqlite3", "db3", "bak"]),
+                DbKind::DuckDb => (tr("DuckDB databases"), &["duckdb", "ddb", "db"]),
+                DbKind::MsSql => (tr("SQL Server backups"), &["bak", "trn"]),
+                DbKind::ClickHouse => (tr("ClickHouse backups"), &["zip", "tar"]),
             };
-            d = d.add_filter(name, exts).add_filter("All files", &["*"]);
+            d = d.add_filter(name, exts).add_filter(tr("All files"), &["*"]);
         }
         self.browsing = Some(files::pick(ctx, d, kind));
     }
@@ -437,18 +448,18 @@ impl BackupDialog {
         self.refresh_detected();
         let mut outcome = None;
         let description = match (self.mode, self.kind()) {
-            (Mode::Backup, DbKind::Sqlite) => "Copies the database file while it stays usable.",
-            (Mode::Backup, DbKind::Postgres) => "Runs pg_dump in the background.",
-            (Mode::Backup, DbKind::MySql) => "Runs mysqldump in the background.",
-            (Mode::Restore, DbKind::Sqlite) => "Replaces the whole database with the backup.",
-            (Mode::Restore, DbKind::Postgres) => "Runs pg_restore (or psql for SQL scripts) in the background.",
-            (Mode::Restore, DbKind::MySql) => "Runs the SQL file with the mysql client in the background.",
-            (Mode::Backup, DbKind::MsSql) => "Runs BACKUP on the server in the background.",
-            (Mode::Restore, DbKind::MsSql) => "Runs RESTORE on the server in the background.",
-            (Mode::Backup, DbKind::ClickHouse) => "Runs BACKUP on the server in the background.",
-            (Mode::Restore, DbKind::ClickHouse) => "Runs RESTORE on the server in the background.",
-            (Mode::Backup, DbKind::DuckDb) => "Exports the database in the background; it stays usable meanwhile.",
-            (Mode::Restore, DbKind::DuckDb) => "Loads an export folder or a database file in the background.",
+            (Mode::Backup, DbKind::Sqlite) => tr("Copies the database file while it stays usable."),
+            (Mode::Backup, DbKind::Postgres) => tr("Runs pg_dump in the background."),
+            (Mode::Backup, DbKind::MySql) => tr("Runs mysqldump in the background."),
+            (Mode::Restore, DbKind::Sqlite) => tr("Replaces the whole database with the backup."),
+            (Mode::Restore, DbKind::Postgres) => tr("Runs pg_restore (or psql for SQL scripts) in the background."),
+            (Mode::Restore, DbKind::MySql) => tr("Runs the SQL file with the mysql client in the background."),
+            (Mode::Backup, DbKind::MsSql) => tr("Runs BACKUP on the server in the background."),
+            (Mode::Restore, DbKind::MsSql) => tr("Runs RESTORE on the server in the background."),
+            (Mode::Backup, DbKind::ClickHouse) => tr("Runs BACKUP on the server in the background."),
+            (Mode::Restore, DbKind::ClickHouse) => tr("Runs RESTORE on the server in the background."),
+            (Mode::Backup, DbKind::DuckDb) => tr("Exports the database in the background; it stays usable meanwhile."),
+            (Mode::Restore, DbKind::DuckDb) => tr("Loads an export folder or a database file in the background."),
         };
         let r = Dialog::new(("backup-dialog", self.conn), self.title()).description(description).width(620.0).show(
             ctx,
@@ -473,10 +484,10 @@ impl BackupDialog {
                     // SQL Server runs BACKUP itself; no client tools.
                     if !self.kind().is_file_based() && !matches!(self.kind(), DbKind::MsSql | DbKind::ClickHouse) {
                         ui.add_space(10.0);
-                        label(ui, "Client tools folder");
+                        label(ui, tr("Client tools folder"));
                         ui.add(
                             Input::new(&mut self.tools_dir)
-                                .placeholder("Found on PATH and in the usual install folders")
+                                .placeholder(tr("Found on PATH and in the usual install folders"))
                                 .width(ui.available_width()),
                         );
                     }
@@ -486,7 +497,7 @@ impl BackupDialog {
                 let t = Theme::get(ui.ctx());
                 match &job {
                     Ok(j) => {
-                        label(ui, "Command");
+                        label(ui, tr("Command"));
                         egui::Frame::new()
                             .fill(t.muted)
                             .corner_radius(t.radius_md())
@@ -497,18 +508,18 @@ impl BackupDialog {
                             });
                     }
                     Err(e) => {
-                        Alert::new("Not ready").icon("!").description(e.as_str()).show(ui);
+                        Alert::new(tr("Not ready")).icon("!").description(e.as_str()).show(ui);
                     }
                 }
                 if let Some(e) = &self.error {
                     ui.add_space(6.0);
-                    Alert::new("Failed").icon("!").description(e.as_str()).destructive().show(ui);
+                    Alert::new(tr("Failed")).icon("!").description(e.as_str()).destructive().show(ui);
                 }
                 ui.add_space(12.0);
                 footer(ui, |ui| {
                     let (verb, destructive) = match self.mode {
-                        Mode::Backup => ("Start backup", false),
-                        Mode::Restore => ("Start restore", true),
+                        Mode::Backup => (tr("Start backup"), false),
+                        Mode::Restore => (tr("Start restore"), true),
                     };
                     let button = if destructive { Button::destructive(verb) } else { Button::new(verb) };
                     if ui.add_enabled(job.is_ok(), button).clicked()
@@ -532,7 +543,7 @@ impl BackupDialog {
                             tools_dir: self.tools_dir.trim().to_string(),
                         })));
                     }
-                    if ui.add(Button::outline("Cancel")).clicked() {
+                    if ui.add(Button::outline(tr("Cancel"))).clicked() {
                         outcome = Some(BackupOutcome::Close);
                     }
                 });
@@ -554,11 +565,11 @@ impl BackupDialog {
         label(
             ui,
             match self.mode {
-                Mode::Backup if dir_format && self.kind() == DbKind::DuckDb => "Export folder (created by DuckDB)",
-                Mode::Backup if dir_format => "Backup folder (created by pg_dump)",
-                _ if self.kind() == DbKind::MsSql => "Backup file on the server",
-                Mode::Backup => "Backup file",
-                Mode::Restore => "Backup to restore",
+                Mode::Backup if dir_format && self.kind() == DbKind::DuckDb => tr("Export folder (created by DuckDB)"),
+                Mode::Backup if dir_format => tr("Backup folder (created by pg_dump)"),
+                _ if self.kind() == DbKind::MsSql => tr("Backup file on the server"),
+                Mode::Backup => tr("Backup file"),
+                Mode::Restore => tr("Backup to restore"),
             },
         );
         ui.horizontal(|ui| {
@@ -568,7 +579,7 @@ impl BackupDialog {
                 // The path is on the server, so a local file picker would mislead.
                 ui.add(
                     Input::new(&mut self.path)
-                        .placeholder("shop.bak, or a full path on the server")
+                        .placeholder(tr("shop.bak, or a full path on the server"))
                         .width(ui.available_width()),
                 );
                 return;
@@ -577,15 +588,15 @@ impl BackupDialog {
             let idle = self.browsing.is_none();
             match self.mode {
                 Mode::Backup => {
-                    if ui.add_enabled(idle, Button::outline("Browse…")).clicked() {
+                    if ui.add_enabled(idle, Button::outline(tr("Browse…"))).clicked() {
                         self.browse(ui.ctx(), Pick::SaveAs);
                     }
                 }
                 Mode::Restore => {
-                    if ui.add_enabled(idle, Button::outline("File…")).clicked() {
+                    if ui.add_enabled(idle, Button::outline(tr("File…"))).clicked() {
                         self.browse(ui.ctx(), Pick::OpenFile);
                     }
-                    if folders && ui.add_enabled(idle, Button::outline("Folder…")).clicked() {
+                    if folders && ui.add_enabled(idle, Button::outline(tr("Folder…"))).clicked() {
                         self.browse(ui.ctx(), Pick::Folder);
                     }
                 }
@@ -596,12 +607,16 @@ impl BackupDialog {
             && let Some(f) = self.detected
         {
             let t = Theme::get(ui.ctx());
-            ui.label(RichText::new(format!("Format: {}", f.label())).size(12.0).color(t.muted_foreground));
+            ui.label(
+                RichText::new(trf("Format: {format}", &[("format", &tr(f.label()))]))
+                    .size(12.0)
+                    .color(t.muted_foreground),
+            );
         }
     }
 
     fn content_select(ui: &mut Ui, content: &mut Content) {
-        let labels: Vec<&str> = Content::ALL.iter().map(|c| c.label()).collect();
+        let labels: Vec<&str> = Content::ALL.iter().map(|c| tr(c.label())).collect();
         let mut idx = Content::ALL.iter().position(|c| c == content);
         ui.add(Select::new(&mut idx, &labels).width(200.0));
         if let Some(i) = idx {
@@ -613,8 +628,8 @@ impl BackupDialog {
         let before = self.pg_dump.format;
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                label(ui, "Format");
-                let labels: Vec<&str> = PgFormat::ALL.iter().map(|f| f.label()).collect();
+                label(ui, tr("Format"));
+                let labels: Vec<&str> = PgFormat::ALL.iter().map(|f| tr(f.label())).collect();
                 let mut idx = PgFormat::ALL.iter().position(|f| *f == self.pg_dump.format);
                 ui.add(Select::new(&mut idx, &labels).width(200.0));
                 if let Some(i) = idx {
@@ -622,12 +637,12 @@ impl BackupDialog {
                 }
             });
             ui.vertical(|ui| {
-                label(ui, "Content");
+                label(ui, tr("Content"));
                 Self::content_select(ui, &mut self.pg_dump.content);
             });
             if self.pg_dump.format == PgFormat::Directory {
                 ui.vertical(|ui| {
-                    label(ui, "Parallel jobs");
+                    label(ui, tr("Parallel jobs"));
                     let mut jobs = self.pg_dump.jobs as f32;
                     ui.add(egui::DragValue::new(&mut jobs).range(1.0..=16.0).speed(0.1));
                     self.pg_dump.jobs = jobs as u32;
@@ -645,25 +660,25 @@ impl BackupDialog {
             self.path = new.to_string_lossy().into_owned();
         }
         ui.add_space(8.0);
-        label(ui, "Only these schemas (comma-separated, empty for all)");
+        label(ui, tr("Only these schemas (comma-separated, empty for all)"));
         ui.add(Input::new(&mut self.schemas_text).placeholder("public, sales").width(ui.available_width()));
-        label(ui, "Only these tables");
+        label(ui, tr("Only these tables"));
         ui.add(
             Input::new(&mut self.tables_text)
                 .placeholder("public.orders, public.customers")
                 .width(ui.available_width()),
         );
-        label(ui, "Skip the rows of these tables (keep their definition)");
+        label(ui, tr("Skip the rows of these tables (keep their definition)"));
         ui.add(Input::new(&mut self.exclude_data_text).placeholder("public.audit_log").width(ui.available_width()));
         ui.add_space(8.0);
         let plain = self.pg_dump.format == PgFormat::Plain;
         ui.horizontal_wrapped(|ui| {
-            ui.add(Checkbox::new(&mut self.pg_dump.no_owner).label("No owner"));
-            ui.add(Checkbox::new(&mut self.pg_dump.no_privileges).label("No privileges"));
+            ui.add(Checkbox::new(&mut self.pg_dump.no_owner).label(tr("No owner")));
+            ui.add(Checkbox::new(&mut self.pg_dump.no_privileges).label(tr("No privileges")));
             if plain {
-                ui.add(Checkbox::new(&mut self.pg_dump.clean).label("DROP before CREATE"));
-                ui.add(Checkbox::new(&mut self.pg_dump.create).label("CREATE DATABASE"));
-                ui.add(Checkbox::new(&mut self.pg_dump.inserts).label("INSERT instead of COPY"));
+                ui.add(Checkbox::new(&mut self.pg_dump.clean).label(tr("DROP before CREATE")));
+                ui.add(Checkbox::new(&mut self.pg_dump.create).label(tr("CREATE DATABASE")));
+                ui.add(Checkbox::new(&mut self.pg_dump.inserts).label(tr("INSERT instead of COPY")));
             }
         });
     }
@@ -671,28 +686,28 @@ impl BackupDialog {
     fn pg_restore_ui(&mut self, ui: &mut Ui) {
         let script = self.detected == Some(PgFormat::Plain);
         if !script {
-            label(ui, "Content");
+            label(ui, tr("Content"));
             Self::content_select(ui, &mut self.pg_restore.content);
             ui.add_space(8.0);
-            label(ui, "Only these schemas");
-            ui.add(Input::new(&mut self.schemas_text).placeholder("all").width(ui.available_width()));
-            label(ui, "Only these tables");
-            ui.add(Input::new(&mut self.tables_text).placeholder("all").width(ui.available_width()));
+            label(ui, tr("Only these schemas"));
+            ui.add(Input::new(&mut self.schemas_text).placeholder(tr("all")).width(ui.available_width()));
+            label(ui, tr("Only these tables"));
+            ui.add(Input::new(&mut self.tables_text).placeholder(tr("all")).width(ui.available_width()));
             ui.add_space(8.0);
         }
         ui.horizontal_wrapped(|ui| {
-            ui.add(Checkbox::new(&mut self.pg_restore.single_transaction).label("Single transaction"));
-            ui.add(Checkbox::new(&mut self.pg_restore.exit_on_error).label("Stop at the first error"));
+            ui.add(Checkbox::new(&mut self.pg_restore.single_transaction).label(tr("Single transaction")));
+            ui.add(Checkbox::new(&mut self.pg_restore.exit_on_error).label(tr("Stop at the first error")));
             if !script {
-                ui.add(Checkbox::new(&mut self.pg_restore.clean).label("Drop objects first"));
-                ui.add(Checkbox::new(&mut self.pg_restore.create).label("Create the database"));
-                ui.add(Checkbox::new(&mut self.pg_restore.no_owner).label("No owner"));
-                ui.add(Checkbox::new(&mut self.pg_restore.no_privileges).label("No privileges"));
+                ui.add(Checkbox::new(&mut self.pg_restore.clean).label(tr("Drop objects first")));
+                ui.add(Checkbox::new(&mut self.pg_restore.create).label(tr("Create the database")));
+                ui.add(Checkbox::new(&mut self.pg_restore.no_owner).label(tr("No owner")));
+                ui.add(Checkbox::new(&mut self.pg_restore.no_privileges).label(tr("No privileges")));
             }
         });
         if !script && !self.pg_restore.single_transaction {
             ui.horizontal(|ui| {
-                ui.label("Parallel jobs");
+                ui.label(tr("Parallel jobs"));
                 let mut jobs = self.pg_restore.jobs as f32;
                 ui.add(egui::DragValue::new(&mut jobs).range(1.0..=16.0).speed(0.1));
                 self.pg_restore.jobs = jobs as u32;
@@ -701,32 +716,32 @@ impl BackupDialog {
     }
 
     fn my_dump_ui(&mut self, ui: &mut Ui) {
-        label(ui, "Content");
+        label(ui, tr("Content"));
         Self::content_select(ui, &mut self.my_dump.content);
         ui.add_space(8.0);
-        label(ui, "Only these tables (comma-separated, empty for all)");
+        label(ui, tr("Only these tables (comma-separated, empty for all)"));
         ui.add(Input::new(&mut self.tables_text).placeholder("orders, customers").width(ui.available_width()));
         ui.add_space(8.0);
         let o = &mut self.my_dump;
         ui.horizontal_wrapped(|ui| {
-            ui.add(Checkbox::new(&mut o.single_transaction).label("Single transaction (InnoDB snapshot)"));
-            ui.add(Checkbox::new(&mut o.routines).label("Procedures and functions"));
-            ui.add(Checkbox::new(&mut o.triggers).label("Triggers"));
-            ui.add(Checkbox::new(&mut o.events).label("Events"));
-            ui.add(Checkbox::new(&mut o.add_drop_table).label("DROP TABLE before CREATE"));
-            ui.add(Checkbox::new(&mut o.create_database).label("CREATE DATABASE and USE"));
-            ui.add(Checkbox::new(&mut o.hex_blob).label("Binary as hex"));
-            ui.add(Checkbox::new(&mut o.extended_insert).label("Multi-row INSERT"));
+            ui.add(Checkbox::new(&mut o.single_transaction).label(tr("Single transaction (InnoDB snapshot)")));
+            ui.add(Checkbox::new(&mut o.routines).label(tr("Procedures and functions")));
+            ui.add(Checkbox::new(&mut o.triggers).label(tr("Triggers")));
+            ui.add(Checkbox::new(&mut o.events).label(tr("Events")));
+            ui.add(Checkbox::new(&mut o.add_drop_table).label(tr("DROP TABLE before CREATE")));
+            ui.add(Checkbox::new(&mut o.create_database).label(tr("CREATE DATABASE and USE")));
+            ui.add(Checkbox::new(&mut o.hex_blob).label(tr("Binary as hex")));
+            ui.add(Checkbox::new(&mut o.extended_insert).label(tr("Multi-row INSERT")));
         });
     }
 
     fn my_restore_ui(&mut self, ui: &mut Ui) {
-        ui.add(Checkbox::new(&mut self.my_restore.force).label("Keep going after errors"));
+        ui.add(Checkbox::new(&mut self.my_restore.force).label(tr("Keep going after errors")));
     }
 
     fn sqlite_backup_ui(&mut self, ui: &mut Ui) {
-        label(ui, "Method");
-        let labels: Vec<&str> = SqliteMethod::ALL.iter().map(|m| m.label()).collect();
+        label(ui, tr("Method"));
+        let labels: Vec<&str> = SqliteMethod::ALL.iter().map(|m| tr(m.label())).collect();
         let mut idx = SqliteMethod::ALL.iter().position(|m| *m == self.sqlite_method);
         ui.add(Select::new(&mut idx, &labels).width(280.0));
         if let Some(i) = idx {
@@ -738,9 +753,10 @@ impl BackupDialog {
     fn ch_destination_ui(ui: &mut Ui, dest: &mut ChDestination, id: &str) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                label(ui, "Location");
+                label(ui, tr("Location"));
                 let mut idx = Some(dest.index());
-                ui.push_id(id, |ui| ui.add(Select::new(&mut idx, &ChDestination::LABELS).width(120.0)));
+                let labels: Vec<&str> = ChDestination::LABELS.iter().map(|l| tr(l)).collect();
+                ui.push_id(id, |ui| ui.add(Select::new(&mut idx, &labels).width(120.0)));
                 if let Some(i) = idx.filter(|i| *i != dest.index()) {
                     let name = match &*dest {
                         ChDestination::Disk { path, .. } | ChDestination::File { path } => path.clone(),
@@ -761,28 +777,30 @@ impl BackupDialog {
                 ChDestination::Disk { disk, path } => {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            label(ui, "Disk");
+                            label(ui, tr("Disk"));
                             ui.add(Input::new(disk).width(120.0));
                         });
                         ui.vertical(|ui| {
-                            label(ui, "File on the disk");
+                            label(ui, tr("File on the disk"));
                             ui.add(Input::new(path).width(ui.available_width()));
                         });
                     });
                 }
                 ChDestination::File { path } => {
-                    label(ui, "Path on the server (under backups.allowed_path)");
+                    label(ui, tr("Path on the server (under backups.allowed_path)"));
                     ui.add(Input::new(path).width(ui.available_width()));
                 }
                 ChDestination::S3 { url, access_key, secret } => {
-                    label(ui, "S3 URL of the backup");
+                    label(ui, tr("S3 URL of the backup"));
                     ui.add(Input::new(url).width(ui.available_width()));
                     ui.horizontal(|ui| {
                         let half = (ui.available_width() - 8.0) / 2.0;
                         ui.add(
-                            Input::new(access_key).placeholder("Access key (empty for the server's own)").width(half),
+                            Input::new(access_key)
+                                .placeholder(tr("Access key (empty for the server's own)"))
+                                .width(half),
                         );
-                        ui.add(Input::new(secret).placeholder("Secret").password().width(half));
+                        ui.add(Input::new(secret).placeholder(tr("Secret")).password().width(half));
                     });
                 }
             });
@@ -793,27 +811,27 @@ impl BackupDialog {
         let t = Theme::get(ui.ctx());
         Self::ch_destination_ui(ui, &mut self.ch_backup.destination, "ch-backup-dest");
         ui.label(
-            RichText::new(
+            RichText::new(tr(
                 "ClickHouse writes the backup itself; a disk or path must be allowed in the server's backups settings.",
-            )
+            ))
             .size(12.0)
             .color(t.muted_foreground),
         );
         ui.add_space(8.0);
-        label(ui, "Incremental on top of (an earlier backup at the same location, empty for a full one)");
+        label(ui, tr("Incremental on top of (an earlier backup at the same location, empty for a full one)"));
         ui.add(
             Input::new(&mut self.ch_backup.base_backup)
                 .placeholder("shop_20240101-000000.zip")
                 .width(ui.available_width()),
         );
         ui.add_space(6.0);
-        ui.add(Checkbox::new(&mut self.ch_backup.structure_only).label("Table definitions only, no data"));
+        ui.add(Checkbox::new(&mut self.ch_backup.structure_only).label(tr("Table definitions only, no data")));
     }
 
     fn ch_restore_ui(&mut self, ui: &mut Ui) {
         Self::ch_destination_ui(ui, &mut self.ch_restore.source, "ch-restore-src");
         ui.add_space(8.0);
-        label(ui, "Restore as (empty keeps the original name)");
+        label(ui, tr("Restore as (empty keeps the original name)"));
         ui.add(
             Input::new(&mut self.ch_restore.rename_to)
                 .placeholder(format!("{}_restored", self.scope.database))
@@ -821,23 +839,23 @@ impl BackupDialog {
         );
         ui.add_space(6.0);
         let o = &mut self.ch_restore;
-        ui.add(Checkbox::new(&mut o.allow_non_empty_tables).label("Add rows to tables that already exist"));
-        ui.add(Checkbox::new(&mut o.structure_only).label("Table definitions only, no data"));
+        ui.add(Checkbox::new(&mut o.allow_non_empty_tables).label(tr("Add rows to tables that already exist")));
+        ui.add(Checkbox::new(&mut o.structure_only).label(tr("Table definitions only, no data")));
     }
 
     fn ms_backup_ui(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
         ui.label(
             RichText::new(
-                "SQL Server writes the file itself, on the server's disk; a bare file name goes to its default backup folder.",
+                tr("SQL Server writes the file itself, on the server's disk; a bare file name goes to its default backup folder."),
             )
             .size(12.0)
             .color(t.muted_foreground),
         );
         ui.add_space(8.0);
-        label(ui, "Type");
+        label(ui, tr("Type"));
         let before = self.ms_backup.kind;
-        let labels: Vec<&str> = MsBackupType::ALL.iter().map(|k| k.label()).collect();
+        let labels: Vec<&str> = MsBackupType::ALL.iter().map(|k| tr(k.label())).collect();
         let mut idx = MsBackupType::ALL.iter().position(|k| *k == self.ms_backup.kind);
         ui.add(Select::new(&mut idx, &labels).width(200.0));
         if let Some(i) = idx {
@@ -851,41 +869,43 @@ impl BackupDialog {
         ui.add_space(8.0);
         let o = &mut self.ms_backup;
         if o.kind != MsBackupType::Differential {
-            ui.add(Checkbox::new(&mut o.copy_only).label("Copy-only (does not affect scheduled backups)"));
+            ui.add(Checkbox::new(&mut o.copy_only).label(tr("Copy-only (does not affect scheduled backups)")));
         }
-        ui.add(Checkbox::new(&mut o.compression).label("Compress (not in Express edition)"));
-        ui.add(Checkbox::new(&mut o.checksum).label("Page checksums"));
-        ui.add(Checkbox::new(&mut o.init).label("Overwrite backup sets in the file"));
-        ui.add(Checkbox::new(&mut o.verify).label("Verify the backup afterwards"));
+        ui.add(Checkbox::new(&mut o.compression).label(tr("Compress (not in Express edition)")));
+        ui.add(Checkbox::new(&mut o.checksum).label(tr("Page checksums")));
+        ui.add(Checkbox::new(&mut o.init).label(tr("Overwrite backup sets in the file")));
+        ui.add(Checkbox::new(&mut o.verify).label(tr("Verify the backup afterwards")));
     }
 
     fn ms_restore_ui(&mut self, ui: &mut Ui) {
-        Alert::new("Overwrites the database")
+        Alert::new(tr("Overwrites the database"))
             .icon("!")
-            .description(format!(
-                "{} is replaced by the backup; other sessions in it are disconnected. To restore a copy, type a new name below.",
-                self.scope.database
+            .description(trf(
+                "{database} is replaced by the backup; other sessions in it are disconnected. To restore a copy, type a new name below.",
+                &[("database", &self.scope.database)],
             ))
             .destructive()
             .show(ui);
         ui.add_space(8.0);
-        label(ui, "Restore as database");
+        label(ui, tr("Restore as database"));
         ui.add(Input::new(&mut self.scope.database).width(280.0));
         ui.add_space(8.0);
         let o = &mut self.ms_restore;
-        ui.add(Checkbox::new(&mut o.replace).label("Replace an existing database (WITH REPLACE)"));
-        ui.add(Checkbox::new(&mut o.close_connections).label("Disconnect other sessions first"));
+        ui.add(Checkbox::new(&mut o.replace).label(tr("Replace an existing database (WITH REPLACE)")));
+        ui.add(Checkbox::new(&mut o.close_connections).label(tr("Disconnect other sessions first")));
         ui.add(
             Checkbox::new(&mut o.relocate)
-                .label("Move files to the server's default folders, named after the database"),
+                .label(tr("Move files to the server's default folders, named after the database")),
         );
-        ui.add(Checkbox::new(&mut o.recovery).label("Bring online (off to restore differential or log backups next)"));
+        ui.add(
+            Checkbox::new(&mut o.recovery).label(tr("Bring online (off to restore differential or log backups next)")),
+        );
     }
 
     fn duck_backup_ui(&mut self, ui: &mut Ui) {
         let before = self.duck_method;
-        label(ui, "Method");
-        let labels: Vec<&str> = DuckMethod::ALL.iter().map(|m| m.label()).collect();
+        label(ui, tr("Method"));
+        let labels: Vec<&str> = DuckMethod::ALL.iter().map(|m| tr(m.label())).collect();
         let mut idx = DuckMethod::ALL.iter().position(|m| *m == self.duck_method);
         ui.add(Select::new(&mut idx, &labels).width(280.0));
         if let Some(i) = idx {
@@ -901,27 +921,30 @@ impl BackupDialog {
         let t = Theme::get(ui.ctx());
         let note = match self.duck_method {
             DuckMethod::Parquet | DuckMethod::Csv => {
-                "The folder gets schema.sql, load.sql and one data file per table; IMPORT DATABASE reads it back."
+                tr("The folder gets schema.sql, load.sql and one data file per table; IMPORT DATABASE reads it back.")
             }
-            DuckMethod::DatabaseFile => "A new DuckDB file with the same schemas, tables, views and sequences.",
+            DuckMethod::DatabaseFile => tr("A new DuckDB file with the same schemas, tables, views and sequences."),
         };
         ui.label(RichText::new(note).size(12.0).color(t.muted_foreground));
     }
 
     fn duck_restore_ui(&mut self, ui: &mut Ui) {
-        Alert::new("Restore into an empty database")
+        Alert::new(tr("Restore into an empty database"))
             .icon("!")
-            .description(format!(
-                "Objects of the backup are created in {}; it fails if any of them already exist.",
-                self.duck_database()
+            .description(trf(
+                "Objects of the backup are created in {database}; it fails if any of them already exist.",
+                &[("database", &self.duck_database())],
             ))
             .show(ui);
     }
 
     fn sqlite_restore_ui(&mut self, ui: &mut Ui) {
-        Alert::new("Overwrites the database")
+        Alert::new(tr("Overwrites the database"))
             .icon("!")
-            .description(format!("Every table of {} is replaced by the backup's content.", self.cfg.database))
+            .description(trf(
+                "Every table of {database} is replaced by the backup's content.",
+                &[("database", &self.cfg.database)],
+            ))
             .destructive()
             .show(ui);
     }

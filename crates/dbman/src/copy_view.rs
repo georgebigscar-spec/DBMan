@@ -14,6 +14,7 @@ use tokio::sync::OnceCell;
 
 use crate::events::{Event, EventSender, TabEvent, TabId};
 use crate::explorer::{Action, Load};
+use crate::i18n::{tr, trf};
 use crate::jobs::JobSpec;
 use crate::tabs::{TabCtx, error_alert};
 use crate::target_picker::{Session, TargetPicker};
@@ -73,7 +74,7 @@ impl CopyView {
 
     pub fn title(&self) -> String {
         let what = self.only.as_deref().unwrap_or(if self.schema.is_empty() { &self.database } else { &self.schema });
-        format!("{what} (copy)")
+        trf("{name} (copy)", &[("name", &what)])
     }
 
     /// Switches the target to a saved connection on the next frame.
@@ -219,7 +220,7 @@ impl CopyView {
         self.toolbar(ui, tab, &cx);
         ui.add_space(6.0);
         if let Load::Failed(e) = &self.tables {
-            return error_alert(ui, "Could not list the tables", e);
+            return error_alert(ui, tr("Could not list the tables"), e);
         }
         if self.tables.ready().is_none() {
             ui.add(egui::Spinner::new());
@@ -242,8 +243,8 @@ impl CopyView {
 
     fn toolbar(&mut self, ui: &mut Ui, tab: TabId, cx: &TabCtx<'_>) {
         let t = Theme::get(ui.ctx());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Source").color(t.muted_foreground));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(tr("Source")).color(t.muted_foreground));
             let source = if self.schema == self.database || self.schema.is_empty() {
                 format!("{} · {}", self.source_cfg.display_name(), self.database)
             } else {
@@ -251,11 +252,11 @@ impl CopyView {
             };
             ui.label(RichText::new(source).strong());
             ui.add_space(8.0);
-            ui.label(RichText::new("Target").color(t.muted_foreground));
+            ui.label(RichText::new(tr("Target")).color(t.muted_foreground));
             self.picker.ui(ui, cx.tasks, tab, cx.conns);
             ui.add_space(8.0);
-            ui.label(RichText::new("Existing tables").color(t.muted_foreground));
-            let labels: Vec<&str> = Existing::ALL.iter().map(|e| e.label()).collect();
+            ui.label(RichText::new(tr("Existing tables")).color(t.muted_foreground));
+            let labels: Vec<&str> = Existing::ALL.iter().map(|e| tr(e.label())).collect();
             ui.push_id("copy-existing", |ui| ui.add(Select::new(&mut self.existing, &labels).width(170.0)));
         });
     }
@@ -266,18 +267,22 @@ impl CopyView {
         let Load::Ready(rows) = &mut self.tables else { return };
         let chosen = rows.iter().filter(|r| r.include).count();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{chosen} of {} tables", rows.len())).size(12.0).color(t.muted_foreground));
-            if ui.add(Button::ghost("All").size(ButtonSize::Sm)).clicked() {
+            ui.label(
+                RichText::new(trf("{chosen} of {total} tables", &[("chosen", &chosen), ("total", &rows.len())]))
+                    .size(12.0)
+                    .color(t.muted_foreground),
+            );
+            if ui.add(Button::ghost(tr("All")).size(ButtonSize::Sm)).clicked() {
                 rows.iter_mut().for_each(|r| r.include = true);
             }
-            if ui.add(Button::ghost("None").size(ButtonSize::Sm)).clicked() {
+            if ui.add(Button::ghost(tr("None")).size(ButtonSize::Sm)).clicked() {
                 rows.iter_mut().for_each(|r| r.include = false);
             }
         });
         ui.add_space(4.0);
         egui::ScrollArea::vertical().id_salt("copy-tables").auto_shrink([false, false]).show(ui, |ui| {
             if rows.is_empty() {
-                ui.label(RichText::new("The schema has no tables.").color(t.muted_foreground));
+                ui.label(RichText::new(tr("The schema has no tables.")).color(t.muted_foreground));
             }
             for (i, row) in rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
@@ -287,7 +292,7 @@ impl CopyView {
                         self.selected = Some(row.name.clone());
                     }
                     if in_target.as_ref().is_some_and(|s| s.contains(&row.name)) {
-                        ui.add(Badge::new("in target").outline());
+                        ui.add(Badge::new(tr("in target")).outline());
                     }
                 });
             }
@@ -299,7 +304,7 @@ impl CopyView {
         let t = Theme::get(ui.ctx());
         let Some(name) = self.selected.clone() else {
             ui.label(
-                RichText::new("Choose a table to see how its columns are created in the target.")
+                RichText::new(tr("Choose a table to see how its columns are created in the target."))
                     .color(t.muted_foreground),
             );
             return;
@@ -308,7 +313,7 @@ impl CopyView {
         ui.add_space(6.0);
         let details = match self.details.get(&name) {
             Some(Load::Ready(d)) => d,
-            Some(Load::Failed(e)) => return error_alert(ui, "Could not read the table", e),
+            Some(Load::Failed(e)) => return error_alert(ui, tr("Could not read the table"), e),
             _ => {
                 ui.add(egui::Spinner::new());
                 return;
@@ -318,7 +323,7 @@ impl CopyView {
         let exists = self.target_tables.ready().is_some_and(|s| s.contains(&name));
         if exists && self.existing() != Existing::Recreate {
             ui.label(
-                RichText::new("The target has this table; the rows go into its columns with the same names.")
+                RichText::new(tr("The target has this table; the rows go into its columns with the same names."))
                     .color(t.muted_foreground),
             );
             ui.add_space(4.0);
@@ -332,9 +337,9 @@ impl CopyView {
         let (def, notes) = target_def(self.source_cfg.kind, to, target, details, |r| chosen.contains(r));
         egui::ScrollArea::vertical().id_salt("copy-mapping").auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("copy-mapping-grid").striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
-                ui.label(RichText::new("Column").strong());
-                ui.label(RichText::new(format!("{} type", self.source_cfg.kind.label())).strong());
-                ui.label(RichText::new(format!("{} type", to.label())).strong());
+                ui.label(RichText::new(tr("Column")).strong());
+                ui.label(RichText::new(trf("{db} type", &[("db", &self.source_cfg.kind.label())])).strong());
+                ui.label(RichText::new(trf("{db} type", &[("db", &to.label())])).strong());
                 ui.end_row();
                 for (src, c) in details.columns.iter().zip(&def.columns) {
                     ui.label(&src.name);
@@ -365,7 +370,7 @@ impl CopyView {
         ui.horizontal(|ui| {
             let itself = self.onto_itself(cx.conn_id);
             let ready = n > 0 && self.picker.schema().is_some() && !itself && self.target_tables.ready().is_some();
-            let label = if n == 1 { "Copy 1 table".to_string() } else { format!("Copy {n} tables") };
+            let label = if n == 1 { tr("Copy 1 table").to_string() } else { trf("Copy {n} tables", &[("n", &n)]) };
             if ui.add_enabled(ready, Button::new(&label).size(ButtonSize::Sm)).clicked() {
                 if self.existing() != Existing::Append && !self.overwritten().is_empty() {
                     self.confirm = true;
@@ -374,13 +379,13 @@ impl CopyView {
                 }
             }
             if itself {
-                ui.label(RichText::new("The target is the source itself.").color(t.destructive));
+                ui.label(RichText::new(tr("The target is the source itself.")).color(t.destructive));
             } else if let Load::Failed(e) = &self.target_tables {
-                ui.label(RichText::new("Could not list the target's tables").color(t.destructive))
+                ui.label(RichText::new(tr("Could not list the target's tables")).color(t.destructive))
                     .on_hover_text(e.as_str());
             } else {
                 ui.label(
-                    RichText::new("Missing tables are created; rows are copied in the background.")
+                    RichText::new(tr("Missing tables are created; rows are copied in the background."))
                         .color(t.muted_foreground),
                 );
             }
@@ -399,7 +404,7 @@ impl CopyView {
         };
         let tables: Vec<String> = self.chosen().into_iter().map(str::to_string).collect();
         let where_ = if schema == db { db.clone() } else { format!("{db}.{schema}") };
-        let what = if tables.len() == 1 { tables[0].clone() } else { format!("{} tables", tables.len()) };
+        let what = if tables.len() == 1 { tables[0].clone() } else { trf("{n} tables", &[("n", &tables.len())]) };
         let job = CopyJob {
             source_db: self.database.clone(),
             source_schema: self.schema.clone(),
@@ -410,7 +415,10 @@ impl CopyView {
             batch_rows: BATCH_ROWS,
         };
         cx.actions.push(Action::StartJob(Box::new(Start {
-            title: format!("Copy {what} to {where_} on {}", cfg.display_name()),
+            title: trf(
+                "Copy {what} to {where} on {conn}",
+                &[("what", &what), ("where", &where_), ("conn", &cfg.display_name())],
+            ),
             spec: JobSpec::Copy { source: Box::new(self.source_cfg()), target: Box::new(cfg), job },
             output: None,
             refresh: Some(Action::RefreshObjects(conn, db, schema)),
@@ -422,18 +430,23 @@ impl CopyView {
     fn confirm_dialog(&mut self, ui: &mut Ui, mut cx: TabCtx<'_>) {
         let names = self.overwritten();
         let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
-        let more =
-            if names.len() > shown.len() { format!(" and {} more", names.len() - shown.len()) } else { String::new() };
-        let what = match self.existing() {
-            Existing::Recreate => "dropped and created again",
-            _ => "emptied first",
+        let more = if names.len() > shown.len() {
+            trf(" and {n} more", &[("n", &(names.len() - shown.len()))])
+        } else {
+            String::new()
         };
-        let description = format!(
-            "{}{more} already in {} will be {what}; their current rows are lost.",
-            shown.join(", "),
-            self.picker.display_name()
-        );
-        match alert_dialog(ui.ctx(), "copy-overwrite", "Overwrite tables in the target?", &description, "Copy") {
+        let tables = format!("{}{more}", shown.join(", "));
+        let target = self.picker.display_name();
+        let args: [(&str, &dyn std::fmt::Display); 2] = [("tables", &tables), ("target", &target)];
+        let description = match self.existing() {
+            Existing::Recreate => trf(
+                "{tables} already in {target} will be dropped and created again; their current rows are lost.",
+                &args,
+            ),
+            _ => trf("{tables} already in {target} will be emptied first; their current rows are lost.", &args),
+        };
+        match alert_dialog(ui.ctx(), "copy-overwrite", tr("Overwrite tables in the target?"), &description, tr("Copy"))
+        {
             Some(true) => {
                 self.confirm = false;
                 self.start(&mut cx);

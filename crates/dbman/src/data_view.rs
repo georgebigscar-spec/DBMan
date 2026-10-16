@@ -19,8 +19,9 @@ use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::exec;
 use crate::explorer::{Action, ConnState, Load};
 use crate::grid;
+use crate::i18n::{tr, trf};
 use crate::sql_editor;
-use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, toolbar_button};
+use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, outcome_summary, toolbar_button};
 use dbman_drivers::transfer::ExportSource;
 use tokio::sync::OnceCell;
 
@@ -126,10 +127,13 @@ impl DataView {
                 self.load_started = None;
                 match result {
                     Ok(StatementOutcome::Rows(r)) => {
-                        self.summary = StatementOutcome::Rows(r.clone()).summary(elapsed);
+                        self.summary = outcome_summary(&StatementOutcome::Rows(r.clone()), elapsed);
                         self.rows = Load::Ready(r);
                     }
-                    Ok(other) => self.rows = Load::Failed(format!("unexpected result: {other:?}")),
+                    Ok(other) => {
+                        self.rows =
+                            Load::Failed(trf("unexpected result: {result}", &[("result", &format!("{other:?}"))]))
+                    }
                     Err(e) => self.rows = Load::Failed(e.message),
                 }
                 self.edits = Edits::default();
@@ -143,7 +147,7 @@ impl DataView {
                 match r {
                     Ok(n) => {
                         self.submit_error = None;
-                        toast(ctx, "Changes saved", Some(&format!("{n} statement(s) committed")));
+                        toast(ctx, tr("Changes saved"), Some(&trf("Statements committed: {n}", &[("n", &n)])));
                         self.loaded_once = false; // reload on the next frame
                     }
                     Err(e) => self.submit_error = Some(e.message),
@@ -322,7 +326,7 @@ impl DataView {
     fn stop(&mut self, tasks: &Tasks) {
         self.page_seq += 1;
         self.load_started = None;
-        self.rows = Load::Failed("Cancelled.".into());
+        self.rows = Load::Failed(tr("Cancelled.").into());
         if let Some(s) = self.session.get().cloned() {
             // Best effort: the load's own answer is ignored because page_seq moved on.
             tasks.runtime().spawn(async move {
@@ -422,7 +426,7 @@ impl DataView {
         let dirty = !self.edits.is_empty();
         let mut reload = false;
         ui.horizontal(|ui| {
-            if ui.add_enabled(!dirty, Button::outline("⟳ Refresh").size(ButtonSize::Sm)).clicked() {
+            if ui.add_enabled(!dirty, Button::outline(tr("⟳ Refresh")).size(ButtonSize::Sm)).clicked() {
                 reload = true;
             }
             let has_next = self.rows.ready().is_some_and(|r| r.truncated);
@@ -430,7 +434,7 @@ impl DataView {
                 self.page -= 1;
                 reload = true;
             }
-            ui.label(RichText::new(format!("page {}", self.page + 1)).color(t.muted_foreground));
+            ui.label(RichText::new(trf("page {n}", &[("n", &(self.page + 1))])).color(t.muted_foreground));
             if ui.add_enabled(has_next && !dirty, Button::outline("›").size(ButtonSize::Sm)).clicked() {
                 self.page += 1;
                 reload = true;
@@ -460,13 +464,13 @@ impl DataView {
             ui.add_space(4.0);
             let mut submit = false;
             ui.horizontal(|ui| {
-                if toolbar_button(ui, "+ Row").tooltip("Add a row").clicked() {
+                if toolbar_button(ui, tr("+ Row")).tooltip(tr("Add a row")).clicked() {
                     self.add_row();
                 }
                 let selected: Vec<usize> = self.selected.iter().copied().collect();
                 if ui
-                    .add_enabled(!selected.is_empty(), Button::outline("− Delete").size(ButtonSize::Sm))
-                    .tooltip("Mark the checked rows for deletion")
+                    .add_enabled(!selected.is_empty(), Button::outline(tr("− Delete")).size(ButtonSize::Sm))
+                    .tooltip(tr("Mark the checked rows for deletion"))
                     .clicked()
                 {
                     self.delete_rows(&selected);
@@ -475,16 +479,19 @@ impl DataView {
                     ui.add_space(8.0);
                     let n = self.edits.count();
                     if ui
-                        .add_enabled(!self.submitting, Button::new(format!("Submit ({n})")).size(ButtonSize::Sm))
-                        .tooltip("Write the changes in one transaction")
+                        .add_enabled(
+                            !self.submitting,
+                            Button::new(trf("Submit ({n})", &[("n", &n)])).size(ButtonSize::Sm),
+                        )
+                        .tooltip(tr("Write the changes in one transaction"))
                         .clicked()
                     {
                         submit = true;
                     }
-                    if toolbar_button(ui, "Preview SQL").clicked() {
+                    if toolbar_button(ui, tr("Preview SQL")).clicked() {
                         self.preview = Some(self.statements().join(";\n") + ";");
                     }
-                    if ui.add_enabled(!self.submitting, Button::ghost("Revert").size(ButtonSize::Sm)).clicked() {
+                    if ui.add_enabled(!self.submitting, Button::ghost(tr("Revert")).size(ButtonSize::Sm)).clicked() {
                         self.edits = Edits::default();
                         self.editing = None;
                         self.submit_error = None;
@@ -497,12 +504,12 @@ impl DataView {
                 let (_, has_pk) = self.key_columns();
                 if !has_pk {
                     ui.label(
-                        RichText::new("No primary key: rows are matched by all their values.")
+                        RichText::new(tr("No primary key: rows are matched by all their values."))
                             .size(12.0)
                             .color(t.muted_foreground),
                     );
                 } else if !dirty {
-                    ui.label(RichText::new("Double-click a cell to edit it.").size(12.0).color(t.muted_foreground));
+                    ui.label(RichText::new(tr("Double-click a cell to edit it.")).size(12.0).color(t.muted_foreground));
                 }
             });
             if submit && let Some(c) = cx.conn {
@@ -511,7 +518,7 @@ impl DataView {
         }
         ui.add_space(6.0);
         if let Some(e) = &self.submit_error {
-            Alert::new("Changes were not saved").icon("!").description(e.as_str()).destructive().show(ui);
+            Alert::new(tr("Changes were not saved")).icon("!").description(e.as_str()).destructive().show(ui);
             ui.add_space(6.0);
         }
         if reload {
@@ -526,12 +533,12 @@ impl DataView {
                         ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
                         ui.ctx().request_repaint_after(Duration::from_millis(100));
                     }
-                    if ui.add(Button::destructive("Stop").size(ButtonSize::Sm)).clicked() {
+                    if ui.add(Button::destructive(tr("Stop")).size(ButtonSize::Sm)).clicked() {
                         stop = true;
                     }
                 });
             }
-            Load::Failed(e) => error_alert(ui, "Query failed", e),
+            Load::Failed(e) => error_alert(ui, tr("Query failed"), e),
             Load::Ready(_) => self.grid(ui, tab, editable),
         }
         if stop {
@@ -575,7 +582,7 @@ impl DataView {
         egui::ScrollArea::horizontal().id_salt(id.with("h")).auto_shrink([false, true]).show(ui, |ui| {
             ui.set_width(width);
             let mut table = DataTable::new(id, columns)
-                .filter("Filter rows...")
+                .filter(tr("Filter rows..."))
                 .max_height(height)
                 .row_height(30.0)
                 .version(self.version)
@@ -619,7 +626,7 @@ impl DataView {
                     }
                     let r = ui.interact(cell_rect, id.with(("cell", row, col)), Sense::click());
                     let text = match value {
-                        None if is_new => RichText::new("<default>").italics().color(t.muted_foreground),
+                        None if is_new => RichText::new(tr("<default>")).italics().color(t.muted_foreground),
                         None | Some(Cell::Null) => RichText::new("NULL").italics().color(t.muted_foreground),
                         Some(v) => RichText::new(
                             display
@@ -638,25 +645,26 @@ impl DataView {
                     r.context_menu(|ui| {
                         ui.set_min_width(180.0);
                         if let Some(v) = value.and_then(|v| v.as_text())
-                            && menu_item(ui, "Copy value", None).clicked()
+                            && menu_item(ui, tr("Copy value"), None).clicked()
                         {
                             cmds.push(GridCmd::Copy(v.into_owned()));
                         }
                         if editable && !deleted {
                             menu_separator(ui);
-                            if menu_item(ui, "Edit", None).clicked() {
+                            if menu_item(ui, tr("Edit"), None).clicked() {
                                 cmds.push(GridCmd::StartEdit(row, col));
                             }
-                            if menu_item(ui, "Set NULL", None).clicked() {
+                            if menu_item(ui, tr("Set NULL"), None).clicked() {
                                 cmds.push(GridCmd::SetNull(row, col));
                             }
-                            if (changed || (is_new && value.is_some())) && menu_item(ui, "Revert cell", None).clicked()
+                            if (changed || (is_new && value.is_some()))
+                                && menu_item(ui, tr("Revert cell"), None).clicked()
                             {
                                 cmds.push(GridCmd::Revert(row, col));
                             }
                         }
                         if editable {
-                            let label = if deleted { "Restore row" } else { "Delete row" };
+                            let label = if deleted { tr("Restore row") } else { tr("Delete row") };
                             if menu_item(ui, label, None).clicked() {
                                 cmds.push(GridCmd::Delete(row));
                             }
@@ -678,15 +686,15 @@ impl DataView {
     fn preview_dialog(&mut self, ctx: &egui::Context) {
         let Some(sql) = &self.preview else { return };
         let kind = self.kind;
-        let r = Dialog::new("dml-preview", "Pending changes")
-            .description("These statements run in one transaction.")
+        let r = Dialog::new("dml-preview", tr("Pending changes"))
+            .description(tr("These statements run in one transaction."))
             .width(720.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
                     sql_editor::viewer(ui, egui::Id::new("dml-preview-text"), sql, kind);
                 });
                 ui.add_space(8.0);
-                shadcn_egui::footer(ui, |ui| ui.add(Button::outline("Close")).clicked())
+                shadcn_egui::footer(ui, |ui| ui.add(Button::outline(tr("Close"))).clicked())
             });
         if r.should_close || r.inner {
             self.preview = None;

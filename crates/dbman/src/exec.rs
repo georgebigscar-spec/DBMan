@@ -4,6 +4,8 @@
 
 use dbman_core::{ConnectionConfig, DbError, DbKind, DbResult, StatementOutcome, dml};
 
+use crate::i18n::trf;
+
 /// How to run a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -50,9 +52,11 @@ pub async fn run(cfg: ConnectionConfig, db: String, stmts: Vec<String>, mode: Mo
             Ok(StatementOutcome::Done { affected: Some(n) })
                 if mode == Mode::RowEdits && n != 1 && !sql.starts_with("INSERT") =>
             {
-                Some(DbError::new(format!(
-                    "{n} rows matched instead of 1, so nothing was saved. The row may have been changed by someone else; refresh and try again.\n\n{sql}"
-                )))
+                let msg = trf(
+                    "{n} rows matched instead of 1, so nothing was saved. The row may have been changed by someone else; refresh and try again.",
+                    &[("n", &n)],
+                );
+                Some(DbError::new(format!("{msg}\n\n{sql}")))
             }
             Ok(_) => None,
             Err(e) => Some(with_sql(e, sql)),

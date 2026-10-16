@@ -6,6 +6,7 @@ use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer,
 
 use crate::explorer::Load;
 use crate::files;
+use crate::i18n::tr;
 
 pub struct ConnectionDialog {
     pub cfg: ConnectionConfig,
@@ -36,7 +37,7 @@ const SSL: [&str; 4] =
 
 fn field(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui)) {
     ui.add_space(4.0);
-    label(ui, name);
+    label(ui, tr(name));
     add(ui);
 }
 
@@ -55,11 +56,12 @@ impl ConnectionDialog {
     }
 
     pub fn show(&mut self, ctx: &Context) -> Option<DialogOutcome> {
-        let title = if self.is_new { "New connection" } else { "Connection properties" };
+        let title = if self.is_new { tr("New connection") } else { tr("Connection properties") };
         let mut outcome = None;
-        let r = Dialog::new("connection-dialog", title).description("Where DBMan should connect.").width(520.0).show(
-            ctx,
-            |ui| {
+        let r = Dialog::new("connection-dialog", title)
+            .description(tr("Where DBMan should connect."))
+            .width(520.0)
+            .show(ctx, |ui| {
                 let t = Theme::get(ui.ctx());
                 let full = ui.available_width();
                 let placeholder = self.cfg.display_name();
@@ -85,9 +87,9 @@ impl ConnectionDialog {
                             ui.add(
                                 Input::new(&mut self.cfg.database)
                                     .placeholder(if self.cfg.kind == DbKind::DuckDb {
-                                        "/path/to/database.duckdb  (or :memory:)"
+                                        tr("/path/to/database.duckdb  (or :memory:)")
                                     } else {
-                                        "/path/to/database.db"
+                                        tr("/path/to/database.db")
                                     })
                                     .width(full - 110.0),
                             );
@@ -97,19 +99,20 @@ impl ConnectionDialog {
                                     self.cfg.database = p.to_string_lossy().into_owned();
                                 }
                             }
-                            if ui.add_enabled(self.browsing.is_none(), Button::outline("Browse…")).clicked() {
+                            if ui.add_enabled(self.browsing.is_none(), Button::outline(tr("Browse…"))).clicked() {
                                 let (name, exts): (&str, &[&str]) = match self.cfg.kind {
                                     DbKind::DuckDb => ("DuckDB", &["duckdb", "ddb", "db"]),
                                     _ => ("SQLite", &["db", "sqlite", "sqlite3", "db3"]),
                                 };
-                                let dialog =
-                                    rfd::AsyncFileDialog::new().add_filter(name, exts).add_filter("All files", &["*"]);
+                                let dialog = rfd::AsyncFileDialog::new()
+                                    .add_filter(name, exts)
+                                    .add_filter(tr("All files"), &["*"]);
                                 self.browsing = Some(files::pick_file(ui.ctx(), dialog));
                             }
                         });
                     });
                     ui.label(
-                        RichText::new("A missing file is created on first connect.")
+                        RichText::new(tr("A missing file is created on first connect."))
                             .size(12.0)
                             .color(t.muted_foreground),
                     );
@@ -140,12 +143,12 @@ impl ConnectionDialog {
                             });
                         });
                     });
-                    ui.add(Checkbox::new(&mut self.cfg.save_password).label("Save password"));
+                    ui.add(Checkbox::new(&mut self.cfg.save_password).label(tr("Save password")));
                     field(ui, "Database", |ui| {
-                        let hint = if self.cfg.kind == DbKind::Postgres { "postgres" } else { "(none)" };
+                        let hint = if self.cfg.kind == DbKind::Postgres { "postgres" } else { tr("(none)") };
                         ui.add(Input::new(&mut self.cfg.database).placeholder(hint).width(full));
                     });
-                    ui.add(Checkbox::new(&mut self.cfg.only_default_database).label("Show only this database"));
+                    ui.add(Checkbox::new(&mut self.cfg.only_default_database).label(tr("Show only this database")));
                     field(ui, "SSL mode", |ui| {
                         let mut idx = SslMode::ALL.iter().position(|m| *m == self.cfg.ssl_mode);
                         ui.add(Select::new(&mut idx, &SSL).width(full));
@@ -161,31 +164,30 @@ impl ConnectionDialog {
                     Load::Loading => {
                         ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new());
-                            ui.label(RichText::new("Connecting…").color(t.muted_foreground));
+                            ui.label(RichText::new(tr("Connecting…")).color(t.muted_foreground));
                         });
                     }
                     Load::Ready(v) => {
-                        Alert::new("Connection succeeded").icon("✔").description(v.as_str()).show(ui);
+                        Alert::new(tr("Connection succeeded")).icon("✔").description(v.as_str()).show(ui);
                     }
                     Load::Failed(e) => {
-                        Alert::new("Connection failed").icon("!").description(e.as_str()).destructive().show(ui);
+                        Alert::new(tr("Connection failed")).icon("!").description(e.as_str()).destructive().show(ui);
                     }
                 }
                 ui.add_space(8.0);
                 footer(ui, |ui| {
-                    if ui.add(Button::new("Save")).clicked() {
+                    if ui.add(Button::new(tr("Save"))).clicked() {
                         outcome = Some(DialogOutcome::Save(self.config()));
                     }
-                    if ui.add(Button::outline("Cancel")).clicked() {
+                    if ui.add(Button::outline(tr("Cancel"))).clicked() {
                         outcome = Some(DialogOutcome::Close);
                     }
                     let testing = matches!(self.test, Load::Loading);
-                    if ui.add_enabled(!testing, Button::ghost("Test connection")).clicked() {
+                    if ui.add_enabled(!testing, Button::ghost(tr("Test connection"))).clicked() {
                         outcome = Some(DialogOutcome::Test(self.config()));
                     }
                 });
-            },
-        );
+            });
         if r.should_close && outcome.is_none() {
             outcome = Some(DialogOutcome::Close);
         }

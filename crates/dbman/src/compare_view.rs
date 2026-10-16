@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::events::{Event, EventSender, TabEvent, TabId};
 use crate::explorer::{Action, Load};
 use crate::files;
+use crate::i18n::{tr, trf};
 use crate::jobs::JobSpec;
 use crate::tabs::{TabCtx, error_alert, toolbar_button};
 use crate::target_picker::TargetPicker;
@@ -117,9 +118,9 @@ impl CompareView {
 
     pub fn title(&self) -> String {
         if self.schema == self.database || self.schema.is_empty() {
-            format!("{} (compare)", self.database)
+            trf("{name} (compare)", &[("name", &self.database)])
         } else {
-            format!("{}.{} (compare)", self.database, self.schema)
+            trf("{name} (compare)", &[("name", &format!("{}.{}", self.database, self.schema))])
         }
     }
 
@@ -230,7 +231,7 @@ impl CompareView {
                 self.progress.clear();
                 if let Load::Ready(rows) = &mut self.data {
                     for r in rows.iter_mut().filter(|r| matches!(r.state, DataState::Pending)) {
-                        r.state = DataState::Skipped("Cancelled".into());
+                        r.state = DataState::Skipped(tr("Cancelled").into());
                     }
                 }
             }
@@ -252,7 +253,7 @@ impl CompareView {
         self.selected = None;
         self.script = None;
         self.show_script = false;
-        self.progress = "Connecting…".into();
+        self.progress = tr("Connecting…").into();
         let (source, target) = (self.source.clone(), self.picker.session());
         let source_cfg = self.source_cfg();
         let (sdb, sschema) = (self.database.clone(), self.schema.clone());
@@ -286,7 +287,12 @@ impl CompareView {
                 let (tx, cancel) = (tx.clone(), cancel.clone());
                 async move {
                     let progress = |done: usize, total: usize| {
-                        Self::send(&tx, tab, CompareEvent::Progress(format!("Reading the {which} {done}/{total}…")));
+                        let text = if which == "source" {
+                            trf("Reading the source {done}/{total}…", &[("done", &done), ("total", &total)])
+                        } else {
+                            trf("Reading the target {done}/{total}…", &[("done", &done), ("total", &total)])
+                        };
+                        Self::send(&tx, tab, CompareEvent::Progress(text));
                     };
                     dbman_drivers::compare::snapshot(&conn, &db, &schema, ddl, progress, &cancel).await
                 }
@@ -294,11 +300,10 @@ impl CompareView {
             if !data {
                 let r = async {
                     if s.kind() != t.kind() {
-                        return Err(DbError::new(format!(
-                            "Structure can only be compared between databases of the same kind ({} and {} here). \
+                        return Err(DbError::new(trf(
+                            "Structure can only be compared between databases of the same kind ({a} and {b} here). \
                              Data can be compared between any two.",
-                            s.kind().label(),
-                            t.kind().label()
+                            &[("a", &s.kind().label()), ("b", &t.kind().label())],
                         )));
                     }
                     let a = read("source", s.clone(), sdb, sschema, true).await?;
@@ -332,7 +337,13 @@ impl CompareView {
                 let name = row.name.clone();
                 let progress = {
                     let tx = tx.clone();
-                    move |n: u64| Self::send(&tx, tab, CompareEvent::Progress(format!("{name}: {n} rows read…")))
+                    move |n: u64| {
+                        Self::send(
+                            &tx,
+                            tab,
+                            CompareEvent::Progress(trf("{name}: {n} rows read…", &[("name", &name), ("n", &n)])),
+                        )
+                    }
                 };
                 let r = dbman_drivers::compare::compare_data(&s, &row.source, &t, spec, &progress, &cancel).await;
                 if r.is_err() && cancel.load(Ordering::Relaxed) {
@@ -391,7 +402,7 @@ impl CompareView {
             _ => (if let Load::Failed(e) = &self.data { Some(e.clone()) } else { None }, self.data.ready().is_some()),
         };
         if let Some(e) = load_failed {
-            return error_alert(ui, "Could not compare", &e);
+            return error_alert(ui, tr("Could not compare"), &e);
         }
         if !has_results {
             let t = Theme::get(ui.ctx());
@@ -402,9 +413,13 @@ impl CompareView {
                 });
             } else {
                 let what = if self.mode == 0 {
-                    "Compare finds the tables, views and routines that differ and writes the script that makes the target match the source."
+                    tr(
+                        "Compare finds the tables, views and routines that differ and writes the script that makes the target match the source.",
+                    )
                 } else {
-                    "Compare matches the rows of each table by primary key and writes the INSERT, UPDATE and DELETE statements that make the target match the source."
+                    tr(
+                        "Compare matches the rows of each table by primary key and writes the INSERT, UPDATE and DELETE statements that make the target match the source.",
+                    )
                 };
                 ui.label(RichText::new(what).color(t.muted_foreground));
             }
@@ -440,16 +455,16 @@ impl CompareView {
 
     fn toolbar(&mut self, ui: &mut Ui, tab: TabId, cx: &TabCtx<'_>) {
         let t = Theme::get(ui.ctx());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let before = self.mode;
-            tabs(ui, &mut self.mode, &["Structure", "Data"]);
+            tabs(ui, &mut self.mode, &[tr("Structure"), tr("Data")]);
             if before != self.mode {
                 self.selected = None;
                 self.script = None;
                 self.show_script = false;
             }
             ui.add_space(12.0);
-            ui.label(RichText::new("Source").color(t.muted_foreground));
+            ui.label(RichText::new(tr("Source")).color(t.muted_foreground));
             let source = if self.schema == self.database || self.schema.is_empty() {
                 format!("{} · {}", self.source_cfg.display_name(), self.database)
             } else {
@@ -457,17 +472,17 @@ impl CompareView {
             };
             ui.label(RichText::new(source).strong());
             ui.add_space(8.0);
-            ui.label(RichText::new("Target").color(t.muted_foreground));
+            ui.label(RichText::new(tr("Target")).color(t.muted_foreground));
 
             self.picker.ui(ui, cx.tasks, tab, cx.conns);
             ui.add_space(8.0);
             let ready = self.picker.schema().is_some() && !self.running;
-            let label = if self.mode == 0 { "Compare structure" } else { "Compare data" };
+            let label = if self.mode == 0 { tr("Compare structure") } else { tr("Compare data") };
             if ui.add_enabled(ready, Button::new(label).size(ButtonSize::Sm)).clicked() {
                 self.start(cx, tab);
             }
             if self.running {
-                if toolbar_button(ui, "Stop").clicked() {
+                if toolbar_button(ui, tr("Stop")).clicked() {
                     self.cancel.store(true, Ordering::Relaxed);
                 }
                 ui.add(egui::Spinner::new());
@@ -484,17 +499,20 @@ impl CompareView {
             (count(Status::OnlySource), count(Status::Changed), count(Status::OnlyTarget), count(Status::Same));
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                RichText::new(format!("{new} new · {changed} changed · {extra} only in target · {same} same"))
-                    .size(12.0)
-                    .color(t.muted_foreground),
+                RichText::new(trf(
+                    "{new} new · {changed} changed · {extra} only in target · {same} same",
+                    &[("new", &new), ("changed", &changed), ("extra", &extra), ("same", &same)],
+                ))
+                .size(12.0)
+                .color(t.muted_foreground),
             );
         });
-        ui.add(Checkbox::new(&mut self.show_same).label("Show identical objects"));
+        ui.add(Checkbox::new(&mut self.show_same).label(tr("Show identical objects")));
         ui.add_space(4.0);
         let mut changed_choice = false;
         egui::ScrollArea::vertical().id_salt("compare-structure").auto_shrink([false, false]).show(ui, |ui| {
             if rows.iter().all(|r| r.diff.status == Status::Same) {
-                ui.label(RichText::new("The schemas are the same.").color(t.muted_foreground));
+                ui.label(RichText::new(tr("The schemas are the same.")).color(t.muted_foreground));
             }
             for (i, row) in rows.iter_mut().enumerate() {
                 if row.diff.status == Status::Same && !self.show_same {
@@ -508,7 +526,7 @@ impl CompareView {
                         }
                     });
                     status_badge(ui, &t, row.diff.status);
-                    let text = format!("{} {}", row.diff.kind.label(), row.diff.name);
+                    let text = trf("{kind} {name}", &[("kind", &tr(row.diff.kind.label())), ("name", &row.diff.name)]);
                     let r = ui.selectable_label(self.selected == Some(i) && !self.show_script, text);
                     if r.clicked() {
                         self.selected = Some(i);
@@ -527,7 +545,7 @@ impl CompareView {
         let kind = self.kind();
         let Some(row) = self.selected.and_then(|i| self.structure.ready()?.get(i)) else {
             ui.label(
-                RichText::new("Choose an object to see what differs, or Show script for all of them.")
+                RichText::new(tr("Choose an object to see what differs, or Show script for all of them."))
                     .color(t.muted_foreground),
             );
             return;
@@ -535,7 +553,11 @@ impl CompareView {
         let d = &row.diff;
         egui::ScrollArea::vertical().id_salt("compare-detail").auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{} {}", d.kind.label(), d.name)).strong().size(15.0));
+                ui.label(
+                    RichText::new(trf("{kind} {name}", &[("kind", &tr(d.kind.label())), ("name", &d.name)]))
+                        .strong()
+                        .size(15.0),
+                );
                 status_badge(ui, &t, d.status);
             });
             ui.add_space(6.0);
@@ -548,14 +570,14 @@ impl CompareView {
             let plan = d.plan();
             if !plan.statements.is_empty() {
                 ui.add_space(8.0);
-                ui.label(RichText::new("Statements").strong());
+                ui.label(RichText::new(tr("Statements")).strong());
                 code(ui, &t, &compare::script(kind, &Plan { statements: plan.statements, notes: Vec::new() }), true);
             }
             ui.add_space(8.0);
             ui.columns(2, |cols| {
-                cols[0].label(RichText::new("Source").strong());
+                cols[0].label(RichText::new(tr("Source")).strong());
                 code(&mut cols[0], &t, d.source_ddl.as_deref().unwrap_or("-- not in the source"), true);
-                cols[1].label(RichText::new("Target").strong());
+                cols[1].label(RichText::new(tr("Target")).strong());
                 code(&mut cols[1], &t, d.target_ddl.as_deref().unwrap_or("-- not in the target"), true);
             });
         });
@@ -567,11 +589,14 @@ impl CompareView {
         let differing = rows.iter().filter(|r| matches!(&r.state, DataState::Done(d) if d.differs())).count();
         let done = rows.iter().filter(|r| matches!(r.state, DataState::Done(_))).count();
         ui.label(
-            RichText::new(format!("{done} of {} tables compared · {differing} differ", rows.len()))
-                .size(12.0)
-                .color(t.muted_foreground),
+            RichText::new(trf(
+                "{done} of {total} tables compared · {differing} differ",
+                &[("done", &done), ("total", &rows.len()), ("differing", &differing)],
+            ))
+            .size(12.0)
+            .color(t.muted_foreground),
         );
-        ui.add(Checkbox::new(&mut self.show_same).label("Show identical tables"));
+        ui.add(Checkbox::new(&mut self.show_same).label(tr("Show identical tables")));
         ui.add_space(4.0);
         let mut changed_choice = false;
         egui::ScrollArea::vertical().id_salt("compare-data").auto_shrink([false, false]).show(ui, |ui| {
@@ -595,13 +620,13 @@ impl CompareView {
                         DataState::Done(d) if d.differs() => {
                             (format!("+{} ~{} −{}", d.inserted, d.updated, d.deleted), t.foreground)
                         }
-                        DataState::Done(d) => (format!("{} rows, same", d.same), t.muted_foreground),
+                        DataState::Done(d) => (trf("{n} rows, same", &[("n", &d.same)]), t.muted_foreground),
                         DataState::Pending => ("…".into(), t.muted_foreground),
                         DataState::Skipped(why) => (why.clone(), t.muted_foreground),
-                        DataState::Failed(_) => ("failed".into(), t.destructive),
+                        DataState::Failed(_) => (tr("failed").into(), t.destructive),
                     };
                     ui.label(RichText::new(text).size(12.0).color(color))
-                        .on_hover_text("Rows to insert (+), update (~) and delete (−)");
+                        .on_hover_text(tr("Rows to insert (+), update (~) and delete (−)"));
                 });
             }
         });
@@ -614,7 +639,7 @@ impl CompareView {
         let t = Theme::get(ui.ctx());
         let Some(row) = self.selected.and_then(|i| self.data.ready()?.get(i)) else {
             ui.label(
-                RichText::new("Choose a table to see its differing rows, or Show script for all of them.")
+                RichText::new(tr("Choose a table to see its differing rows, or Show script for all of them."))
                     .color(t.muted_foreground),
             );
             return;
@@ -623,7 +648,7 @@ impl CompareView {
         ui.add_space(6.0);
         let d = match &row.state {
             DataState::Done(d) => d,
-            DataState::Failed(e) => return error_alert(ui, "Could not compare this table", e),
+            DataState::Failed(e) => return error_alert(ui, tr("Could not compare this table"), e),
             DataState::Skipped(why) => {
                 ui.label(RichText::new(why).color(t.muted_foreground));
                 return;
@@ -633,9 +658,16 @@ impl CompareView {
                 return;
             }
         };
-        ui.label(format!(
-            "Source {} rows · target {} rows · {} same · {} to insert · {} to update · {} to delete",
-            d.source_rows, d.target_rows, d.same, d.inserted, d.updated, d.deleted
+        ui.label(trf(
+            "Source {source} rows · target {target} rows · {same} same · {insert} to insert · {update} to update · {delete} to delete",
+            &[
+                ("source", &d.source_rows),
+                ("target", &d.target_rows),
+                ("same", &d.same),
+                ("insert", &d.inserted),
+                ("update", &d.updated),
+                ("delete", &d.deleted),
+            ],
         ));
         if d.samples.is_empty() {
             return;
@@ -644,20 +676,26 @@ impl CompareView {
         let shown = d.samples.len() as u64;
         let total = d.inserted + d.updated + d.deleted;
         if shown < total {
-            ui.label(RichText::new(format!("The first {shown} of {total} differing rows:")).color(t.muted_foreground));
+            ui.label(
+                RichText::new(trf(
+                    "The first {shown} of {total} differing rows:",
+                    &[("shown", &shown), ("total", &total)],
+                ))
+                .color(t.muted_foreground),
+            );
         }
         egui::ScrollArea::vertical().id_salt("compare-rows").auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("compare-rows-grid").striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
-                ui.label(RichText::new("Key").strong());
-                ui.label(RichText::new("Change").strong());
-                ui.label(RichText::new("Columns").strong());
+                ui.label(RichText::new(tr("Key")).strong());
+                ui.label(RichText::new(tr("Change")).strong());
+                ui.label(RichText::new(tr("Columns")).strong());
                 ui.end_row();
                 for s in &d.samples {
                     ui.label(RichText::new(&s.key).monospace());
                     let what = match s.status {
-                        Status::OnlySource => "insert",
-                        Status::Changed => "update",
-                        Status::OnlyTarget => "delete",
+                        Status::OnlySource => tr("insert"),
+                        Status::Changed => tr("update"),
+                        Status::OnlyTarget => tr("delete"),
                         Status::Same => "",
                     };
                     ui.label(what);
@@ -672,18 +710,18 @@ impl CompareView {
         self.ensure_script();
         let t = Theme::get(ui.ctx());
         let Some((plan, text)) = &self.script else { return };
-        ui.label(RichText::new(format!("Sync script · {} statements", plan.statements.len())).strong());
+        ui.label(RichText::new(trf("Sync script · {n} statements", &[("n", &plan.statements.len())])).strong());
         ui.add_space(4.0);
         egui::ScrollArea::both().id_salt("compare-script").auto_shrink([false, false]).show(ui, |ui| {
             if text.len() > PREVIEW_CHARS {
                 let cut = text.char_indices().nth(PREVIEW_CHARS).map_or(text.len(), |(i, _)| i);
                 code(ui, &t, &text[..cut], false);
                 ui.label(
-                    RichText::new("… The preview stops here; Copy and Save give the whole script.")
+                    RichText::new(tr("… The preview stops here; Copy and Save give the whole script."))
                         .color(t.muted_foreground),
                 );
             } else if text.is_empty() {
-                ui.label(RichText::new("Nothing is chosen.").color(t.muted_foreground));
+                ui.label(RichText::new(tr("Nothing is chosen.")).color(t.muted_foreground));
             } else {
                 code(ui, &t, text, false);
             }
@@ -696,17 +734,17 @@ impl CompareView {
         let n = plan.statements.len();
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let label = if self.show_script { "Hide script" } else { "Show script" };
+            let label = if self.show_script { tr("Hide script") } else { tr("Show script") };
             if ui.add(Button::outline(label).size(ButtonSize::Sm)).clicked() {
                 self.show_script = !self.show_script;
             }
-            ui.label(RichText::new(format!("{n} statements")).color(Theme::get(ui.ctx()).muted_foreground));
+            ui.label(RichText::new(trf("{n} statements", &[("n", &n)])).color(Theme::get(ui.ctx()).muted_foreground));
             let some = n > 0;
-            if ui.add_enabled(some, Button::outline("Copy").size(ButtonSize::Sm)).clicked() {
+            if ui.add_enabled(some, Button::outline(tr("Copy")).size(ButtonSize::Sm)).clicked() {
                 ui.ctx().copy_text(text.clone());
-                toast(ui.ctx(), "Copied the sync script", None);
+                toast(ui.ctx(), tr("Copied the sync script"), None);
             }
-            if ui.add_enabled(some, Button::outline("Save…").size(ButtonSize::Sm)).clicked() {
+            if ui.add_enabled(some, Button::outline(tr("Save…")).size(ButtonSize::Sm)).clicked() {
                 let name = self.compared.as_ref().map_or("sync".into(), |c| format!("sync_{}", c.schema));
                 let dialog =
                     rfd::AsyncFileDialog::new().set_file_name(format!("{name}.sql")).add_filter("SQL", &["sql"]);
@@ -715,15 +753,15 @@ impl CompareView {
             }
             if let Some(c) = self.compared.clone() {
                 if ui
-                    .add_enabled(some, Button::outline("Open in console").size(ButtonSize::Sm))
-                    .tooltip("A console on the target, to read and run the script yourself")
+                    .add_enabled(some, Button::outline(tr("Open in console")).size(ButtonSize::Sm))
+                    .tooltip(tr("A console on the target, to read and run the script yourself"))
                     .clicked()
                 {
                     cx.actions.push(Action::OpenConsoleWith(c.conn, Some(c.database.clone()), text.clone()));
                 }
                 if ui
-                    .add_enabled(some, Button::destructive("Apply to target").size(ButtonSize::Sm))
-                    .tooltip("Runs the script on the target in the background")
+                    .add_enabled(some, Button::destructive(tr("Apply to target")).size(ButtonSize::Sm))
+                    .tooltip(tr("Runs the script on the target in the background"))
                     .clicked()
                 {
                     self.confirm = true;
@@ -741,19 +779,30 @@ impl CompareView {
         let kind = c.cfg.kind;
         let transaction = if self.mode == 0 { compare::transactional_ddl(kind) } else { kind != DbKind::ClickHouse };
         let where_ = if c.schema == c.database { c.database.clone() } else { format!("{}.{}", c.database, c.schema) };
-        let how = if transaction {
-            "in one transaction; an error rolls everything back"
+        let args: [(&str, &dyn std::fmt::Display); 3] =
+            [("n", &plan.statements.len()), ("conn", &c.cfg.display_name()), ("where", &where_)];
+        let description = if transaction {
+            trf(
+                "{n} statements will run on {conn} ({where}) in one transaction; an error rolls everything back.",
+                &args,
+            )
         } else {
-            "one by one; an error stops the run, and what ran before it stays"
+            trf(
+                "{n} statements will run on {conn} ({where}) one by one; an error stops the run, and what ran before it stays.",
+                &args,
+            )
         };
-        let description =
-            format!("{} statements will run on {} ({where_}), {how}.", plan.statements.len(), c.cfg.display_name());
-        match alert_dialog(ui.ctx(), "compare-apply", "Apply the sync script?", &description, "Apply") {
+        match alert_dialog(ui.ctx(), "compare-apply", tr("Apply the sync script?"), &description, tr("Apply")) {
             Some(true) => {
                 self.confirm = false;
-                let what = if self.mode == 0 { "structure" } else { "data" };
+                let args: [(&str, &dyn std::fmt::Display); 2] = [("where", &where_), ("conn", &c.cfg.display_name())];
+                let title = if self.mode == 0 {
+                    trf("Sync structure of {where} on {conn}", &args)
+                } else {
+                    trf("Sync data of {where} on {conn}", &args)
+                };
                 cx.actions.push(Action::StartJob(Box::new(Start {
-                    title: format!("Sync {what} of {where_} on {}", c.cfg.display_name()),
+                    title,
                     spec: JobSpec::Script {
                         cfg: Box::new(c.cfg.clone()),
                         database: Some(c.database.clone()),
@@ -782,7 +831,7 @@ fn data_rows(source: &Snapshot, target: &Snapshot) -> Vec<DataRow> {
         .map(|(o, sd)| {
             let name = o.object.path.name.clone();
             let (state, spec, references) = match details(target, &name) {
-                None => (DataState::Skipped("not in the target".into()), None, Vec::new()),
+                None => (DataState::Skipped(tr("not in the target").into()), None, Vec::new()),
                 Some(td) => {
                     let path = ObjectPath::new(&target.database, &target.schema, &name);
                     let refs = td.foreign_keys.iter().map(|f| f.ref_table.clone()).collect();
@@ -807,7 +856,7 @@ fn status_badge(ui: &mut Ui, t: &Theme, status: Status) {
     // A fixed width keeps the names in one column.
     ui.allocate_ui_with_layout(egui::vec2(92.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_min_width(92.0);
-        ui.label(RichText::new(status.label()).size(11.0).color(color));
+        ui.label(RichText::new(tr(status.label())).size(11.0).color(color));
     });
 }
 

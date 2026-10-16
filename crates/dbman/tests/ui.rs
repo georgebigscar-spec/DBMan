@@ -64,7 +64,13 @@ fn browse_sqlite_database() {
     cfg.database = sample_db(dir.path());
     let db_path = cfg.database.clone();
     let conn_id = cfg.id;
-    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, tools_dir: String::new() };
+    let settings = Settings {
+        connections: vec![cfg],
+        dark: true,
+        page_size: 500,
+        tools_dir: String::new(),
+        language: String::new(),
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let ctx = egui::Context::default();
@@ -377,6 +383,15 @@ fn browse_sqlite_database() {
     assert_eq!(job.state, JobState::Done, "{:?}", job.log);
     let orders: i64 = source.query_row("SELECT count(*) FROM orders", [], |r| r.get(0)).unwrap();
     assert_eq!(count("orders"), orders, "replaced, not added");
+
+    // The same window in Russian.
+    h.state_mut().set_language(dbman::i18n::Lang::Ru);
+    h.state_mut().active_copy().unwrap().select("orders");
+    settle(&mut h);
+    assert!(h.query_by_label("Копировать 1 таблицу").is_some());
+    snapshot(&mut h, "russian");
+    h.state_mut().set_language(dbman::i18n::Lang::En);
+    settle(&mut h);
 
     h.state_mut().handle(Action::NewConnection, &ctx);
     settle(&mut h);

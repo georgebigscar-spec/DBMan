@@ -17,6 +17,7 @@ use tokio::sync::OnceCell;
 use crate::events::{Event, TabEvent, TabId};
 use crate::explorer::{Action, Load};
 use crate::files;
+use crate::i18n::{tr, trf};
 use crate::tabs::{TabCtx, error_alert, toolbar_button};
 
 pub struct ErView {
@@ -65,9 +66,9 @@ impl ErView {
 
     pub fn title(&self) -> String {
         if self.schema == self.database || self.schema.is_empty() {
-            format!("{} (diagram)", self.database)
+            trf("{name} (diagram)", &[("name", &self.database)])
         } else {
-            format!("{}.{} (diagram)", self.database, self.schema)
+            trf("{name} (diagram)", &[("name", &format!("{}.{}", self.database, self.schema))])
         }
     }
 
@@ -195,10 +196,10 @@ impl ErView {
         }
         let mut find = false;
         ui.horizontal(|ui| {
-            if toolbar_button(ui, "⟳ Refresh").clicked() {
+            if toolbar_button(ui, tr("⟳ Refresh")).clicked() {
                 self.load(&cx, tab);
             }
-            if toolbar_button(ui, "Fit").tooltip("Show the whole diagram").clicked() {
+            if toolbar_button(ui, tr("Fit")).tooltip(tr("Show the whole diagram")).clicked() {
                 self.fit = true;
             }
             if toolbar_button(ui, "−").clicked() {
@@ -210,26 +211,30 @@ impl ErView {
             }
             ui.add_space(8.0);
             let before = self.keys_only;
-            ui.add(Checkbox::new(&mut self.keys_only).label("Keys only"));
+            ui.add(Checkbox::new(&mut self.keys_only).label(tr("Keys only")));
             if before != self.keys_only {
                 self.rebuild();
             }
             ui.add_space(8.0);
-            let r = ui.add(Input::new(&mut self.search).placeholder("Find table").width(180.0));
+            let r = ui.add(Input::new(&mut self.search).placeholder(tr("Find table")).width(180.0));
             find = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || r.changed();
             ui.add_space(8.0);
             self.export_menu(ui);
             let t = Theme::get(ui.ctx());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let text = match &self.tables {
-                    Load::Ready(_) => format!(
-                        "{} tables · {} relationships",
-                        self.diagram.entities.iter().filter(|e| !e.external).count(),
-                        self.diagram.links.len()
+                    Load::Ready(_) => trf(
+                        "{tables} tables · {links} relationships",
+                        &[
+                            ("tables", &self.diagram.entities.iter().filter(|e| !e.external).count()),
+                            ("links", &self.diagram.links.len()),
+                        ],
                     ),
                     _ => match self.progress {
-                        Some((done, total)) => format!("Reading tables {done}/{total}…"),
-                        None => "Reading tables…".into(),
+                        Some((done, total)) => {
+                            trf("Reading tables {done}/{total}…", &[("done", &done), ("total", &total)])
+                        }
+                        None => tr("Reading tables…").into(),
                     },
                 };
                 ui.label(egui::RichText::new(text).color(t.muted_foreground));
@@ -238,7 +243,7 @@ impl ErView {
         ui.add_space(6.0);
         match &self.tables {
             Load::Ready(_) => {}
-            Load::Failed(e) => return error_alert(ui, "Could not read the schema", e),
+            Load::Failed(e) => return error_alert(ui, tr("Could not read the schema"), e),
             _ => {
                 ui.add(egui::Spinner::new());
                 return;
@@ -246,7 +251,7 @@ impl ErView {
         }
         if self.diagram.entities.is_empty() {
             let t = Theme::get(ui.ctx());
-            ui.label(egui::RichText::new("No tables in this schema.").color(t.muted_foreground));
+            ui.label(egui::RichText::new(tr("No tables in this schema.")).color(t.muted_foreground));
             return;
         }
         if !self.laid_out {
@@ -256,7 +261,7 @@ impl ErView {
     }
 
     fn export_menu(&self, ui: &mut Ui) {
-        let trigger = ui.add_enabled(self.tables.ready().is_some(), Button::outline("Export").size(ButtonSize::Sm));
+        let trigger = ui.add_enabled(self.tables.ready().is_some(), Button::outline(tr("Export")).size(ButtonSize::Sm));
         let d = self.diagram.clone();
         let base = if self.schema == self.database || self.schema.is_empty() {
             self.database.clone()
@@ -264,29 +269,28 @@ impl ErView {
             format!("{}_{}", self.database, self.schema)
         };
         dropdown_menu(&trigger, 220.0, |ui| {
-            menu_label(ui, "Copy to clipboard");
+            menu_label(ui, tr("Copy to clipboard"));
             if menu_item(ui, "Mermaid", None).clicked() {
                 ui.ctx().copy_text(er::mermaid(&d));
-                toast(ui.ctx(), "Copied the diagram as Mermaid", None);
+                toast(ui.ctx(), tr("Copied the diagram as Mermaid"), None);
             }
             if menu_item(ui, "Graphviz DOT", None).clicked() {
                 ui.ctx().copy_text(er::dot(&d));
-                toast(ui.ctx(), "Copied the diagram as DOT", None);
+                toast(ui.ctx(), tr("Copied the diagram as DOT"), None);
             }
             menu_separator(ui);
-            menu_label(ui, "Save to file");
-            let save = |ui: &mut Ui, label: &str, ext: &'static str, render: fn(&Diagram) -> String| {
+            menu_label(ui, tr("Save to file"));
+            let save = |ui: &mut Ui, label: &str, filter: &str, ext: &'static str, render: fn(&Diagram) -> String| {
                 if menu_item(ui, label, None).clicked() {
-                    let dialog = rfd::AsyncFileDialog::new()
-                        .set_file_name(format!("{base}.{ext}"))
-                        .add_filter(label.trim_end_matches('…'), &[ext]);
+                    let dialog =
+                        rfd::AsyncFileDialog::new().set_file_name(format!("{base}.{ext}")).add_filter(filter, &[ext]);
                     let d = d.clone();
                     files::save_file(ui.ctx(), dialog, move || render(&d));
                 }
             };
-            save(ui, "SVG image…", "svg", er::svg);
-            save(ui, "Mermaid…", "mmd", er::mermaid);
-            save(ui, "Graphviz DOT…", "dot", er::dot);
+            save(ui, tr("SVG image…"), "SVG image", "svg", er::svg);
+            save(ui, "Mermaid…", "Mermaid", "mmd", er::mermaid);
+            save(ui, "Graphviz DOT…", "Graphviz DOT", "dot", er::dot);
         });
     }
 
@@ -515,7 +519,7 @@ impl ErView {
                 ));
             }
             if !e.external {
-                lines.push("Double-click to open the data".into());
+                lines.push(tr("Double-click to open the data").into());
             }
             response.on_hover_text_at_pointer(lines.join("\n"));
         }
