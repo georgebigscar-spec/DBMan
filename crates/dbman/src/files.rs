@@ -7,6 +7,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::Context;
 use shadcn_egui::{toast, toast_error};
 
+use crate::i18n::tr;
+
 /// The answer of a file dialog that is still open.
 pub struct PendingPath(Receiver<Option<PathBuf>>);
 
@@ -60,8 +62,8 @@ pub fn save_file(ctx: &Context, dialog: rfd::AsyncFileDialog, render: impl FnOnc
         let Some(handle) = pollster::block_on(dialog.save_file()) else { return };
         let path = handle.path().to_path_buf();
         match std::fs::write(&path, render()) {
-            Ok(()) => toast(&ctx, "Saved", Some(&path.to_string_lossy())),
-            Err(e) => toast_error(&ctx, "Could not save the file", Some(&e.to_string())),
+            Ok(()) => toast(&ctx, tr("Saved"), Some(&path.to_string_lossy())),
+            Err(e) => toast_error(&ctx, tr("Could not save the file"), Some(&e.to_string())),
         }
         ctx.request_repaint();
     });

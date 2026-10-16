@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use dbman_core::ConnectionConfig;
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::tr;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -17,6 +19,9 @@ pub struct Settings {
     /// Where pg_dump, mysqldump and friends live, when not on `PATH`.
     #[serde(default)]
     pub tools_dir: String,
+    /// Interface language code ("en", "ru").
+    #[serde(default)]
+    pub language: String,
 }
 
 fn yes() -> bool {
@@ -29,7 +34,13 @@ fn page_size() -> usize {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { connections: Vec::new(), dark: true, page_size: page_size(), tools_dir: String::new() }
+        Self {
+            connections: Vec::new(),
+            dark: true,
+            page_size: page_size(),
+            tools_dir: String::new(),
+            language: String::new(),
+        }
     }
 }
 
@@ -49,7 +60,7 @@ impl Settings {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::path().ok_or("no config directory")?;
+        let path = Self::path().ok_or(tr("no config directory"))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

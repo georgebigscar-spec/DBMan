@@ -7,6 +7,7 @@ use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Theme, footer, label};
 use uuid::Uuid;
 
 use crate::explorer::Action;
+use crate::i18n::{tr, trf};
 use crate::sql_editor;
 
 pub enum PromptKind {
@@ -50,22 +51,26 @@ impl Prompt {
 
     fn title(&self) -> String {
         match &self.kind {
-            PromptKind::CreateDatabase => "New database".into(),
-            PromptKind::CreateSchema { .. } => "New schema".into(),
-            PromptKind::DropDatabase { db } => format!("Drop database {db}?"),
-            PromptKind::DropSchema { schema, .. } => format!("Drop schema {schema}?"),
-            PromptKind::DropObject(o) => format!("Drop {} {}?", o.kind.label(), o.path.name),
-            PromptKind::Rename(o) => format!("Rename {} {}", o.kind.label(), o.path.name),
-            PromptKind::Truncate(o) => format!("Delete all rows of {}?", o.path.name),
+            PromptKind::CreateDatabase => tr("New database").into(),
+            PromptKind::CreateSchema { .. } => tr("New schema").into(),
+            PromptKind::DropDatabase { db } => trf("Drop database {db}?", &[("db", db)]),
+            PromptKind::DropSchema { schema, .. } => trf("Drop schema {schema}?", &[("schema", schema)]),
+            PromptKind::DropObject(o) => {
+                trf("Drop {kind} {name}?", &[("kind", &tr(o.kind.label())), ("name", &o.path.name)])
+            }
+            PromptKind::Rename(o) => {
+                trf("Rename {kind} {name}", &[("kind", &tr(o.kind.label())), ("name", &o.path.name)])
+            }
+            PromptKind::Truncate(o) => trf("Delete all rows of {name}?", &[("name", &o.path.name)]),
         }
     }
 
     fn description(&self) -> &'static str {
         match &self.kind {
-            PromptKind::CreateDatabase | PromptKind::CreateSchema { .. } => "Enter a name.",
-            PromptKind::Rename(_) => "Enter the new name.",
-            PromptKind::Truncate(_) => "Every row is deleted. This cannot be undone.",
-            _ => "This cannot be undone.",
+            PromptKind::CreateDatabase | PromptKind::CreateSchema { .. } => tr("Enter a name."),
+            PromptKind::Rename(_) => tr("Enter the new name."),
+            PromptKind::Truncate(_) => tr("Every row is deleted. This cannot be undone."),
+            _ => tr("This cannot be undone."),
         }
     }
 
@@ -90,7 +95,7 @@ impl Prompt {
         let k = self.db_kind;
         let name = self.name.trim();
         if self.needs_name() && name.is_empty() {
-            return Err("Enter a name.".into());
+            return Err(tr("Enter a name.").into());
         }
         Ok(vec![match &self.kind {
             PromptKind::CreateDatabase => ddl::create_database(k, name),
@@ -104,9 +109,9 @@ impl Prompt {
             }
             PromptKind::DropSchema { schema, .. } => ddl::drop_schema(k, schema, self.cascade),
             PromptKind::DropObject(o) => ddl::drop_object(k, o, self.cascade),
-            PromptKind::Rename(o) => {
-                ddl::rename(k, o, name).ok_or_else(|| format!("{} cannot rename a {}.", k.label(), o.kind.label()))?
-            }
+            PromptKind::Rename(o) => ddl::rename(k, o, name).ok_or_else(|| {
+                trf("{engine} cannot rename a {kind}.", &[("engine", &k.label()), ("kind", &tr(o.kind.label()))])
+            })?,
             PromptKind::Truncate(o) => ddl::truncate(k, &o.path),
         }])
     }
@@ -126,13 +131,15 @@ impl Prompt {
 
     pub fn done_message(&self) -> String {
         match &self.kind {
-            PromptKind::CreateDatabase => format!("Database {} created", self.name.trim()),
-            PromptKind::CreateSchema { .. } => format!("Schema {} created", self.name.trim()),
-            PromptKind::DropDatabase { db } => format!("Database {db} dropped"),
-            PromptKind::DropSchema { schema, .. } => format!("Schema {schema} dropped"),
-            PromptKind::DropObject(o) => format!("{} dropped", o.path.name),
-            PromptKind::Rename(o) => format!("{} renamed to {}", o.path.name, self.name.trim()),
-            PromptKind::Truncate(o) => format!("{} emptied", o.path.name),
+            PromptKind::CreateDatabase => trf("Database {name} created", &[("name", &self.name.trim())]),
+            PromptKind::CreateSchema { .. } => trf("Schema {name} created", &[("name", &self.name.trim())]),
+            PromptKind::DropDatabase { db } => trf("Database {db} dropped", &[("db", db)]),
+            PromptKind::DropSchema { schema, .. } => trf("Schema {schema} dropped", &[("schema", schema)]),
+            PromptKind::DropObject(o) => trf("{name} dropped", &[("name", &o.path.name)]),
+            PromptKind::Rename(o) => {
+                trf("{name} renamed to {new_name}", &[("name", &o.path.name), ("new_name", &self.name.trim())])
+            }
+            PromptKind::Truncate(o) => trf("{name} emptied", &[("name", &o.path.name)]),
         }
     }
 
@@ -142,7 +149,7 @@ impl Prompt {
         let r = Dialog::new("sql-prompt", title).description(self.description()).width(520.0).show(ctx, |ui| {
             let t = Theme::get(ui.ctx());
             if self.needs_name() {
-                label(ui, "Name");
+                label(ui, tr("Name"));
                 let r = ui.add(Input::new(&mut self.name).width(ui.available_width()));
                 if !r.has_focus() && self.name.is_empty() {
                     r.request_focus();
@@ -157,10 +164,10 @@ impl Prompt {
                     _ => false,
                 };
             if cascade_applies {
-                ui.add(Checkbox::new(&mut self.cascade).label("Cascade (also drop objects that depend on it)"));
+                ui.add(Checkbox::new(&mut self.cascade).label(tr("Cascade (also drop objects that depend on it)")));
             }
             if pg && matches!(self.kind, PromptKind::DropDatabase { .. }) {
-                ui.add(Checkbox::new(&mut self.force).label("Force (disconnect other sessions first)"));
+                ui.add(Checkbox::new(&mut self.force).label(tr("Force (disconnect other sessions first)")));
             }
             let statements = self.statements();
             ui.add_space(8.0);
@@ -172,15 +179,15 @@ impl Prompt {
             }
             if let Some(e) = &self.error {
                 ui.add_space(8.0);
-                Alert::new("Failed").icon("!").description(e.as_str()).destructive().show(ui);
+                Alert::new(tr("Failed")).icon("!").description(e.as_str()).destructive().show(ui);
             }
             ui.add_space(12.0);
             footer(ui, |ui| {
                 let verb = match &self.kind {
-                    PromptKind::Rename(_) => "Rename",
-                    PromptKind::Truncate(_) => "Delete rows",
-                    _ if self.destructive() => "Drop",
-                    _ => "Create",
+                    PromptKind::Rename(_) => tr("Rename"),
+                    PromptKind::Truncate(_) => tr("Delete rows"),
+                    _ if self.destructive() => tr("Drop"),
+                    _ => tr("Create"),
                 };
                 let button = if self.destructive() { Button::destructive(verb) } else { Button::new(verb) };
                 let enter = self.needs_name() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -190,7 +197,7 @@ impl Prompt {
                 {
                     outcome = Some(PromptOutcome::Run { db: self.database(), statements: s });
                 }
-                if ui.add(Button::outline("Cancel")).clicked() {
+                if ui.add(Button::outline(tr("Cancel"))).clicked() {
                     outcome = Some(PromptOutcome::Close);
                 }
                 if self.running {

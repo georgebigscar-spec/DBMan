@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::events::{Event, TabEvent, TabId, Tasks};
 use crate::explorer::{ConnState, Load};
+use crate::i18n::tr;
 
 pub type Session = Arc<OnceCell<Arc<dyn Connection>>>;
 
@@ -223,7 +224,7 @@ impl TargetPicker {
                 let refs: Vec<&str> = dbs.iter().map(String::as_str).collect();
                 let before = self.db;
                 ui.push_id("target-db", |ui| {
-                    ui.add(Select::new(&mut self.db, &refs).placeholder("Database").width(160.0))
+                    ui.add(Select::new(&mut self.db, &refs).placeholder(tr("Database")).width(160.0))
                 });
                 if before != self.db {
                     self.generation += 1;
@@ -234,7 +235,7 @@ impl TargetPicker {
                 }
             }
             Load::Failed(e) => {
-                ui.label(RichText::new("Could not connect").color(t.destructive)).on_hover_text(e.as_str());
+                ui.label(RichText::new(tr("Could not connect")).color(t.destructive)).on_hover_text(e.as_str());
             }
             _ => {
                 ui.add(egui::Spinner::new());
@@ -246,14 +247,14 @@ impl TargetPicker {
                     let refs: Vec<&str> = ss.iter().map(String::as_str).collect();
                     let before = self.schema;
                     ui.push_id("target-schema", |ui| {
-                        ui.add(Select::new(&mut self.schema, &refs).placeholder("Schema").width(140.0))
+                        ui.add(Select::new(&mut self.schema, &refs).placeholder(tr("Schema")).width(140.0))
                     });
                     if before != self.schema {
                         self.generation += 1;
                     }
                 }
                 Load::Failed(e) => {
-                    ui.label(RichText::new("No schemas").color(t.destructive)).on_hover_text(e.as_str());
+                    ui.label(RichText::new(tr("No schemas")).color(t.destructive)).on_hover_text(e.as_str());
                 }
                 _ => {}
             }

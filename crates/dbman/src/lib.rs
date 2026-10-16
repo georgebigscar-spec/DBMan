@@ -13,6 +13,7 @@ pub mod exec;
 pub mod explorer;
 pub mod files;
 pub mod grid;
+pub mod i18n;
 pub mod icons;
 pub mod jobs;
 pub mod prompt;

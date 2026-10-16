@@ -1,97 +1,233 @@
 # DBMan
 
-Десктопный клиент для разных баз данных в духе DataGrip, на Rust + [egui](https://github.com/emilk/egui) с виджетами [shadcn_egui](https://github.com/georgebigscar-spec/shadcn_egui).
+**English** · [Русский](README.ru.md)
 
-Поддерживаются **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** и **DuckDB**; новые СУБД подключаются через общий трейт драйвера.
+A desktop client for many databases in the spirit of DataGrip, written in Rust with [egui](https://github.com/emilk/egui) and the [shadcn_egui](https://github.com/georgebigscar-spec/shadcn_egui) widgets.
 
-![SQL-консоль](crates/dbman/tests/snapshots/console.png)
+It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** and **DuckDB**. New engines plug in through a common driver trait.
 
-| Редактирование данных | Структура объекта |
+![SQL console](crates/dbman/tests/snapshots/console.png)
+
+| Editing data | Object structure |
 |---|---|
 | ![editing](crates/dbman/tests/snapshots/data_editing.png) | ![structure](crates/dbman/tests/snapshots/object_structure.png) |
 
-| Резервная копия | Фоновые задачи |
+| Backup | Background tasks |
 |---|---|
 | ![backup](crates/dbman/tests/snapshots/backup_dialog.png) | ![tasks](crates/dbman/tests/snapshots/background_tasks.png) |
 
-| Импорт данных | Экспорт данных |
+| Data import | Data export |
 |---|---|
 | ![import](crates/dbman/tests/snapshots/import_dialog.png) | ![export](crates/dbman/tests/snapshots/export_dialog.png) |
 
-![ER-диаграмма](crates/dbman/tests/snapshots/er_diagram.png)
+![ER diagram](crates/dbman/tests/snapshots/er_diagram.png)
 
-| Сравнение схем | Сравнение данных |
+| Schema comparison | Data comparison |
 |---|---|
 | ![compare structure](crates/dbman/tests/snapshots/compare_structure.png) | ![compare data](crates/dbman/tests/snapshots/compare_data.png) |
 
-## Что уже умеет
+| Copying tables to another connection | Russian interface |
+|---|---|
+| ![copy](crates/dbman/tests/snapshots/copy_tables.png) | ![russian](crates/dbman/tests/snapshots/russian.png) |
 
-- **Подключения**: создание, редактирование, копирование, удаление, проверка соединения; SSL-режимы `disable / prefer / require / verify-full`; для SQLite и DuckDB выбор файла (у DuckDB можно `:memory:`). Настройки хранятся в `settings.json` в каталоге конфигурации пользователя (пароль сохраняется, только если отмечено «Save password»).
-- **Database Explorer**: дерево подключение → база → схема (у PostgreSQL) → группы объектов → объекты → колонки, индексы, внешние ключи. Всё грузится лениво при раскрытии.
-  - PostgreSQL: таблицы, представления, материализованные представления, внешние таблицы, последовательности, функции и процедуры (с перегрузками), триггеры, типы (enum, domain, composite).
-  - MySQL / MariaDB: таблицы, представления, последовательности (MariaDB), функции, процедуры, триггеры.
-  - SQL Server: базы → схемы → таблицы, представления, процедуры, функции, триггеры, последовательности, пользовательские типы; комментарии из `MS_Description`.
-  - ClickHouse (через HTTP-интерфейс, порт 8123, или 8443 с SSL `require` / `verify-full`): базы → таблицы с движком в подписи, представления, материализованные представления, словари; первичный ключ и data-skipping индексы в структуре. Массивы, map и tuple показываются как JSON, большие целые не теряют точность. Таблицы ClickHouse открываются только для чтения: данные меняются в консоли.
-  - SQLite: таблицы, представления, триггеры.
-  - DuckDB: подключённые базы (`ATTACH`) → схемы → таблицы, представления, последовательности, макросы, типы; списки, структуры и map показываются так, как их печатает DuckDB.
-- **SQL-консоль** с подсветкой синтаксиса. У каждой консоли своя сессия (свои транзакции), как в DataGrip. `Ctrl+Enter` выполняет выражение под курсором или выделение, `Ctrl+Shift+Enter` весь скрипт; у каждого выражения свой результат.
-- **Просмотр данных** таблиц и представлений: страницы, фильтр `WHERE`, `ORDER BY`, быстрый фильтр и сортировка в таблице, `NULL` выделен.
-- **Редактирование данных** в таблицах: двойной клик по ячейке, `Set NULL` из контекстного меню, `+ Row` и `− Delete` для строк. Изменения подсвечены, пока их не отправили; `Preview SQL` показывает итоговые `INSERT / UPDATE / DELETE`, `Submit` выполняет их в одной транзакции в отдельной сессии. Строки находятся по первичному ключу (без него по всем колонкам), и если `UPDATE` или `DELETE` задел не ровно одну строку, всё откатывается.
-- **Экспорт** показанных строк в CSV, TSV, JSON, JSON Lines, SQL `INSERT` или Markdown: в буфер обмена или в файл.
-- **Экспорт данных целиком** (`Export data…` в меню таблицы или представления, `All rows to a file…` в меню экспорта консоли и просмотра данных) в те же форматы. Идёт фоновой задачей в отдельной сессии: таблица читается страницами по первичному ключу и пишется в файл по мере чтения, так что размер таблицы не упирается в память; в просмотре данных учитываются `WHERE` и `ORDER BY`. Прогресс считается по `COUNT(*)`, `Cancel` останавливает запрос на сервере, а недописанный файл удаляется.
-- **Импорт данных** (`Import data…` в меню таблицы) из CSV / TSV (любой разделитель, строка заголовков, поля в кавычках с переводами строк, BOM) и JSON (массив объектов или JSON Lines). Диалог показывает первые строки файла и сопоставляет колонки по именам (без учёта регистра и `_`) или по порядку; любую колонку можно пропустить. Файл читается в отдельном потоке, строки вставляются пачками многострочных `INSERT` (до 1000 строк для SQL Server). Опции: пустые поля как `NULL`, удалить строки перед загрузкой, всё в одной транзакции с откатом при ошибке (в сообщении номер строк, на которых она случилась). Шестнадцатеричные `0x…` в двоичных колонках становятся байтами, так что экспорт и импорт двоичных данных сходятся. Для SQL Server включается `IDENTITY_INSERT`, если загружаются значения identity-колонки, а в PostgreSQL после загрузки последовательности сдвигаются за максимальное значение.
-- **ER-диаграмма** схемы (`ER diagram` в меню схемы, а у СУБД без схем в меню базы): таблицы с колонками, первичные (оранжевая точка) и внешние (синяя) ключи, связи от колонки внешнего ключа к колонке, на которую он ссылается. «Воронья лапка» у дочерней таблицы, если на одну строку родителя приходится много строк, пунктир у необязательной связи (ключ допускает `NULL`). Таблицы из других схем, на которые есть ссылки, рисуются пунктирной рамкой. Раскладка автоматическая: родительские таблицы левее дочерних, порядок подобран так, чтобы линии меньше пересекались, несвязанные таблицы сеткой ниже. Таблицы перетаскиваются мышью, холст двигается перетаскиванием фона и колесом, масштаб меняется с `Ctrl` + колесо; `Fit` показывает всё, `Keys only` оставляет только ключевые колонки, поиск находит таблицу и подсвечивает её связи, двойной клик открывает данные. Экспорт в SVG, Mermaid (`erDiagram`) и Graphviz DOT, в файл или в буфер обмена. Структура читается в отдельной сессии, с прогрессом.
-- **Сравнение схем и данных** (`Compare with…` в меню схемы, а у СУБД без схем в меню базы): источник сравнивается со схемой на любом подключении, той же СУБД или другом сервере.
-  - Вкладка `Structure`: таблицы по колонкам (тип, `NULL`, значение по умолчанию, автоинкремент, комментарий), первичному ключу, индексам и внешним ключам; представления, процедуры, функции, триггеры, последовательности и типы по определению. Для каждого объекта видно, что изменилось, его определение в источнике и в цели и выражения для синхронизации. Скрипт создаёт новые объекты (таблицы в порядке внешних ключей), меняет изменённые через `ALTER TABLE` (в SQLite таблица пересоздаётся с копированием строк) и по желанию удаляет лишние; удаление по умолчанию не отмечено. Имена схемы в определениях заменяются на целевые.
-  - Вкладка `Data`: строки каждой таблицы сопоставляются по первичному ключу, на любых двух СУБД. Цель читается постранично и хранится в памяти как хеши колонок, источник проходит мимо неё потоком. Скрипт из `DELETE` (пачками по ключу), `UPDATE` только изменённых колонок и многострочных `INSERT` (с `IDENTITY_INSERT` в SQL Server и сдвигом последовательностей в PostgreSQL); удаления идут от дочерних таблиц к родительским, вставки наоборот. В ClickHouse это мутации `ALTER TABLE … UPDATE / DELETE`, которые ждут завершения.
-  - Скрипт можно посмотреть, скопировать, сохранить в `.sql`, открыть в консоли цели или применить фоновой задачей: в одной транзакции там, где DDL транзакционный (PostgreSQL, SQL Server, DuckDB, а для данных все, кроме ClickHouse), с откатом при ошибке. Сравнение идёт в отдельных сессиях с прогрессом и кнопкой `Stop`.
-- **Копирование таблиц между подключениями** (`Copy to another connection…` в меню схемы или базы, `Copy to…` в меню таблицы): отмеченные таблицы со строками переносятся в схему на любом подключении, в том числе между разными СУБД (все 36 пар из шести). Недостающие таблицы создаются в порядке внешних ключей, типы переводятся на язык цели (например, `tinyint(1)` MySQL становится `boolean` в PostgreSQL, `bytea` становится `varbinary(max)` в SQL Server, ключ в ClickHouse становится `ORDER BY`), а вкладка заранее показывает колонки с типами в источнике и в цели. Для таблиц, которые в цели уже есть, можно добавить строки, заменить их или пересоздать таблицу; перед заменой и пересозданием спрашивается подтверждение. Строки читаются страницами по первичному ключу и вставляются пачками, по транзакции на таблицу (кроме ClickHouse), с `IDENTITY_INSERT` в SQL Server и сдвигом последовательностей в PostgreSQL. Копирование идёт фоновой задачей с прогрессом и `Cancel`.
-- **Структура и DDL** любого объекта: колонки, индексы, внешние ключи и `CREATE`-выражение.
-- **Редактор таблиц** (`New → Table`, `Modify Table…`): колонки с типом, `NOT NULL`, значением по умолчанию, автоинкрементом и комментарием, первичный ключ, индексы и внешние ключи. Внизу живой SQL-предпросмотр; изменения выполняются в одной транзакции. Для PostgreSQL генерируется `ALTER TABLE` с `RENAME COLUMN`, `TYPE … USING`, identity; для MySQL `CHANGE COLUMN` с пересозданием затронутых внешних ключей; для SQL Server `ALTER COLUMN`, `sp_rename`, `IDENTITY`, пересоздание default-ограничений и комментарии через extended properties; для ClickHouse `MergeTree` с `ORDER BY` по первичному ключу, `MODIFY COLUMN`, `RENAME COLUMN`, data-skipping индексы и комментарии; для SQLite таблица пересобирается через временную копию, если `ALTER` не хватает; для DuckDB `ALTER` как в PostgreSQL, а чего DuckDB не умеет (автоинкремент, смена ключей у существующей таблицы, действия внешних ключей), редактор пишет в заметках к скрипту.
-- **Создание и удаление** баз и схем, удаление, переименование и очистка (`TRUNCATE`) объектов из контекстного меню, с показом точного SQL перед выполнением (`CASCADE` и `WITH (FORCE)` для PostgreSQL). Шаблоны `CREATE` для представлений, функций, процедур, триггеров, последовательностей открываются в новой консоли.
-- **Окно никогда не ждёт базу**: подключения, запросы, загрузка метаданных, диалоги файлов, экспорт и импорт идут в фоне. У консоли и просмотра данных есть таймер и кнопка `Stop`, которая отменяет запрос на сервере (`pg_cancel` в PostgreSQL, `KILL QUERY` в MySQL, в SQL Server сессия переоткрывается, и открытая транзакция откатывается, `KILL QUERY` по `query_id` в ClickHouse, `sqlite3_interrupt` в SQLite, `interrupt` в DuckDB). Просмотр данных работает в своей сессии, поэтому медленная страница не задерживает дерево объектов.
-- **Резервное копирование и восстановление** из контекстного меню базы, схемы или таблицы (`Back up…`, `Restore…`). Задача идёт в фоне: панель «Background tasks» показывает прогресс, размер файла, время, журнал инструмента и кнопку `Cancel`; окно остаётся рабочим.
-  - PostgreSQL: `pg_dump` в форматах custom, plain SQL, directory (параллельно) и tar; выбор схем и таблиц, пропуск данных отдельных таблиц, `--no-owner`, `--no-privileges`, для SQL `DROP`/`CREATE DATABASE`/`INSERT`. Восстановление через `pg_restore` (формат определяется по файлу; очистка, создание базы, одна транзакция, параллельность) или `psql` для SQL-скриптов.
-  - MySQL / MariaDB: `mysqldump` или `mariadb-dump` (под MariaDB берётся свой), `--single-transaction`, процедуры, триггеры, события, `DROP TABLE`, `CREATE DATABASE`, hex для двоичных данных. Восстановление клиентом `mysql` / `mariadb` с прогрессом по прочитанной части файла.
-  - SQLite: копия через online backup API (база остаётся доступной) или `VACUUM INTO`, проверка `quick_check`; восстановление копирует страницы обратно в открытую базу.
-  - SQL Server: `BACKUP DATABASE` / `BACKUP LOG` (полная, разностная, журнал; copy-only, сжатие, контрольные суммы, проверка `RESTORE VERIFYONLY`) и `RESTORE DATABASE` с заменой, отключением других сессий, `NORECOVERY` и переносом файлов в папки сервера по умолчанию, чтобы восстановить копию под новым именем. Файл лежит на сервере, процент выполнения берётся из `sys.dm_exec_requests`, `Cancel` завершает задачу через `KILL`.
-  - ClickHouse: `BACKUP` / `RESTORE` базы или таблицы на диск сервера (`Disk('backups', …)`), в файл (`File(…)`) или в S3, инкрементальные копии поверх предыдущей (`base_backup`), только структура, восстановление под другим именем или с добавлением строк в существующие таблицы. Задача идёт асинхронно (`ASYNC`), прогресс и ошибки берутся из `system.backups`, `Cancel` убивает её запрос. Ключ S3 в журнале и предпросмотре скрыт. Диск и путь должны быть разрешены в настройках сервера (пример в `ci/clickhouse-backups.xml`).
-  - DuckDB: `EXPORT DATABASE` в папку (Parquet со сжатием zstd или CSV) либо копия в новый файл `.duckdb` (`ATTACH` + `COPY FROM DATABASE`); восстановление `IMPORT DATABASE` из папки или копированием из файла. Внешние инструменты не нужны, а база во время копии остаётся открытой: файл DuckDB можно открыть в процессе только один раз, поэтому все сессии на один файл делят один экземпляр базы.
-  - Инструменты ищутся в `PATH` и в обычных местах установки (Homebrew, Postgres.app, Program Files, `/usr/lib/postgresql/*/bin`); папку можно указать в диалоге. Пароль передаётся через переменные окружения, в командной строке и журнале его нет.
-- Светлая и тёмная темы.
+## Features
 
-Горячие клавиши: `Ctrl+T` новая консоль, `Ctrl+W` закрыть вкладку, `F4` открыть выбранный объект, двойной клик по таблице открывает данные.
+- **Connections**: create, edit, duplicate, delete and test them.
+  - SSL modes `disable / prefer / require / verify-full`.
+  - SQLite and DuckDB take a file (DuckDB also takes `:memory:`).
+  - Settings live in `settings.json` in the user's config directory. A password is saved only when "Save password" is ticked.
+- **Database Explorer**: a tree of connection → database → schema (on PostgreSQL) → object groups → objects → columns, indexes and foreign keys. Everything loads lazily as you expand it.
+  - PostgreSQL: tables, views, materialized views, foreign tables, sequences, functions and procedures (with overloads), triggers, and types (enum, domain, composite).
+  - MySQL / MariaDB: tables, views, sequences (MariaDB), functions, procedures and triggers.
+  - SQL Server: databases → schemas → tables, views, procedures, functions, triggers, sequences and user-defined types. Comments come from `MS_Description`.
+  - ClickHouse, over the HTTP interface (port 8123, or 8443 with SSL `require` / `verify-full`):
+    - databases → tables (engine shown next to the name), views, materialized views and dictionaries;
+    - the primary key and data-skipping indexes appear in the structure;
+    - arrays, maps and tuples show as JSON, and big integers keep their precision;
+    - ClickHouse tables open read-only; change data in the console.
+  - SQLite: tables, views and triggers.
+  - DuckDB: attached databases (`ATTACH`) → schemas → tables, views, sequences, macros and types. Lists, structs and maps show the way DuckDB prints them.
+- **SQL console** with syntax highlighting.
+  - Every console has its own session, so its own transactions, as in DataGrip.
+  - `Ctrl+Enter` runs the statement under the cursor or the selection. `Ctrl+Shift+Enter` runs the whole script.
+  - Every statement gets its own result.
+- **Data view** of tables and views: pages, a `WHERE` filter, `ORDER BY`, quick filter and sort in the grid, and `NULL` stands out.
+- **Data editing** in tables.
+  - Double-click a cell to edit it. `Set NULL` is in the context menu, and `+ Row` and `− Delete` add and delete rows.
+  - Changes stay highlighted until submitted. `Preview SQL` shows the resulting `INSERT / UPDATE / DELETE`.
+  - `Submit` runs them in one transaction in a separate session.
+  - Rows are found by primary key, or by all columns when there is none. If an `UPDATE` or `DELETE` touches anything other than exactly one row, everything rolls back.
+- **Export** of the rows on screen to CSV, TSV, JSON, JSON Lines, SQL `INSERT` or Markdown, to the clipboard or a file.
+- **Whole-table export** (`Export data…` in a table or view menu, and `All rows to a file…` in the export menu of the console and the data view) to the same formats.
+  - It runs as a background job in its own session.
+  - The table is read page by page by primary key and written as it is read, so table size is not limited by memory.
+  - In the data view, `WHERE` and `ORDER BY` apply.
+  - Progress comes from `COUNT(*)`. `Cancel` stops the query on the server and deletes the unfinished file.
+- **Data import** (`Import data…` in a table menu) from CSV / TSV and JSON.
+  - CSV / TSV: any delimiter, header row, quoted fields with line breaks, and BOM.
+  - JSON: an array of objects, or JSON Lines.
+  - The dialog shows the first rows of the file and matches columns by name (ignoring case and `_`) or by position. Any column can be skipped.
+  - The file is read in its own thread, and rows go in as batches of multi-row `INSERT`s (up to 1000 rows on SQL Server).
+  - Options: empty fields as `NULL`, delete the rows first, and everything in one transaction that rolls back on error. The error message names the rows it happened on.
+  - Hex `0x…` in binary columns becomes bytes, so binary data survives an export and import round trip.
+  - SQL Server turns on `IDENTITY_INSERT` when identity values are loaded, and PostgreSQL moves sequences past the largest loaded value.
+- **ER diagram** of a schema (`ER diagram` in the schema menu, or the database menu on engines without schemas).
+  - Tables with their columns, primary keys (orange dot) and foreign keys (blue dot).
+  - Links run from the foreign key column to the column it references.
+  - A crow's foot marks the child side when one parent row has many child rows. A dashed line marks an optional link (the key allows `NULL`).
+  - Tables in other schemas that are referenced have a dashed border.
+  - The layout is automatic: parents to the left of children, ordered so that fewer lines cross, and unlinked tables in a grid below.
+  - Drag tables with the mouse. Pan by dragging the background or with the wheel, and zoom with `Ctrl` + wheel.
+  - `Fit` shows everything, and `Keys only` keeps only key columns. Search finds a table and highlights its links, and a double click opens its data.
+  - Export to SVG, Mermaid (`erDiagram`) or Graphviz DOT, to a file or the clipboard.
+  - The structure is read in a separate session, with progress.
+- **Schema and data comparison** (`Compare with…` in the schema menu, or the database menu on engines without schemas). The source is compared with a schema on any connection, on the same engine or another server.
+  - `Structure` tab: compares the objects themselves.
+    - Tables are compared by columns (type, `NULL`, default, auto-increment, comment), primary key, indexes and foreign keys. Views, procedures, functions, triggers, sequences and types are compared by definition.
+    - For each object you see what changed, its definition in the source and in the target, and the statements that sync it.
+    - The script creates new objects (tables in foreign key order) and changes the changed ones with `ALTER TABLE`. In SQLite the table is rebuilt with its rows copied.
+    - Dropping extra objects is optional and unticked by default.
+    - Schema names in definitions are replaced with the target's.
+  - `Data` tab: matches the rows of each table by primary key, between any two engines.
+    - The target is read page by page and kept in memory as column hashes; the source streams past it.
+    - The script is made of `DELETE`s (batched by key), `UPDATE`s of only the changed columns, and multi-row `INSERT`s. SQL Server gets `IDENTITY_INSERT` and PostgreSQL gets sequence moves.
+    - Deletes run from children to parents, inserts the other way round.
+    - In ClickHouse these become `ALTER TABLE … UPDATE / DELETE` mutations that wait for completion.
+  - The script can be viewed, copied, saved to `.sql`, opened in a console on the target, or applied as a background job. It runs in one transaction where DDL is transactional (PostgreSQL, SQL Server and DuckDB; for data, every engine except ClickHouse) and rolls back on error.
+  - Comparison runs in separate sessions, with progress and a `Stop` button.
+- **Copying tables between connections** (`Copy to another connection…` in a schema or database menu, `Copy to…` in a table menu). The ticked tables are copied with their rows into a schema on any connection, also between different engines: all 36 pairs of the six.
+  - Missing tables are created in foreign key order.
+  - Types are translated for the target. For example, MySQL `tinyint(1)` becomes PostgreSQL `boolean`, `bytea` becomes SQL Server `varbinary(max)`, and a key becomes `ORDER BY` in ClickHouse.
+  - The tab shows each column's type in the source and in the target before anything runs.
+  - For tables the target already has, you can add the rows, replace them, or recreate the table. Replacing and recreating ask for confirmation.
+  - Rows are read page by page by primary key and inserted in batches, one transaction per table (except on ClickHouse). SQL Server gets `IDENTITY_INSERT` and PostgreSQL gets sequence moves.
+  - The copy runs as a background job with progress and `Cancel`.
+- **Structure and DDL** of any object: columns, indexes, foreign keys and the `CREATE` statement.
+- **Table editor** (`New → Table`, `Modify Table…`).
+  - Edits columns (type, `NOT NULL`, default, auto-increment and comment), the primary key, indexes and foreign keys.
+  - A live SQL preview sits at the bottom, and the changes run in one transaction.
+  - What it generates on each engine:
+    - **PostgreSQL**: `ALTER TABLE` with `RENAME COLUMN`, `TYPE … USING` and identity.
+    - **MySQL**: `CHANGE COLUMN`, recreating the affected foreign keys.
+    - **SQL Server**: `ALTER COLUMN`, `sp_rename` and `IDENTITY`; default constraints are recreated, and comments go in extended properties.
+    - **ClickHouse**: `MergeTree` with `ORDER BY` on the primary key, `MODIFY COLUMN`, `RENAME COLUMN`, data-skipping indexes and comments.
+    - **SQLite**: the table is rebuilt through a temporary copy when `ALTER` is not enough.
+    - **DuckDB**: `ALTER` as in PostgreSQL. What DuckDB can't do (auto-increment, changing keys of an existing table, foreign key actions), the editor writes in the script notes.
+- **Creating and dropping** databases and schemas, and dropping, renaming and truncating (`TRUNCATE`) objects from the context menu.
+  - The exact SQL is shown before it runs (`CASCADE` and `WITH (FORCE)` on PostgreSQL).
+  - `CREATE` templates for views, functions, procedures, triggers and sequences open in a new console.
+- **The window never waits for the database**: connections, queries, metadata loading, file dialogs, export and import all run in the background.
+  - The console and the data view have a timer and a `Stop` button that cancels the query on the server:
+    - PostgreSQL: `pg_cancel`;
+    - MySQL: `KILL QUERY`;
+    - SQL Server: the session is reopened, and an open transaction rolls back;
+    - ClickHouse: `KILL QUERY` by `query_id`;
+    - SQLite: `sqlite3_interrupt`;
+    - DuckDB: `interrupt`.
+  - The data view works in its own session, so a slow page does not hold up the object tree.
+- **Backup and restore** from the context menu of a database, schema or table (`Back up…`, `Restore…`). The job runs in the background, and the window stays usable. The "Background tasks" panel shows progress, file size, time, the tool's log and a `Cancel` button.
+  - **PostgreSQL**:
+    - `pg_dump` in custom, plain SQL, directory (parallel) and tar formats;
+    - choice of schemas and tables, skipping the data of chosen tables, `--no-owner` and `--no-privileges`;
+    - for SQL, `DROP` / `CREATE DATABASE` and `INSERT`;
+    - restore through `pg_restore` (format detected from the file; clean, create database, single transaction, parallel), or through `psql` for SQL scripts.
+  - **MySQL / MariaDB**:
+    - `mysqldump`, or `mariadb-dump` on MariaDB;
+    - `--single-transaction`, routines, triggers, events, `DROP TABLE`, `CREATE DATABASE`, and hex for binary data;
+    - restore with the `mysql` / `mariadb` client, with progress by how much of the file has been read.
+  - **SQLite**:
+    - a copy through the online backup API (the database stays available) or `VACUUM INTO`, checked with `quick_check`;
+    - restore copies the pages back into the open database.
+  - **SQL Server**:
+    - `BACKUP DATABASE` / `BACKUP LOG`: full, differential or log, with copy-only, compression, checksums and a `RESTORE VERIFYONLY` check;
+    - `RESTORE DATABASE` with replace, closing other sessions and `NORECOVERY`;
+    - files can move to the server's default folders, to restore a copy under a new name;
+    - the file lives on the server, progress comes from `sys.dm_exec_requests`, and `Cancel` ends the job with `KILL`.
+  - **ClickHouse**:
+    - `BACKUP` / `RESTORE` of a database or table to a server disk (`Disk('backups', …)`), a file (`File(…)`) or S3;
+    - incremental copies on top of a previous one (`base_backup`), and structure only;
+    - restore under another name, or by adding rows to existing tables;
+    - the job runs asynchronously (`ASYNC`), progress and errors come from `system.backups`, and `Cancel` kills its query;
+    - the S3 key is hidden in the log and preview;
+    - the disk and path must be allowed in the server settings (example in `ci/clickhouse-backups.xml`).
+  - **DuckDB**:
+    - `EXPORT DATABASE` to a folder (Parquet with zstd, or CSV), or a copy to a new `.duckdb` file (`ATTACH` + `COPY FROM DATABASE`);
+    - restore with `IMPORT DATABASE` from a folder, or by copying from a file;
+    - no external tools are needed, and the database stays open during the copy. A DuckDB file can be opened only once per process, so all sessions on one file share one database instance.
+  - Tools are looked up on `PATH` and in the usual install locations (Homebrew, Postgres.app, Program Files, `/usr/lib/postgresql/*/bin`). The folder can also be set in the dialog.
+  - The password is passed through environment variables, so it never appears on the command line or in the log.
+- **English (default) and Russian interface**. The language switch is in the top right corner and is remembered.
+  - Translations live in `crates/dbman/locales/ru.json`, keyed by the English text.
+  - A test checks that every interface text has a translation.
+- Light and dark themes.
 
-## Запуск
+Shortcuts:
+
+| Key | Action |
+|---|---|
+| `Ctrl+T` | New console |
+| `Ctrl+W` | Close the tab |
+| `F4` | Open the selected object |
+| Double click on a table | Open its data |
+
+## Running
 
 ```sh
 cargo run --release
 ```
 
-Первая сборка дольше обычной: DuckDB компилируется из исходников C++ (около 10 минут на 4 ядрах), дальше он берётся из кэша.
+The first build takes longer than usual because DuckDB compiles from C++ source (about 10 minutes on 4 cores). After that it comes from the cache.
 
-На Linux для диалога выбора файла нужен xdg-desktop-portal (есть в обычных GNOME/KDE).
+On Linux the file dialog needs xdg-desktop-portal (present in regular GNOME and KDE).
 
-## Архитектура
+## Architecture
 
 ```
 crates/
-  dbman-core/     модели и трейт Connection, без GUI и драйверов
-  dbman-drivers/  реализации: postgres (tokio-postgres), mysql (mysql_async), sqlite (rusqlite), duckdb (duckdb-rs, собирается из исходников), mssql (tiberius), clickhouse (HTTP через reqwest)
-  dbman/          приложение на eframe + shadcn_egui
+  dbman-core/     models and the Connection trait, no GUI or drivers
+  dbman-drivers/  implementations: postgres (tokio-postgres), mysql (mysql_async), sqlite (rusqlite), duckdb (duckdb-rs, built from source), mssql (tiberius), clickhouse (HTTP through reqwest)
+  dbman/          the app on eframe + shadcn_egui
 ```
 
-- **`dbman-core`**: `ConnectionConfig` и `DbKind`; трейт `Connection` (список баз, схем, объектов, структура таблицы, DDL, выполнение SQL); модели результата (`QueryResult`, `Cell`) и схемы (`DbObject`, `TableDetails`); токенизатор SQL для подсветки и разбиения скрипта на выражения с учётом диалекта (`$$`-строки PostgreSQL, обратные кавычки и `#`-комментарии MySQL), экранирование идентификаторов и строк.
-- **`dbman-drivers`**: по модулю на СУБД и функция `connect(&ConnectionConfig)`; `backup.rs` запускает резервное копирование, `transfer.rs` экспорт и импорт данных (форматы файлов и сборка `INSERT` в `dbman-core::export` и `dbman-core::import`). Чтобы добавить СУБД, нужен вариант в `DbKind`, реализация `Connection` и строка в `connect`.
-- **`dbman`**: интерфейс никогда не ждёт базу. Запросы выполняются на tokio-рантайме, результаты приходят событиями через канал и забираются каждый кадр (`events.rs`). Дерево (`explorer.rs`), вкладки (`tabs.rs`), сетка результатов (`grid.rs`), редактор данных (`data_view.rs`), редактор таблиц (`table_editor.rs`, DDL строит `dbman-core::ddl`), диалоги подтверждения (`prompt.rs`), выполнение изменений в отдельной сессии (`exec.rs`), редактор SQL (`sql_editor.rs`), диалог подключения (`connection_dialog.rs`), ER-диаграмма (`er_view.rs`, модель, раскладка и экспорт в `dbman-core::er`), сравнение схем и данных (`compare_view.rs`, сравнение и скрипты в `dbman-core::compare`, чтение и запуск в `dbman-drivers::compare`), копирование между подключениями (`copy_view.rs`, перевод типов и значений в `dbman-core::copy`, сам перенос в `dbman-drivers::copy`), выбор цели для сравнения и копирования (`target_picker.rs`), диалоги резервного копирования (`backup_dialog.rs`) и переноса данных (`transfer_dialog.rs`), фоновые задачи (`jobs.rs`).
+- **`dbman-core`**:
+  - `ConnectionConfig` and `DbKind`;
+  - the `Connection` trait: list databases, schemas and objects, table structure, DDL, and running SQL;
+  - result models (`QueryResult`, `Cell`) and schema models (`DbObject`, `TableDetails`);
+  - a SQL tokenizer for highlighting and for splitting a script into statements by dialect (PostgreSQL `$$` strings, MySQL backticks and `#` comments);
+  - identifier and string quoting.
+- **`dbman-drivers`**:
+  - one module per engine, plus `connect(&ConnectionConfig)`;
+  - `backup.rs` runs backups, and `transfer.rs` does data export and import. File formats and `INSERT` building live in `dbman-core::export` and `dbman-core::import`.
+  - To add an engine, you need a `DbKind` variant, a `Connection` implementation and a line in `connect`.
+- **`dbman`**: the interface never waits for the database. Queries run on a tokio runtime, and results come back as events through a channel that is drained every frame (`events.rs`). The modules:
 
-## Тесты
+  | Area | Module | Logic elsewhere |
+  |---|---|---|
+  | Object tree | `explorer.rs` | |
+  | Tabs | `tabs.rs` | |
+  | Result grid | `grid.rs` | |
+  | Data editor | `data_view.rs` | |
+  | Table editor | `table_editor.rs` | DDL in `dbman-core::ddl` |
+  | Confirmation dialogs | `prompt.rs` | |
+  | Running changes in a separate session | `exec.rs` | |
+  | SQL editor | `sql_editor.rs` | |
+  | Connection dialog | `connection_dialog.rs` | |
+  | ER diagram | `er_view.rs` | model, layout and export in `dbman-core::er` |
+  | Schema and data comparison | `compare_view.rs` | comparison and scripts in `dbman-core::compare`, reading and running in `dbman-drivers::compare` |
+  | Copying between connections | `copy_view.rs` | type and value mapping in `dbman-core::copy`, the copy itself in `dbman-drivers::copy` |
+  | Target choice for comparison and copying | `target_picker.rs` | |
+  | Interface language | `i18n.rs` | |
+  | Backup dialogs | `backup_dialog.rs` | |
+  | Data transfer dialogs | `transfer_dialog.rs` | |
+  | Background jobs | `jobs.rs` | |
+
+## Tests
 
 ```sh
 cargo test --workspace
 ```
 
-Тесты драйверов для SQLite и DuckDB идут всегда; для PostgreSQL, MySQL, SQL Server и ClickHouse нужны адреса серверов:
+Driver tests for SQLite and DuckDB always run. PostgreSQL, MySQL, SQL Server and ClickHouse need server addresses:
 
 ```sh
 DBMAN_TEST_POSTGRES=postgres://postgres:secret@127.0.0.1:5432/postgres \
@@ -101,18 +237,19 @@ DBMAN_TEST_CLICKHOUSE=clickhouse://default:secret@127.0.0.1:8123/dbman_test \
 cargo test --workspace
 ```
 
-`crates/dbman/tests/ui.rs` прогоняет окно целиком на примерной базе SQLite. С `DBMAN_SCREENSHOTS=1 UPDATE_SNAPSHOTS=1` он перерисовывает скриншоты в `crates/dbman/tests/snapshots/` (нужен wgpu-адаптер; без GPU подойдёт `mesa-vulkan-drivers`).
+`crates/dbman/tests/ui.rs` drives the whole window on a sample SQLite database.
+- With `DBMAN_SCREENSHOTS=1 UPDATE_SNAPSHOTS=1` it redraws the screenshots in `crates/dbman/tests/snapshots/`.
+- That needs a wgpu adapter. Without a GPU, `mesa-vulkan-drivers` works.
 
-## Дальше
+## Next
 
-1. Новые СУБД с их особенностями и бэкапом:
-   - **ClickHouse**: партиции и мутации в дереве объектов, пользовательские функции, нативный протокол.
-   - **SQL Server**: экспорт `.bacpac` через `sqlpackage`, вход через Windows / Entra ID.
-2. Возможности в духе DBeaver: импорт из Excel и Parquet, генератор тестовых данных.
-3. Автодополнение в консоли, история запросов, план выполнения (`EXPLAIN`), SSH-туннели, хранение паролей в системном keychain.
-4. Интерфейс на английском (по умолчанию) и русском с переключателем языка, README на английском и отдельно на русском.
-5. Сборки приложения в GitHub Actions для Linux, Windows и macOS.
+1. More engine features, with their backups:
+   - **ClickHouse**: partitions and mutations in the object tree, user-defined functions, and the native protocol.
+   - **SQL Server**: `.bacpac` export through `sqlpackage`, and Windows / Entra ID sign-in.
+2. DBeaver-style features: import from Excel and Parquet, and a test data generator.
+3. Console autocomplete, query history, the execution plan (`EXPLAIN`), SSH tunnels, and passwords in the system keychain.
+4. App builds in GitHub Actions for Linux, Windows and macOS.
 
-## Лицензия
+## License
 
 MIT

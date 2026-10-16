@@ -1,10 +1,11 @@
 //! The main window: explorer on the left, tabs in the middle, status bar below.
 
+use crate::i18n::{self, Lang, tr, trf};
 use std::sync::mpsc::Receiver;
 
 use dbman_core::{ConnectionConfig, DbKind};
 use egui::{Key, Modifiers, RichText, Ui};
-use shadcn_egui::{Button, ButtonSize, Switch, Theme, Toaster, TooltipExt, alert_dialog, toast, toast_error};
+use shadcn_egui::{Button, ButtonSize, Select, Switch, Theme, Toaster, TooltipExt, alert_dialog, toast, toast_error};
 use uuid::Uuid;
 
 use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
@@ -52,6 +53,7 @@ impl DbManApp {
 
     pub fn with_settings(ctx: &egui::Context, runtime: tokio::runtime::Runtime, settings: Settings) -> Self {
         let (tasks, events) = Tasks::new(runtime.handle().clone(), ctx.clone());
+        crate::i18n::set(crate::i18n::Lang::from_code(&settings.language));
         let conns = settings.connections.iter().cloned().map(ConnState::new).collect();
         Self {
             settings,
@@ -69,7 +71,7 @@ impl DbManApp {
             export: None,
             import: None,
             jobs: Jobs::default(),
-            status: "Ready".into(),
+            status: tr("Ready").into(),
             runtime: Some(runtime),
         }
     }
@@ -85,7 +87,7 @@ impl DbManApp {
     fn save_settings(&mut self) {
         self.settings.connections = self.conns.iter().map(|c| c.cfg.clone()).collect();
         if let Err(e) = self.settings.save() {
-            self.status = format!("Could not save settings: {e}");
+            self.status = trf("Could not save settings: {error}", &[("error", &e)]);
         }
     }
 
@@ -101,14 +103,14 @@ impl DbManApp {
                         Ok((session, version)) => {
                             c.version = version.clone();
                             c.session = Load::Ready(session);
-                            self.status = format!("Connected: {version}");
+                            self.status = trf("Connected: {version}", &[("version", &version)]);
                         }
                         Err(e) => {
                             let name = c.cfg.display_name();
                             c.session = Load::Failed(e.message.clone());
                             toast_error(
                                 ctx,
-                                format!("Could not connect to {name}"),
+                                trf("Could not connect to {name}", &[("name", &name)]),
                                 Some(e.message.lines().next().unwrap_or("")),
                             );
                         }
@@ -149,9 +151,9 @@ impl DbManApp {
                     follow_up.extend(self.jobs.on_event(job, event, ctx));
                     if finished && let Some(j) = self.jobs.list.iter().find(|j| j.id == job) {
                         self.status = match &j.state {
-                            JobState::Done => format!("{}: done", j.title),
-                            JobState::Cancelled => format!("{}: cancelled", j.title),
-                            _ => format!("{}: failed", j.title),
+                            JobState::Done => trf("{title}: done", &[("title", &j.title)]),
+                            JobState::Cancelled => trf("{title}: cancelled", &[("title", &j.title)]),
+                            _ => trf("{title}: failed", &[("title", &j.title)]),
                         };
                     }
                 }
@@ -257,7 +259,7 @@ impl DbManApp {
             Action::Disconnect(id) => {
                 if let Some(c) = self.conn_mut(id) {
                     c.disconnect();
-                    self.status = format!("Disconnected from {}", c.cfg.display_name());
+                    self.status = trf("Disconnected from {name}", &[("name", &c.cfg.display_name())]);
                 }
             }
             Action::OpenConsole(id, db) => self.open_console(id, db, None),
@@ -297,7 +299,7 @@ impl DbManApp {
                 if let Some(c) = self.conn(id) {
                     let mut cfg = c.cfg.clone();
                     cfg.id = Uuid::new_v4();
-                    cfg.name = format!("{} (copy)", c.cfg.display_name());
+                    cfg.name = trf("{name} (copy)", &[("name", &c.cfg.display_name())]);
                     self.dialog = Some(ConnectionDialog::new(cfg, true));
                 }
             }
@@ -344,7 +346,7 @@ impl DbManApp {
             }
             Action::CopyText(text) => {
                 ctx.copy_text(text.clone());
-                toast(ctx, "Copied", Some(&text));
+                toast(ctx, tr("Copied"), Some(&text));
             }
         }
     }
@@ -356,7 +358,7 @@ impl DbManApp {
         }
         c.session = Load::Loading;
         let cfg = c.cfg.clone();
-        self.status = format!("Connecting to {}…", cfg.display_name());
+        self.status = trf("Connecting to {name}…", &[("name", &cfg.display_name())]);
         self.tasks.spawn(async move {
             let result = async {
                 let s = dbman_drivers::connect(&cfg).await?;
@@ -491,6 +493,13 @@ impl DbManApp {
         }
     }
 
+    /// Switches the interface language and remembers it.
+    pub fn set_language(&mut self, lang: Lang) {
+        i18n::set(lang);
+        self.settings.language = lang.code().to_string();
+        self.save_settings();
+    }
+
     /// Adds a saved connection, as the connection dialog does.
     pub fn add_connection(&mut self, cfg: ConnectionConfig) {
         self.conns.push(ConnState::new(cfg));
@@ -555,13 +564,13 @@ impl DbManApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("DBMan").size(16.0).strong().color(t.foreground));
                 ui.add_space(12.0);
-                if ui.add(Button::new("+ New connection").size(ButtonSize::Sm)).clicked() {
+                if ui.add(Button::new(tr("+ New connection")).size(ButtonSize::Sm)).clicked() {
                     actions.push(Action::NewConnection);
                 }
                 let current = self.current_conn();
                 if ui
-                    .add_enabled(current.is_some(), Button::outline("New console").size(ButtonSize::Sm))
-                    .tooltip("Open a SQL console for the selected connection (Ctrl+T)")
+                    .add_enabled(current.is_some(), Button::outline(tr("New console")).size(ButtonSize::Sm))
+                    .tooltip(tr("Open a SQL console for the selected connection (Ctrl+T)"))
                     .clicked()
                     && let Some(id) = current
                 {
@@ -569,9 +578,17 @@ impl DbManApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut dark = self.settings.dark;
-                    if ui.add(Switch::new(&mut dark).label("Dark")).changed() {
+                    if ui.add(Switch::new(&mut dark).label(tr("Dark"))).changed() {
                         self.settings.dark = dark;
                         self.save_settings();
+                    }
+                    ui.add_space(8.0);
+                    let langs: Vec<&str> = Lang::ALL.iter().map(|l| l.name()).collect();
+                    let mut lang = Lang::ALL.iter().position(|l| *l == i18n::current());
+                    if ui.push_id("language", |ui| ui.add(Select::new(&mut lang, &langs).width(110.0))).inner.changed()
+                        && let Some(l) = lang.and_then(|i| Lang::ALL.get(i).copied())
+                    {
+                        self.set_language(l);
                     }
                 });
             });
@@ -584,8 +601,12 @@ impl DbManApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !self.jobs.list.is_empty() {
                         let running = self.jobs.running();
-                        let text = if running > 0 { format!("{running} running") } else { "Tasks".to_string() };
-                        if ui.add(Button::ghost(text).size(ButtonSize::Sm)).tooltip("Background tasks").clicked() {
+                        let text = if running > 0 {
+                            trf("{running} running", &[("running", &running)])
+                        } else {
+                            tr("Tasks").to_string()
+                        };
+                        if ui.add(Button::ghost(text).size(ButtonSize::Sm)).tooltip(tr("Background tasks")).clicked() {
                             self.jobs.open = !self.jobs.open;
                         }
                         if running > 0 {
@@ -593,7 +614,9 @@ impl DbManApp {
                         }
                     }
                     let open = self.conns.iter().filter(|c| c.session.ready().is_some()).count();
-                    ui.label(RichText::new(format!("{open} connected")).size(12.0).color(t.muted_foreground));
+                    ui.label(
+                        RichText::new(trf("{open} connected", &[("open", &open)])).size(12.0).color(t.muted_foreground),
+                    );
                 });
             });
         });
@@ -606,7 +629,7 @@ impl DbManApp {
         let side = egui::Frame::new().fill(t.background).inner_margin(egui::Margin::same(8));
         egui::Panel::left("explorer").resizable(true).default_size(300.0).min_size(200.0).frame(side).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Database Explorer").strong().color(t.foreground));
+                ui.label(RichText::new(tr("Database Explorer")).strong().color(t.foreground));
             });
             ui.add_space(4.0);
             egui::ScrollArea::both().id_salt("explorer-scroll").auto_shrink([false, false]).show(ui, |ui| {
@@ -683,7 +706,10 @@ impl DbManApp {
                                 if title.middle_clicked() {
                                     close = Some(tab.id);
                                 }
-                                if ui.add(Button::ghost("×").size(ButtonSize::Icon)).tooltip("Close (Ctrl+W)").clicked()
+                                if ui
+                                    .add(Button::ghost("×").size(ButtonSize::Icon))
+                                    .tooltip(tr("Close (Ctrl+W)"))
+                                    .clicked()
                                 {
                                     close = Some(tab.id);
                                 }
@@ -709,7 +735,7 @@ impl DbManApp {
             ui.label(RichText::new("DBMan").size(28.0).color(t.foreground));
             ui.label(RichText::new("PostgreSQL · MySQL / MariaDB · SQLite").color(t.muted_foreground));
             ui.add_space(16.0);
-            if ui.add(Button::new("+ New connection")).clicked() {
+            if ui.add(Button::new(tr("+ New connection"))).clicked() {
                 actions.push(Action::NewConnection);
             }
             ui.add_space(16.0);
@@ -722,8 +748,8 @@ impl DbManApp {
             ] {
                 ui.horizontal(|ui| {
                     ui.add_space((ui.available_width() - 360.0).max(0.0) / 2.0);
-                    shadcn_egui::kbd(ui, keys);
-                    ui.label(RichText::new(what).color(t.muted_foreground));
+                    shadcn_egui::kbd(ui, tr(keys));
+                    ui.label(RichText::new(tr(what)).color(t.muted_foreground));
                 });
             }
         });
@@ -828,9 +854,12 @@ impl DbManApp {
             match alert_dialog(
                 ctx,
                 "delete-connection",
-                "Delete connection?",
-                &format!("\"{name}\" will be removed from the list. The database itself is not touched."),
-                "Delete",
+                tr("Delete connection?"),
+                &trf(
+                    "\"{name}\" will be removed from the list. The database itself is not touched.",
+                    &[("name", &name)],
+                ),
+                tr("Delete"),
             ) {
                 Some(true) => {
                     self.conns.retain(|c| c.cfg.id != id);

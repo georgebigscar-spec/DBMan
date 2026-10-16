@@ -17,6 +17,7 @@ use crate::er_view::ErView;
 use crate::events::{Event, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
 use crate::grid::{self, Grid};
+use crate::i18n::{tr, trf};
 use crate::sql_editor;
 use crate::table_editor::TableEditor;
 
@@ -53,7 +54,7 @@ impl Tab {
         match &self.kind {
             TabKind::Console(c) => c.title.clone(),
             TabKind::Data(d) => d.object.path.name.clone(),
-            TabKind::Object(o) => format!("{} ({})", o.object.path.name, o.object.kind.label()),
+            TabKind::Object(o) => format!("{} ({})", o.object.path.name, tr(o.object.kind.label())),
             TabKind::TableEditor(e) => e.title(),
             TabKind::Diagram(d) => d.title(),
             TabKind::Compare(c) => c.title(),
@@ -100,8 +101,8 @@ pub(crate) fn error_alert(ui: &mut Ui, title: &str, e: &str) {
 pub(crate) fn not_connected(ui: &mut Ui, cx: &mut TabCtx<'_>) {
     ui.add_space(16.0);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new("Not connected").color(Theme::get(ui.ctx()).muted_foreground));
-        if ui.add(Button::new("Connect")).clicked() {
+        ui.label(RichText::new(tr("Not connected")).color(Theme::get(ui.ctx()).muted_foreground));
+        if ui.add(Button::new(tr("Connect"))).clicked() {
             cx.actions.push(Action::Connect(cx.conn_id));
         }
     });
@@ -113,6 +114,8 @@ pub(crate) fn not_connected(ui: &mut Ui, cx: &mut TabCtx<'_>) {
 pub struct Output {
     pub sql: String,
     pub summary: String,
+    /// Stopped by the user (the summary is translated, so it cannot tell).
+    pub cancelled: bool,
     pub error: Option<String>,
     pub grid: Option<Grid>,
 }
@@ -168,27 +171,30 @@ impl Console {
                     self.queued = None;
                     self.outputs = vec![Output {
                         sql: String::new(),
-                        summary: "connection failed".into(),
+                        summary: tr("connection failed").into(),
+                        cancelled: false,
                         error: Some(e.clone()),
                         grid: None,
                     }];
                 }
             }
             TabEvent::Statement { sql, elapsed, result } => {
-                let (summary, error, grid) = match result {
+                let (summary, cancelled, error, grid) = match result {
                     Ok(outcome) => {
-                        let summary = outcome.summary(elapsed);
+                        let summary = outcome_summary(&outcome, elapsed);
                         let grid = match outcome {
                             StatementOutcome::Rows(r) => Some(Grid::new(r)),
                             StatementOutcome::Done { .. } => None,
                         };
-                        (summary, None, grid)
+                        (summary, false, None, grid)
                     }
-                    Err(e) if self.stop.load(Ordering::Relaxed) => ("cancelled".into(), Some(e.message), None),
-                    Err(e) => ("failed".into(), Some(e.message), None),
+                    Err(e) if self.stop.load(Ordering::Relaxed) => {
+                        (tr("cancelled").into(), true, Some(e.message), None)
+                    }
+                    Err(e) => (tr("failed").into(), false, Some(e.message), None),
                 };
                 let has_grid = grid.is_some();
-                self.outputs.push(Output { sql, summary, error: error.clone(), grid });
+                self.outputs.push(Output { sql, summary, cancelled, error: error.clone(), grid });
                 // Show the newest result set, or the error.
                 if has_grid || error.is_some() {
                     self.shown_output = self.outputs.len() - 1;
@@ -201,7 +207,8 @@ impl Console {
             TabEvent::Cancelled(Some(e)) => {
                 self.outputs.push(Output {
                     sql: String::new(),
-                    summary: "cancel failed".into(),
+                    summary: tr("cancel failed").into(),
+                    cancelled: false,
                     error: Some(e),
                     grid: None,
                 });
@@ -301,21 +308,21 @@ impl Console {
 
         ui.horizontal(|ui| {
             let run = ui
-                .add_enabled(!self.running, Button::new("▶ Run").size(ButtonSize::Sm))
-                .tooltip("Run the statement under the cursor or the selection (Ctrl+Enter)");
+                .add_enabled(!self.running, Button::new(tr("▶ Run")).size(ButtonSize::Sm))
+                .tooltip(tr("Run the statement under the cursor or the selection (Ctrl+Enter)"));
             if run.clicked() {
                 self.run(cx.tasks, tab, false, cx.page_size);
             }
             let all = ui
-                .add_enabled(!self.running, Button::outline("Run script").size(ButtonSize::Sm))
-                .tooltip("Run every statement (Ctrl+Shift+Enter)");
+                .add_enabled(!self.running, Button::outline(tr("Run script")).size(ButtonSize::Sm))
+                .tooltip(tr("Run every statement (Ctrl+Shift+Enter)"));
             if all.clicked() {
                 self.run(cx.tasks, tab, true, cx.page_size);
             }
             if self.running {
                 if ui
-                    .add(Button::destructive("Stop").size(ButtonSize::Sm))
-                    .tooltip("Cancel the running statement on the server")
+                    .add(Button::destructive(tr("Stop")).size(ButtonSize::Sm))
+                    .tooltip(tr("Cancel the running statement on the server"))
                     .clicked()
                 {
                     self.stop(cx.tasks, tab);
@@ -330,11 +337,11 @@ impl Console {
                 && dbs.len() > 1
             {
                 ui.add_space(12.0);
-                ui.label(RichText::new("Database").color(t.muted_foreground));
+                ui.label(RichText::new(tr("Database")).color(t.muted_foreground));
                 let names: Vec<&str> = dbs.iter().map(String::as_str).collect();
                 let mut idx = self.database.as_ref().and_then(|d| dbs.iter().position(|x| x == d));
                 let before = idx;
-                ui.add(Select::new(&mut idx, &names).width(180.0).placeholder("default"));
+                ui.add(Select::new(&mut idx, &names).width(180.0).placeholder(tr("default")));
                 if idx != before {
                     self.database = idx.map(|i| dbs[i].clone());
                 }
@@ -370,7 +377,7 @@ impl Console {
         let t = Theme::get(ui.ctx());
         if self.outputs.is_empty() {
             if !self.running {
-                ui.label(RichText::new("Write SQL above and press Ctrl+Enter.").color(t.muted_foreground));
+                ui.label(RichText::new(tr("Write SQL above and press Ctrl+Enter.")).color(t.muted_foreground));
             }
             return;
         }
@@ -395,7 +402,7 @@ impl Console {
             });
         });
         if let Some(e) = &o.error {
-            error_alert(ui, if o.summary == "cancelled" { "Statement cancelled" } else { "Statement failed" }, e);
+            error_alert(ui, if o.cancelled { tr("Statement cancelled") } else { tr("Statement failed") }, e);
         }
         if let Some(g) = &o.grid {
             ui.horizontal(|ui| {
@@ -440,11 +447,24 @@ fn spawn_run(
 pub(crate) fn format_elapsed(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 10 {
-        format!("{:.1} s", d.as_secs_f64())
+        trf("{s} s", &[("s", &format!("{:.1}", d.as_secs_f64()))])
     } else if secs < 60 {
-        format!("{secs} s")
+        trf("{s} s", &[("s", &secs)])
     } else {
-        format!("{} min {:02} s", secs / 60, secs % 60)
+        trf("{m} min {s} s", &[("m", &(secs / 60)), ("s", &format!("{:02}", secs % 60))])
+    }
+}
+
+/// "4 rows in 12 ms" and the like, translated (`StatementOutcome::summary` is English only).
+pub(crate) fn outcome_summary(outcome: &StatementOutcome, elapsed: Duration) -> String {
+    let ms = format!("{:.0}", elapsed.as_secs_f64() * 1000.0);
+    match outcome {
+        StatementOutcome::Rows(r) => {
+            let n = format!("{}{}", r.rows.len(), if r.truncated { "+" } else { "" });
+            trf("{n} rows in {ms} ms", &[("n", &n), ("ms", &ms)])
+        }
+        StatementOutcome::Done { affected: Some(n) } => trf("{n} rows affected in {ms} ms", &[("n", n), ("ms", &ms)]),
+        StatementOutcome::Done { affected: None } => trf("completed in {ms} ms", &[("ms", &ms)]),
     }
 }
 
@@ -490,14 +510,15 @@ impl ObjectView {
         }
 
         let sections: &[&str] = if has_columns { &["Columns", "Indexes", "Foreign keys", "DDL"] } else { &["DDL"] };
+        let labels: Vec<&str> = sections.iter().map(|s| tr(s)).collect();
         ui.horizontal(|ui| {
-            tabs(ui, &mut self.section, sections);
+            tabs(ui, &mut self.section, &labels);
             ui.add_space(8.0);
-            if toolbar_button(ui, "⟳ Refresh").clicked() {
+            if toolbar_button(ui, tr("⟳ Refresh")).clicked() {
                 self.details = Load::Idle;
                 self.ddl = Load::Idle;
             }
-            if self.object.kind.has_data() && toolbar_button(ui, "Open data").clicked() {
+            if self.object.kind.has_data() && toolbar_button(ui, tr("Open data")).clicked() {
                 cx.actions.push(Action::OpenData(cx.conn_id, self.object.clone()));
             }
         });
@@ -510,7 +531,7 @@ impl ObjectView {
                         sql_editor::viewer(ui, egui::Id::new(("ddl-view", tab)), d, self.kind);
                     });
                 }
-                Load::Failed(e) => error_alert(ui, "Could not get DDL", e),
+                Load::Failed(e) => error_alert(ui, tr("Could not get DDL"), e),
                 _ => {
                     ui.add(egui::Spinner::new());
                 }
@@ -519,7 +540,7 @@ impl ObjectView {
         }
         let d = match &self.details {
             Load::Ready(d) => d,
-            Load::Failed(e) => return error_alert(ui, "Could not read the structure", e),
+            Load::Failed(e) => return error_alert(ui, tr("Could not read the structure"), e),
             _ => {
                 ui.add(egui::Spinner::new());
                 return;
@@ -529,12 +550,12 @@ impl ObjectView {
         let (columns, rows): (Vec<Column>, Vec<Vec<String>>) = match section {
             "Columns" => (
                 vec![
-                    Column::new("Name").sortable().weight(1.2),
-                    Column::new("Type").sortable().weight(1.2),
-                    Column::new("Nullable").weight(0.6),
-                    Column::new("Default"),
-                    Column::new("Key").weight(0.5),
-                    Column::new("Comment").weight(1.4),
+                    Column::new(tr("Name")).sortable().weight(1.2),
+                    Column::new(tr("Type")).sortable().weight(1.2),
+                    Column::new(tr("Nullable")).weight(0.6),
+                    Column::new(tr("Default")),
+                    Column::new(tr("Key")).weight(0.5),
+                    Column::new(tr("Comment")).weight(1.4),
                 ],
                 d.columns
                     .iter()
@@ -542,12 +563,12 @@ impl ObjectView {
                         vec![
                             c.name.clone(),
                             c.data_type.clone(),
-                            if c.nullable { "yes".into() } else { "no".into() },
+                            if c.nullable { tr("yes").into() } else { tr("no").into() },
                             c.default.clone().unwrap_or_default(),
                             if c.primary_key {
                                 "PK".into()
                             } else if c.auto_increment {
-                                "auto".into()
+                                tr("auto").into()
                             } else {
                                 String::new()
                             },
@@ -558,10 +579,10 @@ impl ObjectView {
             ),
             "Indexes" => (
                 vec![
-                    Column::new("Name").sortable(),
-                    Column::new("Columns").weight(1.5),
-                    Column::new("Unique").weight(0.5),
-                    Column::new("Method").weight(0.5),
+                    Column::new(tr("Name")).sortable(),
+                    Column::new(tr("Columns")).weight(1.5),
+                    Column::new(tr("Unique")).weight(0.5),
+                    Column::new(tr("Method")).weight(0.5),
                 ],
                 d.indexes
                     .iter()
@@ -570,11 +591,11 @@ impl ObjectView {
                             i.name.clone(),
                             i.columns.join(", "),
                             if i.primary {
-                                "primary".into()
+                                tr("primary").into()
                             } else if i.unique {
-                                "yes".into()
+                                tr("yes").into()
                             } else {
-                                "no".into()
+                                tr("no").into()
                             },
                             i.method.clone().unwrap_or_default(),
                         ]
@@ -583,11 +604,11 @@ impl ObjectView {
             ),
             _ => (
                 vec![
-                    Column::new("Name").sortable(),
-                    Column::new("Columns"),
-                    Column::new("References").weight(1.5),
-                    Column::new("On update").weight(0.6),
-                    Column::new("On delete").weight(0.6),
+                    Column::new(tr("Name")).sortable(),
+                    Column::new(tr("Columns")),
+                    Column::new(tr("References")).weight(1.5),
+                    Column::new(tr("On update")).weight(0.6),
+                    Column::new(tr("On delete")).weight(0.6),
                 ],
                 d.foreign_keys
                     .iter()
@@ -604,7 +625,7 @@ impl ObjectView {
             ),
         };
         if rows.is_empty() {
-            ui.label(RichText::new("none").color(Theme::get(ui.ctx()).muted_foreground));
+            ui.label(RichText::new(tr("none")).color(Theme::get(ui.ctx()).muted_foreground));
             return;
         }
         DataTable::new(id, columns)

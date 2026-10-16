@@ -15,6 +15,7 @@ use shadcn_egui::{Button, ButtonSize, Theme, TooltipExt, toast, toast_error};
 
 use crate::events::{Event, JobEvent, JobId, Tasks};
 use crate::explorer::Action;
+use crate::i18n::{tr, trf};
 use crate::tabs::format_elapsed;
 
 /// What a job does.
@@ -206,17 +207,17 @@ impl Jobs {
                         job.state = JobState::Done;
                         job.fraction = Some(1.0);
                         let where_ = job.output.as_ref().map(|p| p.to_string_lossy().into_owned());
-                        toast(ctx, format!("{} finished", job.title), where_.as_deref());
+                        toast(ctx, trf("{title} finished", &[("title", &job.title)]), where_.as_deref());
                         return job.refresh.clone();
                     }
                     Err(_) if job.cancel.load(Ordering::Relaxed) => {
                         job.state = JobState::Cancelled;
-                        job.log.push("Cancelled.".into());
+                        job.log.push(tr("Cancelled.").into());
                     }
                     Err(e) => {
                         job.log.push(e.message.clone());
                         job.show_log = true;
-                        toast_error(ctx, format!("{} failed", job.title), e.message.lines().last());
+                        toast_error(ctx, trf("{title} failed", &[("title", &job.title)]), e.message.lines().last());
                         job.state = JobState::Failed(e.message);
                     }
                 }
@@ -236,13 +237,13 @@ impl Jobs {
         let t = Theme::get(ui.ctx());
         let mut remove = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Background tasks").strong().color(t.foreground));
+            ui.label(RichText::new(tr("Background tasks")).strong().color(t.foreground));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(Button::ghost("×").size(ButtonSize::Icon)).tooltip("Hide").clicked() {
+                if ui.add(Button::ghost("×").size(ButtonSize::Icon)).tooltip(tr("Hide")).clicked() {
                     self.open = false;
                 }
                 let finished = self.list.iter().any(|j| j.state != JobState::Running);
-                if finished && ui.add(Button::ghost("Clear finished").size(ButtonSize::Sm)).clicked() {
+                if finished && ui.add(Button::ghost(tr("Clear finished")).size(ButtonSize::Sm)).clicked() {
                     self.list.retain(|j| j.state == JobState::Running);
                 }
             });
@@ -272,21 +273,24 @@ impl Jobs {
                         info = format!("{} · {info}", human_bytes(b));
                     }
                     match &job.state {
-                        JobState::Failed(_) => info.push_str(" · failed"),
-                        JobState::Cancelled => info.push_str(" · cancelled"),
+                        JobState::Failed(_) => info.push_str(&format!(" · {}", tr("failed"))),
+                        JobState::Cancelled => info.push_str(&format!(" · {}", tr("cancelled"))),
                         _ => {}
                     }
                     ui.label(RichText::new(info).size(12.0).color(t.muted_foreground));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if job.state == JobState::Running {
-                            if ui.add(Button::outline("Cancel").size(ButtonSize::Sm)).tooltip("Stop the job").clicked()
+                            if ui
+                                .add(Button::outline(tr("Cancel")).size(ButtonSize::Sm))
+                                .tooltip(tr("Stop the job"))
+                                .clicked()
                             {
                                 job.cancel.store(true, Ordering::Relaxed);
                             }
-                        } else if ui.add(Button::ghost("×").size(ButtonSize::Icon)).tooltip("Remove").clicked() {
+                        } else if ui.add(Button::ghost("×").size(ButtonSize::Icon)).tooltip(tr("Remove")).clicked() {
                             remove = Some(job.id);
                         }
-                        let label = if job.show_log { "Hide log" } else { "Log" };
+                        let label = if job.show_log { tr("Hide log") } else { tr("Log") };
                         if ui.add(Button::ghost(label).size(ButtonSize::Sm)).clicked() {
                             job.show_log = !job.show_log;
                         }

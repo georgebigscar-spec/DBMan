@@ -10,6 +10,7 @@ use shadcn_egui::{
 };
 
 use crate::files;
+use crate::i18n::{tr, trf};
 
 pub struct Grid {
     pub result: QueryResult,
@@ -44,7 +45,7 @@ impl Grid {
                 })
                 .collect();
             DataTable::new(id, columns)
-                .filter("Filter rows...")
+                .filter(tr("Filter rows..."))
                 .max_height(height)
                 .row_height(28.0)
                 .cell_ui(|ui, row, col| {
@@ -71,29 +72,34 @@ pub fn export_menu(
     table: Option<&ObjectPath>,
     all_rows: bool,
 ) -> bool {
-    let trigger = ui.add(Button::outline("Export").size(ButtonSize::Sm));
+    let trigger = ui.add(Button::outline(tr("Export")).size(ButtonSize::Sm));
     let render = |f: Format| export(result, f, Dialect(kind), table);
     let mut export_all = false;
     dropdown_menu(&trigger, 240.0, |ui| {
         if all_rows {
-            if menu_item(ui, "All rows to a file…", None).clicked() {
+            if menu_item(ui, tr("All rows to a file…"), None).clicked() {
                 export_all = true;
             }
             menu_separator(ui);
         }
-        menu_label(ui, "Copy to clipboard");
+        menu_label(ui, tr("Copy to clipboard"));
         for f in Format::ALL {
-            if menu_item(ui, f.label(), None).clicked() {
+            if menu_item(ui, tr(f.label()), None).clicked() {
                 ui.ctx().copy_text(render(f));
-                toast(ui.ctx(), format!("Copied {} rows as {}", result.rows.len(), f.label()), None);
+                toast(
+                    ui.ctx(),
+                    trf("Copied {n} rows as {format}", &[("n", &result.rows.len()), ("format", &tr(f.label()))]),
+                    None,
+                );
             }
         }
         menu_separator(ui);
-        menu_label(ui, "Save to file");
+        menu_label(ui, tr("Save to file"));
         for f in Format::ALL {
-            if menu_item(ui, &format!("{}…", f.label()), None).clicked() {
+            if menu_item(ui, &format!("{}…", tr(f.label())), None).clicked() {
                 let name = format!("{}.{}", table.map_or("result", |t| t.name.as_str()), f.extension());
-                let dialog = rfd::AsyncFileDialog::new().set_file_name(name).add_filter(f.label(), &[f.extension()]);
+                let dialog =
+                    rfd::AsyncFileDialog::new().set_file_name(name).add_filter(tr(f.label()), &[f.extension()]);
                 let (result, table) = (result.clone(), table.cloned());
                 files::save_file(ui.ctx(), dialog, move || export(&result, f, Dialect(kind), table.as_ref()));
             }
