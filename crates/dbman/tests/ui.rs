@@ -126,6 +126,7 @@ fn browse_sqlite_database() {
         page_size: 500,
         tools_dir: String::new(),
         language: String::new(),
+        recent_scripts: Vec::new(),
     };
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -263,6 +264,38 @@ fn browse_sqlite_database() {
     let (items, sql) = h.state().console_completion();
     assert!(sql.ends_with("FROM customers c WHERE c.city"), "{sql}");
     assert!(items.is_empty());
+
+    // Query history: the statements run so far, newest first; a click adds one to the script.
+    click(&mut h, "History");
+    let history = h.state().console_history();
+    assert_eq!(history.len(), 2, "{history:?}");
+    assert!(history[0].starts_with("WITH RECURSIVE"), "{history:?}");
+    snapshot(&mut h, "query_history");
+    h.get_all_by_label("FROM customers c LEFT JOIN orders o ON o.customer_id = c.id").last().unwrap().click();
+    settle(&mut h);
+    let (_, sql) = h.state().console_completion();
+    assert!(sql.ends_with(&format!("c.city;\n{}", history[1].trim_end())), "{sql}");
+    click(&mut h, "History");
+    assert!(h.query_by_label("Query history").is_none());
+
+    // A script file opens in a new console and saves back with Ctrl+S.
+    let script = dir.path().join("report.sql");
+    std::fs::write(&script, "SELECT 1;\n").unwrap();
+    h.state_mut().handle(Action::OpenScript(conn_id, None, script.clone()), &ctx);
+    settle(&mut h);
+    let (title, file, sql) = h.state().active_console().expect("script console");
+    assert_eq!((title.as_str(), file.as_ref(), sql.as_str()), ("report.sql", Some(&script), "SELECT 1;\n"));
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().focus();
+    h.run_steps(2);
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).last().unwrap().type_text("SELECT 2;");
+    settle(&mut h);
+    assert_eq!(h.state().active_console().unwrap().0, "report.sql •");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    settle(&mut h);
+    assert_eq!(h.state().active_console().unwrap().0, "report.sql");
+    let saved = std::fs::read_to_string(&script).unwrap();
+    assert!(saved.starts_with("SELECT 1;") && saved.contains("SELECT 2;"), "{saved}");
+    assert_eq!(h.state().recent_scripts(), [script]);
 
     // Back up the database in the background, damage it, restore it.
     let backup_file = dir.path().join("shop-backup.db");
