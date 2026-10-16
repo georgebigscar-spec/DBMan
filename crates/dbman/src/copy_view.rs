@@ -9,7 +9,7 @@ use dbman_core::copy::target_def;
 use dbman_core::{ConnectionConfig, DbKind, DbResult, ObjectKind, ObjectPath, TableDetails};
 use dbman_drivers::copy::{CopyJob, Existing};
 use egui::{RichText, Ui};
-use shadcn_egui::{Badge, Button, ButtonSize, Checkbox, Select, Theme, alert_dialog};
+use shadcn_egui::{Badge, Button, ButtonSize, Checkbox, Empty, Select, Theme, alert_dialog};
 use tokio::sync::OnceCell;
 
 use crate::events::{Event, EventSender, TabEvent, TabId};
@@ -223,7 +223,7 @@ impl CopyView {
             return error_alert(ui, tr("Could not list the tables"), e);
         }
         if self.tables.ready().is_none() {
-            ui.add(egui::Spinner::new());
+            ui.add(shadcn_egui::Spinner::new());
             return;
         }
         egui::Panel::bottom(egui::Id::new(("copy-actions", tab)))
@@ -303,10 +303,9 @@ impl CopyView {
     fn mapping(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
         let Some(name) = self.selected.clone() else {
-            ui.label(
-                RichText::new(tr("Choose a table to see how its columns are created in the target."))
-                    .color(t.muted_foreground),
-            );
+            Empty::new(tr("Nothing selected"))
+                .description(tr("Choose a table to see how its columns are created in the target."))
+                .show(ui, |_| {});
             return;
         };
         ui.label(RichText::new(&name).strong().size(15.0));
@@ -315,7 +314,7 @@ impl CopyView {
             Some(Load::Ready(d)) => d,
             Some(Load::Failed(e)) => return error_alert(ui, tr("Could not read the table"), e),
             _ => {
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
                 return;
             }
         };

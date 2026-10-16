@@ -17,6 +17,7 @@ pub mod grid;
 pub mod i18n;
 pub mod icons;
 pub mod jobs;
+pub mod palette;
 pub mod prompt;
 pub mod sql_editor;
 pub mod store;

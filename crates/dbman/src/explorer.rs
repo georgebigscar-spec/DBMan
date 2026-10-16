@@ -297,7 +297,7 @@ fn status_rows<T>(tree: &mut TreeUi<'_, Node>, load: &Load<T>, key: &str) {
     match load {
         Load::Idle | Load::Loading => {
             tree.leaf_ui(Node::Info(format!("{key}:loading")), "loading", |ui| {
-                ui.add(egui::Spinner::new().size(12.0));
+                ui.add(shadcn_egui::Spinner::new().size(12.0));
                 ui.label(RichText::new(tr("loading…")).color(Theme::get(ui.ctx()).muted_foreground));
             });
         }

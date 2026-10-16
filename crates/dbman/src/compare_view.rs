@@ -11,7 +11,7 @@ use dbman_core::compare::{self, DataDiff, DataSpec, ObjectDiff, Snapshot, Status
 use dbman_core::ddl::Plan;
 use dbman_core::{Connection, ConnectionConfig, DbError, DbKind, DbResult, ObjectPath, TableDetails};
 use egui::{Color32, RichText, Ui};
-use shadcn_egui::{Button, ButtonSize, Checkbox, Theme, TooltipExt, alert_dialog, tabs, toast};
+use shadcn_egui::{Button, ButtonSize, Checkbox, DiffView, Empty, Theme, TooltipExt, alert_dialog, tabs, toast};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
@@ -408,7 +408,7 @@ impl CompareView {
             let t = Theme::get(ui.ctx());
             if self.running {
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new());
+                    ui.add(shadcn_egui::Spinner::new());
                     ui.label(RichText::new(&self.progress).color(t.muted_foreground));
                 });
             } else {
@@ -485,7 +485,7 @@ impl CompareView {
                 if toolbar_button(ui, tr("Stop")).clicked() {
                     self.cancel.store(true, Ordering::Relaxed);
                 }
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
                 ui.label(RichText::new(&self.progress).color(t.muted_foreground));
             }
         });
@@ -544,10 +544,9 @@ impl CompareView {
         let t = Theme::get(ui.ctx());
         let kind = self.kind();
         let Some(row) = self.selected.and_then(|i| self.structure.ready()?.get(i)) else {
-            ui.label(
-                RichText::new(tr("Choose an object to see what differs, or Show script for all of them."))
-                    .color(t.muted_foreground),
-            );
+            Empty::new(tr("Nothing selected"))
+                .description(tr("Choose an object to see what differs, or Show script for all of them."))
+                .show(ui, |_| {});
             return;
         };
         let d = &row.diff;
@@ -576,10 +575,21 @@ impl CompareView {
             ui.add_space(8.0);
             ui.columns(2, |cols| {
                 cols[0].label(RichText::new(tr("Source")).strong());
-                code(&mut cols[0], &t, d.source_ddl.as_deref().unwrap_or("-- not in the source"), true);
                 cols[1].label(RichText::new(tr("Target")).strong());
-                code(&mut cols[1], &t, d.target_ddl.as_deref().unwrap_or("-- not in the target"), true);
             });
+            match (&d.source_ddl, &d.target_ddl) {
+                // Both sides exist and differ: the changed lines are highlighted.
+                (Some(source), Some(target)) if source != target => {
+                    let diff = ddl_diff(source, target);
+                    DiffView::new(("compare-ddl", &d.name), &diff).split(true).max_height(600.0).show(ui);
+                }
+                (source, target) => {
+                    ui.columns(2, |cols| {
+                        code(&mut cols[0], &t, source.as_deref().unwrap_or("-- not in the source"), true);
+                        code(&mut cols[1], &t, target.as_deref().unwrap_or("-- not in the target"), true);
+                    });
+                }
+            }
         });
     }
 
@@ -638,10 +648,9 @@ impl CompareView {
     fn data_detail(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
         let Some(row) = self.selected.and_then(|i| self.data.ready()?.get(i)) else {
-            ui.label(
-                RichText::new(tr("Choose a table to see its differing rows, or Show script for all of them."))
-                    .color(t.muted_foreground),
-            );
+            Empty::new(tr("Nothing selected"))
+                .description(tr("Choose a table to see its differing rows, or Show script for all of them."))
+                .show(ui, |_| {});
             return;
         };
         ui.label(RichText::new(&row.name).strong().size(15.0));
@@ -654,7 +663,7 @@ impl CompareView {
                 return;
             }
             DataState::Pending => {
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
                 return;
             }
         };
@@ -861,10 +870,30 @@ fn status_badge(ui: &mut Ui, t: &Theme, status: Status) {
 }
 
 /// SQL in a muted box; `wrap` breaks long lines (side-by-side definitions).
+/// The two DDL texts as a unified diff with all lines as context, for [`DiffView`].
+fn ddl_diff(source: &str, target: &str) -> String {
+    let (source, target) = (format!("{}\n", source.trim_end()), format!("{}\n", target.trim_end()));
+    similar::TextDiff::from_lines(&source, &target).unified_diff().context_radius(100_000).to_string()
+}
+
 fn code(ui: &mut Ui, t: &Theme, text: &str, wrap: bool) {
     egui::Frame::new().fill(t.muted).corner_radius(t.radius_md()).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let label = egui::Label::new(RichText::new(text).monospace().size(12.0));
         ui.add(if wrap { label.wrap() } else { label.extend() });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ddl_diff;
+
+    #[test]
+    fn ddl_diff_keeps_every_line() {
+        let source = "CREATE TABLE t (\n  id int,\n  name text\n);";
+        let target = "CREATE TABLE t (\n  id int\n);";
+        let diff = ddl_diff(source, target);
+        let body: Vec<&str> = diff.lines().filter(|l| !l.starts_with("@@")).collect();
+        assert_eq!(body, [" CREATE TABLE t (", "-  id int,", "-  name text", "+  id int", " );"]);
+    }
 }

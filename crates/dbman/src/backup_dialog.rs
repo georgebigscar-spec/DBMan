@@ -11,7 +11,7 @@ use dbman_core::backup::{
 use dbman_core::{ConnectionConfig, DbKind};
 use dbman_drivers::backup::find_tool;
 use egui::{Context, RichText, Ui};
-use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label};
+use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Slider, Theme, footer, label};
 use uuid::Uuid;
 
 use crate::explorer::Action;
@@ -650,9 +650,7 @@ impl BackupDialog {
             if self.pg_dump.format == PgFormat::Directory {
                 ui.vertical(|ui| {
                     label(ui, tr("Parallel jobs"));
-                    let mut jobs = self.pg_dump.jobs as f32;
-                    ui.add(egui::DragValue::new(&mut jobs).range(1.0..=16.0).speed(0.1));
-                    self.pg_dump.jobs = jobs as u32;
+                    jobs_slider(ui, &mut self.pg_dump.jobs);
                 });
             }
         });
@@ -715,9 +713,7 @@ impl BackupDialog {
         if !script && !self.pg_restore.single_transaction {
             ui.horizontal(|ui| {
                 ui.label(tr("Parallel jobs"));
-                let mut jobs = self.pg_restore.jobs as f32;
-                ui.add(egui::DragValue::new(&mut jobs).range(1.0..=16.0).speed(0.1));
-                self.pg_restore.jobs = jobs as u32;
+                jobs_slider(ui, &mut self.pg_restore.jobs);
             });
         }
     }
@@ -955,6 +951,16 @@ impl BackupDialog {
             .destructive()
             .show(ui);
     }
+}
+
+/// Parallel jobs, 1 to 16, with the number next to the slider.
+fn jobs_slider(ui: &mut Ui, jobs: &mut u32) {
+    ui.horizontal(|ui| {
+        let mut value = *jobs as f32;
+        ui.add(Slider::new(&mut value, 1.0..=16.0).step(1.0).width(140.0));
+        *jobs = value as u32;
+        ui.label(RichText::new(jobs.to_string()).monospace());
+    });
 }
 
 #[cfg(test)]

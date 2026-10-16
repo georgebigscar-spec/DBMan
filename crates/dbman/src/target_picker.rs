@@ -238,7 +238,7 @@ impl TargetPicker {
                 ui.label(RichText::new(tr("Could not connect")).color(t.destructive)).on_hover_text(e.as_str());
             }
             _ => {
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
             }
         }
         if self.has_schemas() {

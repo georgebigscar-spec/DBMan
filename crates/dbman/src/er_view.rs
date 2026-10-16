@@ -245,7 +245,7 @@ impl ErView {
             Load::Ready(_) => {}
             Load::Failed(e) => return error_alert(ui, tr("Could not read the schema"), e),
             _ => {
-                ui.add(egui::Spinner::new());
+                ui.add(shadcn_egui::Spinner::new());
                 return;
             }
         }

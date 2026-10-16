@@ -223,7 +223,7 @@ impl GenerateDialog {
         let t = Theme::get(ui.ctx());
         let Some(rows) = &mut self.rows else {
             ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(14.0));
+                ui.add(shadcn_egui::Spinner::new().size(14.0));
                 ui.label(RichText::new(tr("Reading the table's columns…")).color(t.muted_foreground));
             });
             return;

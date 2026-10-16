@@ -17,9 +17,10 @@ pollster = "1.0.1"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-shadcn_egui = { git = "https://github.com/georgebigscar-spec/shadcn_egui", rev = "86c5d40c6ba664670b24383da80f2921b0dde291" }
+shadcn_egui = { git = "https://github.com/georgebigscar-spec/shadcn_egui", rev = "d83f9ba0f4398c7c3c651e8978463df5bd0c3864" }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
+similar = "3.2.0"
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
