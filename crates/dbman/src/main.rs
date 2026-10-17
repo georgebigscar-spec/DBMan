@@ -10,7 +10,7 @@ fn main() -> eframe::Result {
         .expect("failed to start the async runtime");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("DBMan")
+            .with_title(concat!("DBMan ", env!("CARGO_PKG_VERSION")))
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
