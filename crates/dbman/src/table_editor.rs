@@ -105,6 +105,16 @@ impl TableEditor {
         }
     }
 
+    /// The database the table lives in.
+    pub fn database(&self) -> &str {
+        &self.path.database
+    }
+
+    /// The table being edited; `None` for a new one.
+    pub fn table(&self) -> Option<&str> {
+        self.existing.as_ref().map(|_| self.path.name.as_str())
+    }
+
     fn load_from(&mut self, def: &TableDef) {
         self.columns = def.columns.clone();
         self.comment = def.comment.clone().unwrap_or_default();

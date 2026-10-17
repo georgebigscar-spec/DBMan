@@ -74,6 +74,32 @@ impl Tab {
         }
     }
 
+    /// The database the tab works in, if it is tied to one.
+    pub fn database(&self) -> Option<&str> {
+        let db = match &self.kind {
+            TabKind::Console(c) => c.database.as_deref().unwrap_or(&c.cfg.database),
+            TabKind::Data(d) => &d.object.path.database,
+            TabKind::Object(o) => &o.object.path.database,
+            TabKind::TableEditor(e) => e.database(),
+            TabKind::Diagram(d) => &d.database,
+            TabKind::Compare(c) => &c.database,
+            TabKind::Copy(c) => &c.database,
+        };
+        (!db.is_empty()).then_some(db)
+    }
+
+    /// The table, view or script the tab shows, for the window title.
+    pub fn entity(&self) -> Option<String> {
+        match &self.kind {
+            TabKind::Console(c) => Some(c.title()),
+            TabKind::Data(d) => Some(d.object.path.name.clone()),
+            TabKind::Object(o) => Some(o.object.path.name.clone()),
+            TabKind::TableEditor(e) => e.table().map(str::to_owned),
+            TabKind::Diagram(_) | TabKind::Compare(_) => None,
+            TabKind::Copy(c) => c.only().map(str::to_owned),
+        }
+    }
+
     /// Applies a background result; may ask the app to do something (refresh the explorer).
     pub fn on_event(&mut self, ev: TabEvent, ctx: &egui::Context) -> Vec<Action> {
         match &mut self.kind {

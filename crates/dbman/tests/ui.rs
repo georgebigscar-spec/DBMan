@@ -115,6 +115,19 @@ fn click(h: &mut Harness<'_, DbManApp>, label: &str) {
     settle(h);
 }
 
+/// Clicks like a mouse does: move, press and release in separate frames.
+fn press_and_release(h: &mut Harness<'_, DbManApp>, label: &str) {
+    let pos = h.get_all_by_label(label).next().unwrap_or_else(|| panic!("no node {label}")).rect().center();
+    h.event(egui::Event::PointerMoved(pos));
+    h.run_steps(2);
+    for pressed in [true, false] {
+        let button = egui::PointerButton::Primary;
+        h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+    }
+    settle(h);
+}
+
 fn snapshot(h: &mut Harness<'_, DbManApp>, name: &str) {
     if std::env::var("DBMAN_SCREENSHOTS").is_ok_and(|v| v == "1") {
         h.snapshot(name);
@@ -171,6 +184,22 @@ fn browse_sqlite_database() {
     settle(&mut h);
     h.key_press(egui::Key::Enter);
     settle(&mut h);
+    assert!(h.state().tab_titles().is_empty(), "{:?}", h.state().tab_titles());
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(h.state().window_title(), format!("DBMan {version}"));
+
+    // The tab's × closes it; the window title names the database and the table meanwhile.
+    let customers = DbObject {
+        kind: ObjectKind::Table,
+        path: ObjectPath::new("main", "main", "customers"),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(conn_id, customers), &ctx);
+    settle(&mut h);
+    assert_eq!(h.state().window_title(), format!("DBMan {version} - shop.db - customers"));
+    press_and_release(&mut h, "×");
     assert!(h.state().tab_titles().is_empty(), "{:?}", h.state().tab_titles());
 
     let orders = DbObject {

@@ -42,6 +42,8 @@ pub struct DbManApp {
     prompt: Option<Prompt>,
     /// A console with an open transaction waiting for Close to be confirmed.
     closing: Option<TabId>,
+    /// The window title last sent to the OS.
+    shown_title: String,
     backup: Option<BackupDialog>,
     export: Option<ExportDialog>,
     import: Option<ImportDialog>,
@@ -80,6 +82,7 @@ impl DbManApp {
             confirm_delete: None,
             prompt: None,
             closing: None,
+            shown_title: String::new(),
             backup: None,
             export: None,
             import: None,
@@ -527,6 +530,28 @@ impl DbManApp {
         self.backup.as_mut()
     }
 
+    /// "DBMan 1.2.3 - database - table": the parts the active tab has.
+    pub fn window_title(&self) -> String {
+        let mut title = format!("DBMan {}", env!("CARGO_PKG_VERSION"));
+        let Some(tab) = self.active.and_then(|id| self.tabs.iter().find(|t| t.id == id)) else {
+            return title;
+        };
+        let cfg = self.conns.iter().find(|c| c.cfg.id == tab.conn).map(|c| &c.cfg);
+        // A file database is known by its file, not by "main".
+        let database = match cfg {
+            Some(cfg) if cfg.kind.is_file_based() => std::path::Path::new(&cfg.database)
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .or_else(|| tab.database().map(str::to_owned)),
+            _ => tab.database().map(str::to_owned),
+        };
+        for part in [database, tab.entity()].into_iter().flatten() {
+            title.push_str(" - ");
+            title.push_str(&part);
+        }
+        title
+    }
+
     /// Titles of the open tabs, in order.
     pub fn tab_titles(&self) -> Vec<String> {
         self.tabs.iter().map(Tab::title).collect()
@@ -836,6 +861,11 @@ impl DbManApp {
         }
         self.dialogs(&ctx);
         Toaster::show(&ctx);
+        let title = self.window_title();
+        if self.shown_title != title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.shown_title = title;
+        }
     }
 
     fn tab_bar(&mut self, ui: &mut Ui) {
@@ -854,45 +884,41 @@ impl DbManApp {
                         .fill(if active { t.secondary } else { t.background })
                         .corner_radius(t.radius_md())
                         .inner_margin(egui::Margin::symmetric(8, 4));
-                    let r = frame
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if let Some(k) = kind {
-                                    explorer::kind_badge(ui, k);
-                                }
-                                let icon = match tab.kind {
-                                    TabKind::Console(_) => Icon::Console,
-                                    TabKind::Data(_) => Icon::Table,
-                                    TabKind::Object(_) => Icon::Info,
-                                    TabKind::TableEditor(_) => Icon::Table,
-                                    TabKind::Diagram(_) => Icon::ForeignKey,
-                                    TabKind::Compare(_) => Icon::Schema,
-                                    TabKind::Copy(_) => Icon::Table,
-                                };
-                                let color = if active { t.foreground } else { t.muted_foreground };
-                                icons::icon(ui, icon, color);
-                                let title = ui.add(
-                                    egui::Label::new(RichText::new(tab.title()).color(color))
-                                        .selectable(false)
-                                        .sense(egui::Sense::click()),
-                                );
-                                if title.clicked() {
-                                    self.active = Some(tab.id);
-                                }
-                                if title.middle_clicked() {
-                                    close = Some(tab.id);
-                                }
-                                if ui
-                                    .add(Button::ghost("×").size(ButtonSize::Icon))
-                                    .tooltip(tr("Close (Ctrl+W)"))
-                                    .clicked()
-                                {
-                                    close = Some(tab.id);
-                                }
-                            });
+                    // The tab's own click area goes in first, so the × and the
+                    // title on top of it still get their clicks.
+                    let r = ui
+                        .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                            frame.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if let Some(k) = kind {
+                                        explorer::kind_badge(ui, k);
+                                    }
+                                    let icon = match tab.kind {
+                                        TabKind::Console(_) => Icon::Console,
+                                        TabKind::Data(_) => Icon::Table,
+                                        TabKind::Object(_) => Icon::Info,
+                                        TabKind::TableEditor(_) => Icon::Table,
+                                        TabKind::Diagram(_) => Icon::ForeignKey,
+                                        TabKind::Compare(_) => Icon::Schema,
+                                        TabKind::Copy(_) => Icon::Table,
+                                    };
+                                    let color = if active { t.foreground } else { t.muted_foreground };
+                                    icons::icon(ui, icon, color);
+                                    ui.add(egui::Label::new(RichText::new(tab.title()).color(color)).selectable(false));
+                                    if ui
+                                        .add(Button::ghost("×").size(ButtonSize::Icon))
+                                        .tooltip(tr("Close (Ctrl+W)"))
+                                        .clicked()
+                                    {
+                                        close = Some(tab.id);
+                                    }
+                                });
+                            })
                         })
                         .response;
-                    if r.interact(egui::Sense::click()).clicked() {
+                    if r.middle_clicked() {
+                        close = Some(tab.id);
+                    } else if r.clicked() {
                         self.active = Some(tab.id);
                     }
                 }

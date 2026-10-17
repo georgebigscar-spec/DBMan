@@ -77,6 +77,11 @@ impl CopyView {
         trf("{name} (copy)", &[("name", &what)])
     }
 
+    /// The one table being copied, when it is not the whole schema.
+    pub fn only(&self) -> Option<&str> {
+        self.only.as_deref()
+    }
+
     /// Switches the target to a saved connection on the next frame.
     pub fn set_target(&mut self, conn: uuid::Uuid) {
         self.picker.want(conn);
