@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use dbman_core::{ConnectionConfig, DbKind, SshAuth, SslMode};
+use dbman_core::{ConnColor, ConnectionConfig, DbKind, SshAuth, SslMode};
 use egui::{Context, RichText, Ui};
 use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label, tabs};
 
@@ -19,9 +19,11 @@ pub struct ConnectionDialog {
     browsing: Option<files::PendingPath>,
     /// What `browsing` picks.
     browse: Browse,
-    /// 0: the database, 1: SSH.
+    /// 0: the database, 1: SSH (servers only), then options.
     tab: usize,
     ssh_port: String,
+    /// Folders other connections are in, offered in the options.
+    pub folders: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -62,7 +64,75 @@ impl ConnectionDialog {
     pub fn new(cfg: ConnectionConfig, is_new: bool) -> Self {
         let port = if cfg.port == 0 { String::new() } else { cfg.port.to_string() };
         let ssh_port = cfg.ssh.port.to_string();
-        Self { cfg, is_new, port, test: Load::Idle, browsing: None, browse: Browse::Open, tab: 0, ssh_port }
+        Self {
+            cfg,
+            is_new,
+            port,
+            test: Load::Idle,
+            browsing: None,
+            browse: Browse::Open,
+            tab: 0,
+            ssh_port,
+            folders: Vec::new(),
+        }
+    }
+
+    /// The tab with color, folder and safety options.
+    fn options_tab_index(&self) -> usize {
+        if self.cfg.kind.is_file_based() { 1 } else { 2 }
+    }
+
+    fn options_tab(&mut self, ui: &mut Ui) {
+        let t = Theme::get(ui.ctx());
+        let full = ui.available_width();
+        field(ui, "Folder", |ui| {
+            ui.add(Input::new(&mut self.cfg.folder).placeholder(tr("(top level)")).width(full));
+        });
+        let others: Vec<&String> = self.folders.iter().filter(|f| **f != self.cfg.folder).collect();
+        if !others.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for f in others {
+                    if ui.add(Button::ghost(f.as_str()).size(shadcn_egui::ButtonSize::Sm)).clicked() {
+                        self.cfg.folder = f.clone();
+                    }
+                }
+            });
+        }
+        field(ui, "Color", |ui| {
+            ui.horizontal(|ui| {
+                let labels: Vec<&str> = ConnColor::ALL.iter().map(|c| tr(c.label())).collect();
+                let mut idx = ConnColor::ALL.iter().position(|c| *c == self.cfg.color);
+                ui.add(Select::new(&mut idx, &labels).width(full - 30.0));
+                if let Some(i) = idx {
+                    self.cfg.color = ConnColor::ALL[i];
+                }
+                if let Some(c) = crate::explorer::conn_color(self.cfg.color) {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 8.0, c);
+                }
+            });
+        });
+        ui.label(
+            RichText::new(tr(
+                "The color marks the connection in the explorer and its tabs, for example red for production.",
+            ))
+            .size(12.0)
+            .color(t.muted_foreground),
+        );
+        ui.add_space(8.0);
+        ui.add(Checkbox::new(&mut self.cfg.read_only).label(tr("Read-only")));
+        ui.label(
+            RichText::new(tr("Only statements that read run; changes, imports and restores are refused."))
+                .size(12.0)
+                .color(t.muted_foreground),
+        );
+        ui.add_space(4.0);
+        ui.add(Checkbox::new(&mut self.cfg.confirm_changes).label(tr("Confirm changes in consoles")));
+        ui.label(
+            RichText::new(tr("A console asks before running statements that change data or structure."))
+                .size(12.0)
+                .color(t.muted_foreground),
+        );
     }
 
     fn config(&self) -> ConnectionConfig {
@@ -74,6 +144,7 @@ impl ConnectionDialog {
         c.ssh.host = c.ssh.host.trim().to_string();
         c.ssh.user = c.ssh.user.trim().to_string();
         c.ssh.key_file = c.ssh.key_file.trim().to_string();
+        c.folder = c.folder.trim().to_string();
         c
     }
 
@@ -196,12 +267,17 @@ impl ConnectionDialog {
                         }
                     }
                 }
-                if !self.cfg.kind.is_file_based() {
-                    ui.add_space(6.0);
+                ui.add_space(6.0);
+                if self.cfg.kind.is_file_based() {
+                    self.tab = self.tab.min(1);
+                    tabs(ui, &mut self.tab, &[tr("General"), tr("Options")]);
+                } else {
                     let ssh = if self.cfg.ssh.enabled { tr("SSH (on)") } else { tr("SSH") };
-                    tabs(ui, &mut self.tab, &[tr("General"), ssh]);
+                    tabs(ui, &mut self.tab, &[tr("General"), ssh, tr("Options")]);
                 }
-                if !self.cfg.kind.is_file_based() && self.tab == 1 {
+                if self.tab == self.options_tab_index() {
+                    self.options_tab(ui);
+                } else if !self.cfg.kind.is_file_based() && self.tab == 1 {
                     self.ssh_tab(ui);
                 } else if self.cfg.kind.is_file_based() {
                     field(ui, "Database file", |ui| {

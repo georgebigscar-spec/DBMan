@@ -9,7 +9,7 @@ use dbman::backup_dialog::Scope;
 use dbman::explorer::Action;
 use dbman::jobs::JobState;
 use dbman::store::Settings;
-use dbman_core::{Cell, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath};
+use dbman_core::{Cell, ConnColor, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath};
 use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers};
 use egui_kittest::{Harness, kittest::Queryable as _};
@@ -868,4 +868,120 @@ fn sessions_monitor() {
     press_and_release(&mut h, "Kill session");
     let ended = other.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(10), sleeper).await });
     assert!(ended.expect("the session ends").unwrap().is_err());
+}
+
+/// Connection options on SQLite: folders in the explorer, a colored
+/// read-only connection that refuses changes, and one that asks first.
+#[test]
+fn connection_options() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let db = sample_db(dir.path());
+    let mut prod = ConnectionConfig::new(DbKind::Sqlite);
+    prod.name = "shop (production)".into();
+    prod.database = db.clone();
+    prod.folder = "Production".into();
+    prod.color = ConnColor::Red;
+    prod.read_only = true;
+    let mut stage = ConnectionConfig::new(DbKind::Sqlite);
+    stage.name = "shop (staging)".into();
+    stage.database = db.clone();
+    stage.folder = "Staging".into();
+    stage.color = ConnColor::Yellow;
+    stage.confirm_changes = true;
+    let mut local = ConnectionConfig::new(DbKind::Sqlite);
+    local.name = "scratch".into();
+    local.database = dir.path().join("scratch.db").to_string_lossy().into_owned();
+    let (prod_id, stage_id) = (prod.id, stage.id);
+    let settings = Settings {
+        connections: vec![prod, stage, local],
+        dark: true,
+        page_size: 500,
+        tools_dir: String::new(),
+        language: String::new(),
+        recent_scripts: Vec::new(),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 700.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    let count = || {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.query_row("SELECT count(*) FROM orders", [], |r| r.get::<_, i64>(0)).unwrap()
+    };
+
+    // Folders come first; a folder opens to its connections.
+    assert!(h.query_by_label("Production").is_some());
+    assert!(h.query_by_label("Staging").is_some());
+    click(&mut h, "Production");
+    click(&mut h, &prod_id.to_string());
+    assert!(h.query_by_label("read-only").is_some());
+
+    // The read-only connection runs reads and refuses changes.
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenConsole(prod_id, None), &ctx);
+    settle(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .type_text("SELECT count(*) FROM orders;\nDELETE FROM orders;");
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter);
+    settle(&mut h);
+    let summaries = h.state().console_summaries();
+    assert!(summaries[0].starts_with("1 rows"), "{summaries:?}");
+    assert_eq!(summaries[1], "failed");
+    assert!(h.query_by_label_contains("The connection is read-only").is_some(), "the error says why");
+    assert_eq!(count(), 4);
+    snapshot(&mut h, "read_only");
+    // Actions that change a read-only connection are refused too.
+    let orders = DbObject {
+        kind: ObjectKind::Table,
+        path: ObjectPath::new("main", "main", "orders"),
+        detail: None,
+        comment: None,
+    };
+    h.state_mut().handle(Action::Truncate(prod_id, orders), &ctx);
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Delete all rows").is_none(), "no truncate dialog");
+
+    // The staging connection asks before a change, and runs nothing when cancelled.
+    h.state_mut().handle(Action::OpenConsole(stage_id, None), &ctx);
+    settle(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("DELETE FROM orders WHERE id = 1");
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    assert!(h.query_by_label("Run changes?").is_some());
+    snapshot(&mut h, "confirm_changes");
+    press_and_release(&mut h, "Cancel");
+    assert_eq!(count(), 4);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    press_and_release(&mut h, "Run");
+    assert_eq!(count(), 3);
+    // Reads run without asking.
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("SELECT 1");
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    assert!(h.query_by_label("Run changes?").is_none());
+
+    // The options tab of the connection dialog.
+    h.state_mut().handle(Action::EditConnection(prod_id), &ctx);
+    settle(&mut h);
+    click(&mut h, "Options");
+    assert!(h.query_by_label("Read-only").is_some());
+    snapshot(&mut h, "connection_options");
 }

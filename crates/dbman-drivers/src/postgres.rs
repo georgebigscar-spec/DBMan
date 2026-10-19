@@ -75,6 +75,10 @@ async fn open_client(cfg: &ConnectionConfig, db: &str) -> DbResult<Client> {
     if !cfg.password.is_empty() {
         pg.password(&cfg.password);
     }
+    if cfg.read_only {
+        // Also stops functions with side effects that a SELECT can call.
+        pg.options("-c default_transaction_read_only=on");
+    }
     if cfg.ssl_mode == SslMode::Disable {
         let (client, conn) = pg.connect(tokio_postgres::NoTls).await.map_err(pg_err)?;
         tokio::spawn(conn);

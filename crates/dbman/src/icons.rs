@@ -20,6 +20,7 @@ pub enum Icon {
     ForeignKey,
     Console,
     Info,
+    Folder,
 }
 
 pub const SIZE: f32 = 14.0;
@@ -55,6 +56,13 @@ pub fn paint(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 })
                 .collect();
             p.add(Shape::line(pts, PathStroke::new(s.width, color)));
+        }
+        Icon::Folder => {
+            // A tab on the top left, then the body.
+            p.add(Shape::closed_line(
+                vec![at(0.0, 0.15), at(0.4, 0.15), at(0.5, 0.3), at(1.0, 0.3), at(1.0, 0.9), at(0.0, 0.9)],
+                s,
+            ));
         }
         Icon::Schema => {
             p.add(Shape::closed_line(vec![at(0.5, 0.0), at(1.0, 0.5), at(0.5, 1.0), at(0.0, 0.5)], s));

@@ -71,6 +71,8 @@ enum GridCmd {
 pub struct DataView {
     pub object: DbObject,
     kind: DbKind,
+    /// The connection is read-only: rows cannot be edited.
+    pub read_only: bool,
     filter: String,
     order_by: String,
     page: usize,
@@ -104,6 +106,7 @@ impl DataView {
         Self {
             object,
             kind,
+            read_only: false,
             filter: String::new(),
             order_by: String::new(),
             page: 0,
@@ -190,6 +193,7 @@ impl DataView {
     /// no transactions to apply edits safely; change its data in a console.
     fn editable(&self) -> bool {
         self.kind != DbKind::ClickHouse
+            && !self.read_only
             && self.object.kind == ObjectKind::Table
             && self.details.ready().is_some()
             && self.rows.ready().is_some()

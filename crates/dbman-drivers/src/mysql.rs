@@ -72,6 +72,7 @@ async fn open(cfg: &ConnectionConfig, ssl: Option<SslOpts>) -> DbResult<Conn> {
         .prefer_socket(false)
         // Report matched rather than changed rows, so an UPDATE that keeps a value still counts.
         .client_found_rows(true)
+        .init(if cfg.read_only { vec!["SET SESSION TRANSACTION READ ONLY"] } else { Vec::new() })
         .ssl_opts(ssl);
     match tokio::time::timeout(Duration::from_secs(10), Conn::new(opts)).await {
         Ok(r) => r.map_err(my_err),

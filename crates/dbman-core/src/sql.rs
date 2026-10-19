@@ -379,6 +379,42 @@ pub fn transaction_effect(kind: DbKind, sql: &str) -> Option<bool> {
     }
 }
 
+/// Whether a statement only reads, judged by its words: `SELECT` without
+/// `INTO`, `WITH` without a data-changing part, `SHOW`, `DESCRIBE`, `EXPLAIN`
+/// (unless it analyzes a change), `VALUES`, read-only `PRAGMA`s and session
+/// statements such as `SET`, `USE`, `BEGIN` and `COMMIT`. Everything else,
+/// including procedure calls, counts as a change. Comments and strings are
+/// ignored. Used by read-only connections, so it errs on the side of "changes".
+pub fn is_read_only(kind: DbKind, sql: &str) -> bool {
+    let tokens: Vec<Token> = tokenize(sql, kind)
+        .into_iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Comment | TokenKind::Semicolon))
+        .collect();
+    let word = |t: &Token| {
+        matches!(t.kind, TokenKind::Keyword | TokenKind::Word).then(|| sql[t.range.clone()].to_ascii_lowercase())
+    };
+    let words: Vec<String> = tokens.iter().filter_map(word).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    const CHANGES: &[&str] = &[
+        "insert", "update", "delete", "merge", "upsert", "replace", "into", "create", "drop", "alter", "truncate",
+        "grant", "revoke", "copy", "call", "exec", "execute", "attach", "detach", "vacuum", "optimize", "kill",
+    ];
+    // Leading parentheses, as in `(SELECT …) UNION (SELECT …)`.
+    let first = tokens.iter().find(|t| sql[t.range.clone()] != *"(").and_then(word);
+    match first.as_deref() {
+        None => true,
+        Some("select") => !has(&["into"]),
+        Some("with") | Some("values") | Some("table") => !has(CHANGES),
+        Some("show") | Some("describe") | Some("desc") | Some("summarize") | Some("exists") => true,
+        Some("explain") => !(has(&["analyze", "analyse"]) && has(CHANGES)),
+        Some("pragma") => !tokens.iter().any(|t| sql[t.range.clone()] == *"="),
+        Some("set") => !has(&["global", "persist", "persist_only"]),
+        Some("use") | Some("begin") | Some("start") | Some("commit") | Some("rollback") | Some("end")
+        | Some("abort") | Some("savepoint") | Some("release") => true,
+        Some(_) => false,
+    }
+}
+
 /// Quoting rules of one engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dialect(pub DbKind);
@@ -434,6 +470,36 @@ impl Dialect {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn read_only_statements() {
+        let ro = |sql: &str| is_read_only(DbKind::Postgres, sql);
+        assert!(ro("SELECT * FROM t"));
+        assert!(ro("  -- note\n(SELECT 1) UNION (SELECT 2);"));
+        assert!(ro("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(ro("select 'insert into t' as text"));
+        assert!(ro("EXPLAIN SELECT 1"));
+        assert!(ro("explain delete from t"));
+        assert!(ro("SHOW search_path"));
+        assert!(ro("SET search_path TO public"));
+        assert!(ro("BEGIN"));
+        assert!(ro("COMMIT"));
+        assert!(ro(""));
+        assert!(!ro("SELECT * INTO copy FROM t"));
+        assert!(!ro("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d"));
+        assert!(!ro("EXPLAIN ANALYZE DELETE FROM t"));
+        assert!(!ro("update t set a = 1"));
+        assert!(!ro("INSERT INTO t VALUES (1)"));
+        assert!(!ro("DROP TABLE t"));
+        assert!(!ro("CALL p()"));
+        assert!(!ro("DO $$ BEGIN DELETE FROM t; END $$"));
+        assert!(!is_read_only(DbKind::MySql, "SET GLOBAL max_connections = 10"));
+        assert!(is_read_only(DbKind::Sqlite, "PRAGMA table_info(t)"));
+        assert!(!is_read_only(DbKind::Sqlite, "PRAGMA journal_mode = WAL"));
+        assert!(!is_read_only(DbKind::MsSql, "EXEC sp_who"));
+        assert!(is_read_only(DbKind::MsSql, "SELECT TOP 10 * FROM [t]"));
+    }
+
     use super::*;
 
     fn stmts(sql: &str, kind: DbKind) -> Vec<&str> {

@@ -202,6 +202,16 @@ impl DbManApp {
 
     /// Performs an explorer or tab action (also used by tests).
     pub fn handle(&mut self, action: Action, ctx: &egui::Context) {
+        if let Some(id) = changes(&action)
+            && self.conn(id).is_some_and(|c| c.cfg.read_only)
+        {
+            toast_error(
+                ctx,
+                tr("The connection is read-only"),
+                Some(tr("Turn \"Read-only\" off in its properties to change it.")),
+            );
+            return;
+        }
         match action {
             Action::Connect(id) => self.connect(id),
             Action::LoadDatabases(id) => {
@@ -286,14 +296,18 @@ impl DbManApp {
             Action::OpenConsole(id, db) => self.open_console(id, db, None),
             Action::OpenData(id, object) => {
                 let Some(c) = self.conn(id) else { return };
-                let kind = c.cfg.kind;
+                let (kind, read_only) = (c.cfg.kind, c.cfg.read_only);
                 let existing = self
                     .tabs
                     .iter()
                     .find(|t| t.conn == id && matches!(&t.kind, TabKind::Data(d) if d.object == object));
                 match existing {
                     Some(t) => self.active = Some(t.id),
-                    None => self.add_tab(id, TabKind::Data(Box::new(DataView::new(object, kind)))),
+                    None => {
+                        let mut view = DataView::new(object, kind);
+                        view.read_only = read_only;
+                        self.add_tab(id, TabKind::Data(Box::new(view)))
+                    }
                 }
             }
             Action::OpenObject(id, object) => {
@@ -830,6 +844,12 @@ impl DbManApp {
             let Some(tab) = self.tabs.iter_mut().find(|t| t.id == active) else { return };
             let conn = self.conns.iter().find(|c| c.cfg.id == tab.conn);
             let conn_id = tab.conn;
+            // A colored connection draws a line over its tabs' content, so production stands out.
+            if let Some(color) = conn.and_then(|c| explorer::conn_color(c.cfg.color)) {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 3.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 1.5, color);
+                ui.add_space(4.0);
+            }
             tab.ui(
                 ui,
                 TabCtx {
@@ -897,7 +917,9 @@ impl DbManApp {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for tab in &self.tabs {
                     let active = self.active == Some(tab.id);
-                    let kind = self.conns.iter().find(|c| c.cfg.id == tab.conn).map(|c| c.cfg.kind);
+                    let conn = self.conns.iter().find(|c| c.cfg.id == tab.conn);
+                    let kind = conn.map(|c| c.cfg.kind);
+                    let color = conn.map_or(dbman_core::ConnColor::None, |c| c.cfg.color);
                     let frame = egui::Frame::new()
                         .fill(if active { t.secondary } else { t.background })
                         .corner_radius(t.radius_md())
@@ -908,6 +930,7 @@ impl DbManApp {
                         .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
                             frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
+                                    explorer::color_mark(ui, color);
                                     if let Some(k) = kind {
                                         explorer::kind_badge(ui, k);
                                     }
@@ -977,8 +1000,18 @@ impl DbManApp {
         });
     }
 
+    /// Folders the connections are in, by name.
+    fn folders(&self) -> Vec<String> {
+        let mut f: Vec<String> = self.conns.iter().map(|c| c.cfg.folder.clone()).filter(|f| !f.is_empty()).collect();
+        f.sort_unstable_by_key(|f| f.to_lowercase());
+        f.dedup();
+        f
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
+        let folders = if self.dialog.is_some() { self.folders() } else { Vec::new() };
         if let Some(d) = &mut self.dialog {
+            d.folders = folders;
             match d.show(ctx) {
                 Some(DialogOutcome::Close) => self.dialog = None,
                 Some(DialogOutcome::Test(cfg)) => {
@@ -1143,5 +1176,26 @@ impl Drop for DbManApp {
 impl eframe::App for DbManApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         DbManApp::ui(self, ui);
+    }
+}
+
+/// The connection an action would change, for actions a read-only connection refuses.
+fn changes(action: &Action) -> Option<Uuid> {
+    match action {
+        Action::NewTable(id, ..)
+        | Action::EditTable(id, _)
+        | Action::NewFromTemplate(id, ..)
+        | Action::NewDatabase(id)
+        | Action::NewSchema(id, _)
+        | Action::DropDatabase(id, _)
+        | Action::DropSchema(id, ..)
+        | Action::DropObject(id, _)
+        | Action::RenameObject(id, _)
+        | Action::Truncate(id, _)
+        | Action::Restore(id, _)
+        | Action::ImportData(id, _)
+        | Action::ImportNewTable(id, ..)
+        | Action::GenerateData(id, _) => Some(*id),
+        _ => None,
     }
 }

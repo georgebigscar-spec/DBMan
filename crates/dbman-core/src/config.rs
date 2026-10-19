@@ -156,6 +156,67 @@ pub struct ConnectionConfig {
     pub only_default_database: bool,
     #[serde(default)]
     pub ssh: SshTunnel,
+    /// Marks the connection's row and tabs, for example red for production.
+    #[serde(default)]
+    pub color: ConnColor,
+    /// The explorer folder the connection sits in; empty for the top level.
+    #[serde(default)]
+    pub folder: String,
+    /// Only statements that read run on this connection.
+    #[serde(default)]
+    pub read_only: bool,
+    /// A console asks before running statements that change data or structure.
+    #[serde(default)]
+    pub confirm_changes: bool,
+}
+
+/// The color of a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ConnColor {
+    #[default]
+    None,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl ConnColor {
+    pub const ALL: [ConnColor; 7] = [
+        ConnColor::None,
+        ConnColor::Red,
+        ConnColor::Orange,
+        ConnColor::Yellow,
+        ConnColor::Green,
+        ConnColor::Blue,
+        ConnColor::Purple,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            ConnColor::None => "No color",
+            ConnColor::Red => "Red",
+            ConnColor::Orange => "Orange",
+            ConnColor::Yellow => "Yellow",
+            ConnColor::Green => "Green",
+            ConnColor::Blue => "Blue",
+            ConnColor::Purple => "Purple",
+        }
+    }
+
+    pub const fn rgb(self) -> Option<[u8; 3]> {
+        Some(match self {
+            ConnColor::None => return None,
+            ConnColor::Red => [0xef, 0x44, 0x44],
+            ConnColor::Orange => [0xf9, 0x73, 0x16],
+            ConnColor::Yellow => [0xea, 0xb3, 0x08],
+            ConnColor::Green => [0x22, 0xc5, 0x5e],
+            ConnColor::Blue => [0x3b, 0x82, 0xf6],
+            ConnColor::Purple => [0xa8, 0x55, 0xf7],
+        })
+    }
 }
 
 fn yes() -> bool {
@@ -177,6 +238,10 @@ impl ConnectionConfig {
             ssl_mode: SslMode::default(),
             only_default_database: false,
             ssh: SshTunnel::default(),
+            color: ConnColor::None,
+            folder: String::new(),
+            read_only: false,
+            confirm_changes: false,
         }
     }
 

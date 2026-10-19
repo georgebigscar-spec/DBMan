@@ -177,6 +177,10 @@ impl ClickHouseConnection {
         if let Some(db) = self.database(database) {
             params.push(("database", db));
         }
+        if self.cfg.read_only {
+            // Reads only, though session settings may still change.
+            params.push(("readonly", "2"));
+        }
         // A query cut off or cancelled just before may still hold the session.
         let mut tries = 0;
         let resp = loop {
