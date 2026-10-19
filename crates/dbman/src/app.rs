@@ -23,7 +23,7 @@ use crate::jobs::{JobState, Jobs};
 use crate::palette::{self, Pick};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::sessions_view::SessionsView;
-use crate::store::{History, Settings};
+use crate::store::{History, SavedTab, Settings, Workspace};
 use crate::table_editor::TableEditor;
 use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
 use crate::transfer_dialog::{ExportDialog, ImportDialog, Start, TransferOutcome};
@@ -55,11 +55,29 @@ pub struct DbManApp {
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
     runtime: Option<tokio::runtime::Runtime>,
+    /// The open tabs as last saved, to save only changes.
+    saved_workspace: Workspace,
+    workspace_checked: std::time::Instant,
+    /// Where the open tabs are kept between runs; `None` keeps nothing.
+    workspace_file: Option<std::path::PathBuf>,
 }
 
 impl DbManApp {
     pub fn new(cc: &eframe::CreationContext<'_>, runtime: tokio::runtime::Runtime) -> Self {
-        Self::with_settings(&cc.egui_ctx, runtime, Settings::load())
+        let app = Self::with_settings(&cc.egui_ctx, runtime, Settings::load());
+        match Workspace::path() {
+            Some(path) => app.keep_workspace(path),
+            None => app,
+        }
+    }
+
+    /// Reopens the tabs saved in `path` and saves them there as they change.
+    pub fn keep_workspace(mut self, path: std::path::PathBuf) -> Self {
+        let workspace = Workspace::load(&path);
+        self.restore(&workspace);
+        self.saved_workspace = workspace;
+        self.workspace_file = Some(path);
+        self
     }
 
     pub fn with_settings(ctx: &egui::Context, runtime: tokio::runtime::Runtime, settings: Settings) -> Self {
@@ -92,6 +110,104 @@ impl DbManApp {
             jobs: Jobs::default(),
             status: tr("Ready").into(),
             runtime: Some(runtime),
+            saved_workspace: Workspace::default(),
+            workspace_checked: std::time::Instant::now(),
+            workspace_file: None,
+        }
+    }
+
+    /// The open tabs, as they are saved between runs.
+    pub fn workspace(&self) -> Workspace {
+        let tabs: Vec<(TabId, SavedTab)> = self
+            .tabs
+            .iter()
+            .filter_map(|t| {
+                let conn = t.conn;
+                let saved = match &t.kind {
+                    TabKind::Console(c) => SavedTab::Console {
+                        conn,
+                        database: c.database.clone(),
+                        title: c.title.clone(),
+                        sql: c.sql.clone(),
+                        file: c.file.clone(),
+                        manual: c.manual,
+                    },
+                    TabKind::Data(d) => SavedTab::Data { conn, object: d.object.clone() },
+                    TabKind::Object(o) => SavedTab::Object { conn, object: o.object.clone() },
+                    TabKind::Diagram(d) => {
+                        SavedTab::Diagram { conn, database: d.database.clone(), schema: d.schema.clone() }
+                    }
+                    TabKind::Sessions(_) => SavedTab::Sessions { conn },
+                    // Editors and comparisons hold work in progress that does not keep.
+                    TabKind::TableEditor(_) | TabKind::Compare(_) | TabKind::Copy(_) => return None,
+                };
+                Some((t.id, saved))
+            })
+            .collect();
+        let active = tabs.iter().position(|(id, _)| Some(*id) == self.active);
+        Workspace { tabs: tabs.into_iter().map(|(_, s)| s).collect(), active }
+    }
+
+    /// Opens the tabs of a saved workspace. Nothing connects until a tab needs it.
+    fn restore(&mut self, w: &Workspace) {
+        let mut active = None;
+        for (i, saved) in w.tabs.iter().enumerate() {
+            let conn = match saved {
+                SavedTab::Console { conn, .. }
+                | SavedTab::Data { conn, .. }
+                | SavedTab::Object { conn, .. }
+                | SavedTab::Diagram { conn, .. }
+                | SavedTab::Sessions { conn } => *conn,
+            };
+            // The connection may have been deleted since.
+            let Some(c) = self.conn(conn) else { continue };
+            let cfg = c.cfg.clone();
+            let kind = match saved.clone() {
+                SavedTab::Console { database, title, sql, file, manual, .. } => {
+                    let mut console = Console::new(title, cfg, database);
+                    if let Some(path) = file {
+                        // The file as it is now, so edits made before closing still show as unsaved.
+                        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+                        console.set_file(path, on_disk);
+                    }
+                    console.sql = sql;
+                    console.manual = manual;
+                    TabKind::Console(Box::new(console))
+                }
+                SavedTab::Data { object, .. } => {
+                    let mut view = DataView::new(object, cfg.kind);
+                    view.read_only = cfg.read_only;
+                    TabKind::Data(Box::new(view))
+                }
+                SavedTab::Object { object, .. } => TabKind::Object(Box::new(ObjectView::new(object, cfg.kind))),
+                SavedTab::Diagram { database, schema, .. } => {
+                    TabKind::Diagram(Box::new(ErView::new(cfg, database, schema)))
+                }
+                SavedTab::Sessions { .. } => TabKind::Sessions(Box::new(SessionsView::new(cfg.kind))),
+            };
+            self.add_tab(conn, kind);
+            if w.active == Some(i) {
+                active = self.active;
+            }
+        }
+        if active.is_some() {
+            self.active = active;
+        }
+    }
+
+    /// Saves the open tabs when they changed, at most once a second unless `now`.
+    fn save_workspace(&mut self, now: bool) {
+        let Some(path) = self.workspace_file.clone() else { return };
+        if !now && self.workspace_checked.elapsed() < std::time::Duration::from_secs(1) {
+            return;
+        }
+        self.workspace_checked = std::time::Instant::now();
+        let w = self.workspace();
+        if w != self.saved_workspace {
+            if let Err(e) = w.save(&path) {
+                self.status = trf("Could not save the open tabs: {error}", &[("error", &e)]);
+            }
+            self.saved_workspace = w;
         }
     }
 
@@ -616,6 +732,13 @@ impl DbManApp {
         self.settings.params.get(name).map(String::as_str)
     }
 
+    /// Brings the tab at `index` (counted from the left) to the front.
+    pub fn select_tab(&mut self, index: usize) {
+        if let Some(t) = self.tabs.get(index) {
+            self.active = Some(t.id);
+        }
+    }
+
     /// The sessions tab on screen, if the active tab is one.
     pub fn active_sessions(&mut self) -> Option<&mut SessionsView> {
         let active = self.active?;
@@ -729,6 +852,7 @@ impl DbManApp {
             theme.install(&ctx);
         }
         self.drain_events(&ctx);
+        self.save_workspace(false);
         let t = Theme::get(&ctx);
         let mut actions = Vec::new();
 
@@ -1186,6 +1310,11 @@ impl Drop for DbManApp {
 impl eframe::App for DbManApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         DbManApp::ui(self, ui);
+    }
+
+    fn on_exit(&mut self) {
+        // Typing from the last second has not been saved yet.
+        self.save_workspace(true);
     }
 }
 

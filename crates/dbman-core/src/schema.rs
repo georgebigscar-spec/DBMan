@@ -1,5 +1,5 @@
 /// Kinds of objects shown in the database explorer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum ObjectKind {
     Table,
     View,
@@ -55,7 +55,7 @@ impl ObjectKind {
 
 /// Where an object lives. For engines without schemas (MySQL, SQLite) the
 /// schema equals the database.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ObjectPath {
     pub database: String,
     pub schema: String,
@@ -69,7 +69,7 @@ impl ObjectPath {
 }
 
 /// An object listed in a schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DbObject {
     pub kind: ObjectKind,
     pub path: ObjectPath,

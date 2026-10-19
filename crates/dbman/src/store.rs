@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use dbman_core::ConnectionConfig;
@@ -241,6 +241,77 @@ pub fn keychain() -> Option<&'static dyn Secrets> {
         !off && keyring::Entry::store_status().is_ok() && Keychain.get("availability-check").is_ok()
     });
     if *AVAILABLE { Some(&Keychain) } else { None }
+}
+
+/// The tabs open when DBMan closed, opened again on the next start (in
+/// `workspace.json` next to the settings). Consoles keep their text, also
+/// when it was never saved to a file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Workspace {
+    #[serde(default)]
+    pub tabs: Vec<SavedTab>,
+    /// Index of the active tab.
+    #[serde(default)]
+    pub active: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum SavedTab {
+    Console {
+        conn: uuid::Uuid,
+        database: Option<String>,
+        title: String,
+        sql: String,
+        #[serde(default)]
+        file: Option<PathBuf>,
+        #[serde(default)]
+        manual: bool,
+    },
+    Data {
+        conn: uuid::Uuid,
+        object: dbman_core::DbObject,
+    },
+    Object {
+        conn: uuid::Uuid,
+        object: dbman_core::DbObject,
+    },
+    Diagram {
+        conn: uuid::Uuid,
+        database: String,
+        schema: String,
+    },
+    Sessions {
+        conn: uuid::Uuid,
+    },
+}
+
+impl Workspace {
+    /// `workspace.json` next to the settings.
+    pub fn path() -> Option<PathBuf> {
+        Settings::path().map(|p| p.with_file_name("workspace.json"))
+    }
+
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    /// Writes a temporary file first, so a crash mid-write keeps the old workspace.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Scripts may hold data or secrets, as the query history does.
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
 }
 
 /// One statement run in a console.

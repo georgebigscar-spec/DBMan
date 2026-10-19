@@ -710,5 +710,6 @@
   "Run": "Выполнить",
   "Query parameters": "Параметры запроса",
   "Values go into the statement as written: put text in quotes, like 'Berlin'.": "Значения подставляются в выражение как написаны: текст берите в кавычки, например 'Berlin'.",
-  "Every parameter needs a value (NULL for none).": "У каждого параметра должно быть значение (NULL, если пусто)."
+  "Every parameter needs a value (NULL for none).": "У каждого параметра должно быть значение (NULL, если пусто).",
+  "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}"
 }
