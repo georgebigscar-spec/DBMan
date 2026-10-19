@@ -168,6 +168,12 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
     - SQLite: `sqlite3_interrupt`;
     - DuckDB: `interrupt`.
   - The data view works in its own session, so a slow page does not hold up the object tree.
+- **Sessions** (`Sessions` in a server connection's menu): who is connected and what they run, from `pg_stat_activity` on PostgreSQL, `information_schema.PROCESSLIST` on MySQL and MariaDB, `sys.dm_exec_sessions` and `sys.dm_exec_requests` on SQL Server, and `system.processes` (running queries) on ClickHouse.
+  - Each row has the user, database, client, application, state, how long the session has been in that state, what it waits for, and its current or last statement. The session DBMan lists them with is marked `this`.
+  - The list reloads every 3 seconds (`Auto-refresh` turns that off), and `Hide idle` keeps only sessions that run something. The filter searches every column.
+  - A click on a row shows the whole statement below the table. There, and in the row's menu, `Cancel query` stops the statement and keeps the session (`pg_cancel_backend`, `KILL QUERY`, ClickHouse `KILL QUERY WHERE query_id`), and `Kill session…` asks first and then disconnects it, rolling back its open transaction (`pg_terminate_backend`, `KILL CONNECTION`, SQL Server `KILL`). `Open query in a console` and `Copy query` take the statement.
+
+![Sessions](crates/dbman/tests/snapshots/sessions.png)
 - **Backup and restore** from the context menu of a database, schema or table (`Back up…`, `Restore…`). The job runs in the background, and the window stays usable. The "Background tasks" panel shows progress, file size, time, the tool's log and a `Cancel` button.
   - **PostgreSQL**:
     - `pg_dump` in custom, plain SQL, directory (parallel) and tar formats;
@@ -272,6 +278,7 @@ crates/
   | Backup dialogs | `backup_dialog.rs` | |
   | Data transfer dialogs | `transfer_dialog.rs` | |
   | Background jobs | `jobs.rs` | |
+  | Server sessions | `sessions_view.rs` | statements per engine in `dbman-core::sessions` |
 
 ## Tests
 

@@ -22,6 +22,7 @@ pub mod import;
 pub mod infer;
 mod result;
 mod schema;
+pub mod sessions;
 pub mod sql;
 pub mod value;
 pub mod xlsx;

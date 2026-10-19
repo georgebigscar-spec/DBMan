@@ -790,3 +790,82 @@ fn browse_sqlite_database() {
     assert!(h.query_by_label("Passphrase").is_some());
     snapshot(&mut h, "ssh_tunnel");
 }
+
+/// The sessions tab of a PostgreSQL server (needs `DBMAN_TEST_POSTGRES`): a
+/// second session sleeps, shows up in the list and is ended from its menu.
+#[test]
+fn sessions_monitor() {
+    let Some(url) = std::env::var("DBMAN_TEST_POSTGRES").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("DBMAN_TEST_POSTGRES not set, skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+    let (auth, addr) = rest.rsplit_once('@').unwrap();
+    let (user, password) = auth.split_once(':').unwrap();
+    let (hostport, db) = addr.split_once('/').unwrap();
+    let (host, port) = hostport.split_once(':').unwrap();
+    let mut cfg = ConnectionConfig::new(DbKind::Postgres);
+    cfg.name = "local".into();
+    cfg.host = host.into();
+    cfg.port = port.parse().unwrap();
+    cfg.user = user.into();
+    cfg.password = password.into();
+    cfg.database = db.into();
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let conn_id = cfg.id;
+    let settings = Settings {
+        connections: vec![cfg.clone()],
+        dark: true,
+        page_size: 500,
+        tools_dir: String::new(),
+        language: String::new(),
+        recent_scripts: Vec::new(),
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    // A session that sleeps until it is ended, on a runtime of its own; the
+    // marker tells it from sleepers left by an earlier failed run.
+    let marker = uuid::Uuid::new_v4().to_string();
+    let other = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let sleeper = other.spawn({
+        let (cfg, marker) = (cfg.clone(), marker.clone());
+        async move {
+            let c = dbman_drivers::connect(&cfg).await.unwrap();
+            c.execute(None, &format!("SELECT pg_sleep(120) /* nightly report {marker} */"), 1).await
+        }
+    });
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 700.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &conn_id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenSessions(conn_id), &ctx);
+    settle(&mut h);
+    assert_eq!(h.state().tab_titles(), ["Sessions"]);
+    let mut sleeping = None;
+    for _ in 0..20 {
+        let view = h.state_mut().active_sessions().unwrap();
+        sleeping = view.sessions().iter().find(|s| s.query.contains(&marker)).map(|s| s.id.clone());
+        if sleeping.is_some() {
+            break;
+        }
+        settle(&mut h);
+    }
+    let sleeping = sleeping.expect("the sleeping session is listed");
+    h.state_mut().active_sessions().unwrap().pick(&sleeping);
+    settle(&mut h);
+    assert!(h.query_by_label("Kill session…").is_some());
+    snapshot(&mut h, "sessions");
+
+    click(&mut h, "Kill session…");
+    assert!(h.query_by_label("Kill session").is_some(), "asks first");
+    press_and_release(&mut h, "Kill session");
+    let ended = other.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(10), sleeper).await });
+    assert!(ended.expect("the session ends").unwrap().is_err());
+}
