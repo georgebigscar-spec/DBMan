@@ -74,6 +74,10 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 ![Autocomplete](crates/dbman/tests/snapshots/autocomplete.png)
 
+- **Query parameters**: `:name`, `${name}` and, on MySQL, SQL Server, SQLite and DuckDB, `?` in a statement are asked for before it runs (`?` is an operator in PostgreSQL and ClickHouse). Strings, comments, `::` casts and ClickHouse's `{name:Type}` are left alone. The dialog shows the statement with the values in place; they go in as written, so text needs quotes (`'Berlin'`) and `NULL` means none. Values are remembered by name for the next time, and `Explain` asks for them too.
+
+![Query parameters](crates/dbman/tests/snapshots/query_parameters.png)
+
 - **Query history**: every statement run in a console is kept with its time, duration and result (the last 2000, in `history.jsonl` next to the settings). `History` in the console shows those of its connection, newest first, with a search; a click adds the statement to the script.
 - **Script files**: `Script` in the console opens a `.sql` file, saves it (`Ctrl+S`) or saves it under another name, and lists recent files. The tab shows the file name, with `•` while there are unsaved changes.
 
