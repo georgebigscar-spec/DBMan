@@ -128,6 +128,12 @@ fn press_and_release(h: &mut Harness<'_, DbManApp>, label: &str) {
     settle(h);
 }
 
+/// Clicks the last node with this label, such as a dialog's button over a toolbar's.
+fn click_last(h: &mut Harness<'_, DbManApp>, label: &str) {
+    h.get_all_by_label(label).last().unwrap_or_else(|| panic!("no node {label}")).click();
+    settle(h);
+}
+
 fn snapshot(h: &mut Harness<'_, DbManApp>, name: &str) {
     if std::env::var("DBMAN_SCREENSHOTS").is_ok_and(|v| v == "1") {
         h.snapshot(name);
@@ -153,6 +159,7 @@ fn browse_sqlite_database() {
         tools_dir: String::new(),
         language: String::new(),
         recent_scripts: Vec::new(),
+        ..Default::default()
     };
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -823,6 +830,7 @@ fn sessions_monitor() {
         tools_dir: String::new(),
         language: String::new(),
         recent_scripts: Vec::new(),
+        ..Default::default()
     };
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -901,6 +909,7 @@ fn connection_options() {
         tools_dir: String::new(),
         language: String::new(),
         recent_scripts: Vec::new(),
+        ..Default::default()
     };
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let ctx = egui::Context::default();
@@ -984,4 +993,63 @@ fn connection_options() {
     click(&mut h, "Options");
     assert!(h.query_by_label("Read-only").is_some());
     snapshot(&mut h, "connection_options");
+}
+
+/// Query parameters on SQLite: the console asks for `:city` and `${min}`
+/// before running, and offers the same values the next time.
+#[test]
+fn query_parameters() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let conn_id = cfg.id;
+    let settings = Settings { connections: vec![cfg], ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 700.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenConsole(conn_id, None), &ctx);
+    settle(&mut h);
+    let editor = || egui::accesskit::Role::MultilineTextInput;
+    h.get_by_role(editor()).focus();
+    h.run_steps(2);
+    h.get_by_role(editor())
+        .type_text("SELECT name FROM customers\nWHERE city = :city AND id >= ${min_id} -- not :this\nORDER BY name");
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    assert!(h.query_by_label("Query parameters").is_some(), "asks for the values");
+    assert!(h.query_by_label("city").is_some());
+    assert!(h.query_by_label("min_id").is_some());
+    assert!(h.query_by_label("this").is_none(), "comments have no parameters");
+    assert_eq!(h.get_all_by_role(egui::accesskit::Role::TextInput).count(), 2);
+    for (i, value) in ["'Berlin'", "1"].into_iter().enumerate() {
+        h.get_all_by_role(egui::accesskit::Role::TextInput).nth(i).unwrap().focus();
+        h.run_steps(2);
+        h.get_all_by_role(egui::accesskit::Role::TextInput).nth(i).unwrap().type_text(value);
+        h.run_steps(2);
+    }
+    settle(&mut h);
+    snapshot(&mut h, "query_parameters");
+    click_last(&mut h, "Run");
+    let summaries = h.state().console_summaries();
+    assert_eq!(summaries.len(), 1);
+    assert!(summaries[0].starts_with("1 rows"), "{summaries:?}");
+    assert_eq!(h.state().remembered_param("city"), Some("'Berlin'"));
+
+    // The next run offers the same values.
+    h.get_by_role(editor()).focus();
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    assert!(h.query_by_label("Query parameters").is_some());
+    click_last(&mut h, "Run");
+    assert!(h.state().console_summaries()[0].starts_with("1 rows"));
 }

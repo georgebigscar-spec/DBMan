@@ -29,6 +29,7 @@ use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
 use crate::value_panel::ValuePanel;
 use dbman_core::explain::{self, Plan, PlanNode};
+use dbman_core::params;
 
 pub struct Tab {
     pub id: TabId,
@@ -61,6 +62,8 @@ pub struct TabCtx<'a> {
     pub history: &'a History,
     /// Script files opened or saved lately, newest first.
     pub recent_scripts: &'a [PathBuf],
+    /// Values given to query parameters before, by name.
+    pub params: &'a std::collections::BTreeMap<String, String>,
 }
 
 impl Tab {
@@ -211,6 +214,19 @@ pub struct Console {
     pub value: ValuePanel,
     /// Statements that change something, waiting for the user to confirm the run.
     confirm: Option<Vec<String>>,
+    /// Statements with parameters, waiting for their values.
+    params: Option<ParamPrompt>,
+}
+
+/// The values of a run's parameters, while the user types them.
+struct ParamPrompt {
+    stmts: Vec<String>,
+    names: Vec<String>,
+    values: Vec<String>,
+    /// Explain the statement (`Some(analyze)`) instead of running it.
+    explain: Option<bool>,
+    /// The first field takes the focus once, when the dialog opens.
+    focus: bool,
 }
 
 impl Console {
@@ -239,6 +255,7 @@ impl Console {
             in_tx: false,
             value: ValuePanel::default(),
             confirm: None,
+            params: None,
         }
     }
 
@@ -474,14 +491,122 @@ impl Console {
         }
     }
 
-    fn run(&mut self, tasks: &Tasks, tab: TabId, all: bool, max_rows: usize) {
+    fn run(&mut self, cx: &TabCtx<'_>, tab: TabId, all: bool) {
         let stmts = self.statements_to_run(all);
+        if !self.ask_params(&stmts, None, cx.params) {
+            self.run_ready(cx.tasks, tab, stmts, cx.page_size);
+        }
+    }
+
+    /// Opens the parameters dialog when the statements have parameters; false when they have none.
+    fn ask_params(
+        &mut self,
+        stmts: &[String],
+        explain: Option<bool>,
+        remembered: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        let kind = self.cfg.kind;
+        let mut names: Vec<String> = Vec::new();
+        for s in stmts {
+            for n in params::names(&params::find(kind, s)) {
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+        }
+        if names.is_empty() {
+            return false;
+        }
+        let values = names.iter().map(|n| remembered.get(n).cloned().unwrap_or_default()).collect();
+        self.params = Some(ParamPrompt { stmts: stmts.to_vec(), names, values, explain, focus: true });
+        true
+    }
+
+    /// Statements whose parameters have values: they run, after the confirmation if one is due.
+    fn run_ready(&mut self, tasks: &Tasks, tab: TabId, stmts: Vec<String>, max_rows: usize) {
         if self.cfg.confirm_changes && stmts.iter().any(|s| !sql::is_read_only(self.cfg.kind, s)) {
             self.confirm = Some(stmts);
             return;
         }
         let begin = self.begin();
         self.start_run(tasks, tab, stmts, begin, max_rows);
+    }
+
+    /// The dialog that asks for parameter values before a run.
+    fn params_ui(&mut self, ctx: &egui::Context, tab: TabId, cx: &mut TabCtx<'_>) {
+        let Some(p) = &mut self.params else { return };
+        let t = Theme::get(ctx);
+        let mut go = false;
+        let mut close = false;
+        let r = shadcn_egui::Dialog::new(("query-params", tab), tr("Query parameters"))
+            .description(tr("Values go into the statement as written: put text in quotes, like 'Berlin'."))
+            .width(460.0)
+            .show(ctx, |ui| {
+                let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                for (i, (name, value)) in p.names.iter().zip(p.values.iter_mut()).enumerate() {
+                    shadcn_egui::label(ui, name);
+                    let r = ui.add(
+                        shadcn_egui::Input::new(value).placeholder("NULL, 42, 'text'…").width(ui.available_width()),
+                    );
+                    if i == 0 && p.focus {
+                        r.request_focus();
+                        p.focus = false;
+                    }
+                    ui.add_space(4.0);
+                }
+                let shown: Vec<String> = p
+                    .stmts
+                    .iter()
+                    .map(|s| {
+                        params::substitute(self.cfg.kind, s, |n| {
+                            p.names.iter().position(|x| x == n).map(|i| p.values[i].clone()).unwrap_or_default()
+                        })
+                    })
+                    .collect();
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                    sql_editor::viewer(ui, egui::Id::new(("params-preview", tab)), &shown.join(";\n"), self.cfg.kind);
+                });
+                let missing = p.values.iter().any(|v| v.trim().is_empty());
+                if missing {
+                    ui.label(
+                        RichText::new(tr("Every parameter needs a value (NULL for none)."))
+                            .size(12.0)
+                            .color(t.muted_foreground),
+                    );
+                }
+                shadcn_egui::footer(ui, |ui| {
+                    let label = if p.explain.is_some() { tr("Explain") } else { tr("Run") };
+                    if ui.add_enabled(!missing, Button::new(label)).clicked() || (enter && !missing) {
+                        go = true;
+                    }
+                    if ui.add(Button::outline(tr("Cancel"))).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if r.should_close || close {
+            self.params = None;
+            return;
+        }
+        if !go {
+            return;
+        }
+        let Some(p) = self.params.take() else { return };
+        let value =
+            |n: &str| p.names.iter().position(|x| x == n).map(|i| p.values[i].trim().to_string()).unwrap_or_default();
+        let stmts: Vec<String> = p.stmts.iter().map(|s| params::substitute(self.cfg.kind, s, value)).collect();
+        cx.actions.push(Action::RememberParams(
+            p.names.iter().cloned().zip(p.values.iter().map(|v| v.trim().to_string())).collect(),
+        ));
+        match p.explain {
+            Some(analyze) => {
+                if let Some(sql) = stmts.into_iter().next() {
+                    self.explain_sql(cx.tasks, tab, sql, analyze);
+                }
+            }
+            None => self.run_ready(cx.tasks, tab, stmts, cx.page_size),
+        }
     }
 
     /// Asks before a run that changes something, on connections that want it.
@@ -557,8 +682,14 @@ impl Console {
     }
 
     /// Shows the plan of the statement under the cursor (or the selection's first one).
-    fn explain(&mut self, tasks: &Tasks, tab: TabId, analyze: bool) {
+    fn explain(&mut self, cx: &TabCtx<'_>, tab: TabId, analyze: bool) {
         let Some(sql) = self.statements_to_run(false).into_iter().next() else { return };
+        if !self.ask_params(std::slice::from_ref(&sql), Some(analyze), cx.params) {
+            self.explain_sql(cx.tasks, tab, sql, analyze);
+        }
+    }
+
+    fn explain_sql(&mut self, tasks: &Tasks, tab: TabId, sql: String, analyze: bool) {
         if self.running {
             return;
         }
@@ -614,7 +745,7 @@ impl Console {
         tasks.spawn(async move { Event::Tab { tab, event: TabEvent::Session(dbman_drivers::connect(&cfg).await) } });
     }
 
-    fn ui(&mut self, ui: &mut Ui, tab: TabId, cx: TabCtx<'_>) {
+    fn ui(&mut self, ui: &mut Ui, tab: TabId, mut cx: TabCtx<'_>) {
         let t = Theme::get(ui.ctx());
         let ctx = ui.ctx().clone();
         self.poll_dialogs(&ctx, cx.actions);
@@ -622,6 +753,7 @@ impl Console {
             self.save(&ctx, cx.actions);
         }
         self.confirm_ui(&ctx, cx.tasks, tab, cx.page_size);
+        self.params_ui(&ctx, tab, &mut cx);
         if let (Load::Ready(s), Some(work)) = (&self.session, self.queued.take()) {
             let (s, db) = (s.clone(), self.database.clone());
             match work {
@@ -639,7 +771,7 @@ impl Console {
             let all = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter));
             let one = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
             if all || one {
-                self.run(cx.tasks, tab, all, cx.page_size);
+                self.run(&cx, tab, all);
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::L)) {
                 self.format(&ctx, editor_id);
@@ -651,26 +783,26 @@ impl Console {
                 .add_enabled(!self.running, Button::new(tr("▶ Run")).size(ButtonSize::Sm))
                 .tooltip(tr("Run the statement under the cursor or the selection (Ctrl+Enter)"));
             if run.clicked() {
-                self.run(cx.tasks, tab, false, cx.page_size);
+                self.run(&cx, tab, false);
             }
             let all = ui
                 .add_enabled(!self.running, Button::outline(tr("Run script")).size(ButtonSize::Sm))
                 .tooltip(tr("Run every statement (Ctrl+Shift+Enter)"));
             if all.clicked() {
-                self.run(cx.tasks, tab, true, cx.page_size);
+                self.run(&cx, tab, true);
             }
             let explain = ui
                 .add_enabled(!self.running, Button::outline(tr("Explain")).size(ButtonSize::Sm))
                 .tooltip(tr("Show the plan of the statement under the cursor without running it"));
             if explain.clicked() {
-                self.explain(cx.tasks, tab, false);
+                self.explain(&cx, tab, false);
             }
             if explain::supports_analyze(self.cfg.kind) {
                 let analyze = ui
                     .add_enabled(!self.running, Button::outline(tr("Explain analyze")).size(ButtonSize::Sm))
                     .tooltip(tr("Run the statement and show the plan with the actual times and rows"));
                 if analyze.clicked() {
-                    self.explain(cx.tasks, tab, true);
+                    self.explain(&cx, tab, true);
                 }
             }
             let format = ui

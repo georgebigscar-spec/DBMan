@@ -381,6 +381,10 @@ impl DbManApp {
                 }
                 Err(e) => shadcn_egui::toast_error(ctx, tr("Could not open the file"), Some(&e)),
             },
+            Action::RememberParams(values) => {
+                self.settings.params.extend(values);
+                self.save_settings();
+            }
             Action::RecentScript(path) => {
                 self.settings.add_recent(path);
                 self.save_settings();
@@ -605,6 +609,11 @@ impl DbManApp {
             TabKind::Copy(c) => Some(c.as_mut()),
             _ => None,
         }
+    }
+
+    /// The value last given to a query parameter.
+    pub fn remembered_param(&self, name: &str) -> Option<&str> {
+        self.settings.params.get(name).map(String::as_str)
     }
 
     /// The sessions tab on screen, if the active tab is one.
@@ -861,6 +870,7 @@ impl DbManApp {
                     conns: &self.conns,
                     history: &self.history,
                     recent_scripts: &self.settings.recent_scripts,
+                    params: &self.settings.params,
                 },
             );
         });

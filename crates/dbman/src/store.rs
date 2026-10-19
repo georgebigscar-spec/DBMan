@@ -30,6 +30,9 @@ pub struct Settings {
     /// Script files opened or saved lately, newest first.
     #[serde(default)]
     pub recent_scripts: Vec<PathBuf>,
+    /// The values last given to query parameters, by name.
+    #[serde(default)]
+    pub params: std::collections::BTreeMap<String, String>,
 }
 
 /// Script files kept in the recent list.
@@ -52,6 +55,7 @@ impl Default for Settings {
             tools_dir: String::new(),
             language: String::new(),
             recent_scripts: Vec::new(),
+            params: Default::default(),
         }
     }
 }

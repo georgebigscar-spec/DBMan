@@ -20,6 +20,7 @@ pub mod format;
 pub mod generate;
 pub mod import;
 pub mod infer;
+pub mod params;
 mod result;
 mod schema;
 pub mod sessions;

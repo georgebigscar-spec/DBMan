@@ -235,6 +235,8 @@ pub enum Action {
     OpenScript(Uuid, Option<String>, std::path::PathBuf),
     /// A script file was opened or saved: it goes first in the recent list.
     RecentScript(std::path::PathBuf),
+    /// Values given to query parameters, to offer them next time.
+    RememberParams(Vec<(String, String)>),
     /// A console ran a statement.
     RecordQuery(Box<crate::store::HistoryEntry>),
 }
