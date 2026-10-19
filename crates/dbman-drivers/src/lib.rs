@@ -18,17 +18,20 @@ pub mod generate;
 pub mod mssql;
 pub mod mysql;
 pub mod postgres;
+pub mod read_only;
 pub mod sqlite;
 pub mod ssh;
 pub mod transfer;
 
 /// Opens a new session for `cfg`, through its SSH server when it has one.
 /// Must be called inside a tokio runtime.
+/// A read-only connection refuses statements that change anything.
 pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {
-    match ssh::route(cfg).await? {
-        (local, Some(tunnel)) => Ok(Arc::new(ssh::Tunneled { inner: connect_direct(&local).await?, tunnel })),
-        (_, None) => connect_direct(cfg).await,
-    }
+    let conn: Arc<dyn Connection> = match ssh::route(cfg).await? {
+        (local, Some(tunnel)) => Arc::new(ssh::Tunneled { inner: connect_direct(&local).await?, tunnel }),
+        (_, None) => connect_direct(cfg).await?,
+    };
+    Ok(if cfg.read_only { Arc::new(read_only::ReadOnly { inner: conn }) } else { conn })
 }
 
 async fn connect_direct(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>> {

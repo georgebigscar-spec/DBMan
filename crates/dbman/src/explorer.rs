@@ -328,11 +328,41 @@ pub fn show(ui: &mut Ui, conns: &[ConnState], selected: &mut Option<Node>, actio
         });
         return;
     }
+    // Folders first, by name, then the connections outside any folder.
+    let mut folders: Vec<&str> = conns.iter().map(|c| c.cfg.folder.as_str()).filter(|f| !f.is_empty()).collect();
+    folders.sort_unstable_by_key(|f| f.to_lowercase());
+    folders.dedup();
     Tree::new("explorer").icons(false).show(ui, selected, |tree| {
-        for c in conns {
+        for f in folders {
+            let n = conns.iter().filter(|c| c.cfg.folder == f).count();
+            tree.folder_ui(
+                Node::Info(format!("folder:{f}")),
+                &format!("folder:{f}"),
+                |ui| row(ui, Some(Icon::Folder), t.muted_foreground, f, Some(&n.to_string())),
+                |tree| {
+                    for c in conns.iter().filter(|c| c.cfg.folder == f) {
+                        connection(tree, c, actions);
+                    }
+                },
+            );
+        }
+        for c in conns.iter().filter(|c| c.cfg.folder.is_empty()) {
             connection(tree, c, actions);
         }
     });
+}
+
+/// The color a connection is marked with, if any.
+pub fn conn_color(color: dbman_core::ConnColor) -> Option<Color32> {
+    color.rgb().map(|[r, g, b]| Color32::from_rgb(r, g, b))
+}
+
+/// A short colored bar for a connection's color.
+pub fn color_mark(ui: &mut Ui, color: dbman_core::ConnColor) {
+    if let Some(c) = conn_color(color) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 16.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, c);
+    }
 }
 
 fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Action>) {
@@ -345,9 +375,16 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
         &id.to_string(),
         |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            color_mark(ui, c.cfg.color);
             kind_badge(ui, kind);
             let t = Theme::get(ui.ctx());
             ui.add(egui::Label::new(RichText::new(&name).color(t.foreground)).truncate().selectable(false));
+            if c.cfg.read_only {
+                ui.add(
+                    egui::Label::new(RichText::new(tr("read-only")).size(12.0).color(t.muted_foreground))
+                        .selectable(false),
+                );
+            }
             if connected {
                 let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                 ui.painter().circle_filled(dot.center(), 3.0, Color32::from_rgb(0x22, 0xc5, 0x5e));
@@ -372,7 +409,7 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             actions.push(Action::OpenConsole(id, None));
         }
         if connected {
-            if !kind.is_file_based() && menu_item(ui, tr("New database…"), None).clicked() {
+            if !c.cfg.read_only && !kind.is_file_based() && menu_item(ui, tr("New database…"), None).clicked() {
                 actions.push(Action::NewDatabase(id));
             }
             if menu_item(ui, tr("Refresh"), None).clicked() {
@@ -383,7 +420,7 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             }
             if kind.is_file_based() {
                 let database = if kind == DbKind::Sqlite { "main".into() } else { String::new() };
-                backup_items(ui, id, Scope { database, ..Default::default() }, actions);
+                backup_items(ui, c, Scope { database, ..Default::default() }, actions);
             }
             if menu_item(ui, tr("Disconnect"), None).clicked() {
                 actions.push(Action::Disconnect(id));
@@ -436,7 +473,7 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
                 actions.push(Action::OpenConsole(id, Some(db.clone())));
             }
             if c.has_schemas() {
-                if menu_item(ui, tr("New schema…"), None).clicked() {
+                if !c.cfg.read_only && menu_item(ui, tr("New schema…"), None).clicked() {
                     actions.push(Action::NewSchema(id, db.clone()));
                 }
                 if menu_item(ui, tr("Refresh"), None).clicked() {
@@ -462,11 +499,11 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             }
             if !c.cfg.kind.is_file_based() || (c.cfg.kind == DbKind::Sqlite && db == "main") {
                 menu_separator(ui);
-                backup_items(ui, id, Scope { database: db.clone(), ..Default::default() }, actions);
+                backup_items(ui, c, Scope { database: db.clone(), ..Default::default() }, actions);
             }
             if !c.cfg.kind.is_file_based() {
                 menu_separator(ui);
-                if menu_item(ui, tr("Drop database…"), None).clicked() {
+                if !c.cfg.read_only && menu_item(ui, tr("Drop database…"), None).clicked() {
                     actions.push(Action::DropDatabase(id, db.clone()));
                 }
             }
@@ -523,7 +560,7 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
                 let scope = Scope { database: db.to_string(), schema: Some(s.clone()), table: None };
                 actions.push(Action::Backup(id, scope));
             }
-            if menu_item(ui, tr("Drop schema…"), None).clicked() {
+            if !c.cfg.read_only && menu_item(ui, tr("Drop schema…"), None).clicked() {
                 actions.push(Action::DropSchema(id, db.to_string(), s.clone()));
             }
         });
@@ -531,17 +568,21 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
 }
 
 /// "Back up… / Restore…" menu entries.
-fn backup_items(ui: &mut Ui, id: Uuid, scope: Scope, actions: &mut Vec<Action>) {
+fn backup_items(ui: &mut Ui, c: &ConnState, scope: Scope, actions: &mut Vec<Action>) {
+    let id = c.cfg.id;
     if menu_item(ui, tr("Back up…"), None).clicked() {
         actions.push(Action::Backup(id, scope.clone()));
     }
-    if menu_item(ui, tr("Restore…"), None).clicked() {
+    if !c.cfg.read_only && menu_item(ui, tr("Restore…"), None).clicked() {
         actions.push(Action::Restore(id, scope));
     }
 }
 
 /// "New table / view / routine…" menu entries for a schema.
 fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions: &mut Vec<Action>) {
+    if c.cfg.read_only {
+        return;
+    }
     let id = c.cfg.id;
     if menu_item(ui, tr("New table…"), None).clicked() {
         actions.push(Action::NewTable(id, db.to_string(), schema.to_string()));
@@ -699,7 +740,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if menu_item(ui, tr("Structure & DDL"), None).clicked() {
             actions.push(Action::OpenObject(id, o.clone()));
         }
-        if o.kind == ObjectKind::Table && menu_item(ui, tr("Edit table…"), None).clicked() {
+        if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Edit table…"), None).clicked() {
             actions.push(Action::EditTable(id, o.path.clone()));
         }
         menu_separator(ui);
@@ -710,23 +751,27 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
             actions.push(Action::CopyText(dbman_core::sql::Dialect(c.cfg.kind).qualified(&o.path)));
         }
         menu_separator(ui);
-        if dbman_core::ddl::rename(c.cfg.kind, o, "x").is_some() && menu_item(ui, tr("Rename…"), None).clicked() {
+        if !c.cfg.read_only
+            && dbman_core::ddl::rename(c.cfg.kind, o, "x").is_some()
+            && menu_item(ui, tr("Rename…"), None).clicked()
+        {
             actions.push(Action::RenameObject(id, o.clone()));
         }
         if o.kind.has_data() && menu_item(ui, tr("Export data…"), None).clicked() {
             actions.push(Action::ExportData(id, dbman_drivers::transfer::ExportSource::Table(o.path.clone())));
         }
-        if o.kind == ObjectKind::Table && menu_item(ui, tr("Import data…"), None).clicked() {
+        if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Import data…"), None).clicked() {
             actions.push(Action::ImportData(id, o.path.clone()));
         }
-        if o.kind == ObjectKind::Table && menu_item(ui, tr("Generate test data…"), None).clicked() {
+        if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Generate test data…"), None).clicked()
+        {
             actions.push(Action::GenerateData(id, o.path.clone()));
         }
         if o.kind == ObjectKind::Table && menu_item(ui, tr("Copy to…"), None).clicked() {
             let p = &o.path;
             actions.push(Action::OpenCopy(id, p.database.clone(), p.schema.clone(), Some(p.name.clone())));
         }
-        if o.kind == ObjectKind::Table && menu_item(ui, tr("Truncate…"), None).clicked() {
+        if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Truncate…"), None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));
         }
         if o.kind == ObjectKind::Table
@@ -740,7 +785,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
             let scope = Scope { database: o.path.database.clone(), schema: None, table: Some(table) };
             actions.push(Action::Backup(id, scope));
         }
-        if menu_item(ui, tr("Drop…"), None).clicked() {
+        if !c.cfg.read_only && menu_item(ui, tr("Drop…"), None).clicked() {
             actions.push(Action::DropObject(id, o.clone()));
         }
     });

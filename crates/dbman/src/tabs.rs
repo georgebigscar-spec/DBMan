@@ -209,6 +209,8 @@ pub struct Console {
     /// A transaction is open in the session.
     pub in_tx: bool,
     pub value: ValuePanel,
+    /// Statements that change something, waiting for the user to confirm the run.
+    confirm: Option<Vec<String>>,
 }
 
 impl Console {
@@ -236,6 +238,7 @@ impl Console {
             manual: false,
             in_tx: false,
             value: ValuePanel::default(),
+            confirm: None,
         }
     }
 
@@ -473,8 +476,36 @@ impl Console {
 
     fn run(&mut self, tasks: &Tasks, tab: TabId, all: bool, max_rows: usize) {
         let stmts = self.statements_to_run(all);
+        if self.cfg.confirm_changes && stmts.iter().any(|s| !sql::is_read_only(self.cfg.kind, s)) {
+            self.confirm = Some(stmts);
+            return;
+        }
         let begin = self.begin();
         self.start_run(tasks, tab, stmts, begin, max_rows);
+    }
+
+    /// Asks before a run that changes something, on connections that want it.
+    fn confirm_ui(&mut self, ctx: &egui::Context, tasks: &Tasks, tab: TabId, max_rows: usize) {
+        let Some(stmts) = &self.confirm else { return };
+        let kind = self.cfg.kind;
+        let changing: Vec<&String> = stmts.iter().filter(|s| !sql::is_read_only(kind, s)).collect();
+        let first: String =
+            changing.first().map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+        let first =
+            if first.chars().count() > 200 { first.chars().take(200).collect::<String>() + "…" } else { first };
+        let description = trf(
+            "{n} of the statements change data or structure on {name}:\n\n{first}",
+            &[("n", &changing.len()), ("name", &self.cfg.display_name()), ("first", &first)],
+        );
+        match shadcn_egui::alert_dialog(ctx, ("confirm-changes", tab), tr("Run changes?"), &description, tr("Run")) {
+            Some(true) => {
+                let stmts = self.confirm.take().unwrap_or_default();
+                let begin = self.begin();
+                self.start_run(tasks, tab, stmts, begin, max_rows);
+            }
+            Some(false) => self.confirm = None,
+            None => {}
+        }
     }
 
     /// The statement to open a transaction with before the next run, in manual mode.
@@ -590,6 +621,7 @@ impl Console {
         if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save(&ctx, cx.actions);
         }
+        self.confirm_ui(&ctx, cx.tasks, tab, cx.page_size);
         if let (Load::Ready(s), Some(work)) = (&self.session, self.queued.take()) {
             let (s, db) = (s.clone(), self.database.clone());
             match work {

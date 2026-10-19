@@ -25,10 +25,14 @@ impl SqliteConnection {
         if path.is_empty() {
             return Err(DbError::new("choose a database file"));
         }
+        let read_only = cfg.read_only;
         let conn = tokio::task::spawn_blocking(move || -> DbResult<rusqlite::Connection> {
             let c = rusqlite::Connection::open(&path).map_err(DbError::from_display)?;
             c.busy_timeout(std::time::Duration::from_secs(5)).map_err(DbError::from_display)?;
             c.execute_batch("PRAGMA foreign_keys = ON").map_err(DbError::from_display)?;
+            if read_only {
+                c.execute_batch("PRAGMA query_only = ON").map_err(DbError::from_display)?;
+            }
             Ok(c)
         })
         .await

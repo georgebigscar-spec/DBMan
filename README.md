@@ -41,6 +41,17 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 ![SSH tunnel](crates/dbman/tests/snapshots/ssh_tunnel.png)
   - Settings live in `settings.json` in the user's config directory. A password is saved only when "Save password" is ticked, and it goes to the system keychain: Keychain on macOS, Credential Manager on Windows, and the Secret Service (GNOME Keyring, KWallet) on Linux. Each connection is one item named `DBMan`, holding its database and SSH passwords. Without a keychain, or with `DBMAN_KEYCHAIN=off`, passwords stay in `settings.json` (readable only by its owner on Linux and macOS). Passwords already in `settings.json` move to the keychain on the next save.
+- **Connection options** (the `Options` tab of the connection dialog):
+  - **Folder**: connections with the same folder are grouped under it in the explorer, folders first. The folders already in use are offered below the field.
+  - **Color**: a mark on the connection's row and tabs, and a line over its tabs' content, so that production stands out (for example in red).
+  - **Read-only**: only statements that read run. Anything else (`INSERT`, `UPDATE`, `DELETE`, DDL, `SELECT … INTO`, a `WITH` that changes data, `EXPLAIN ANALYZE` of a change, procedure calls) is refused before it reaches the server, in consoles and everywhere else in DBMan. The server is asked to enforce it as well where it can: PostgreSQL sessions start with `default_transaction_read_only` (so a `SELECT` of a function that writes fails too), MySQL sessions with `SET SESSION TRANSACTION READ ONLY`, SQLite with `PRAGMA query_only`, and ClickHouse queries with `readonly=2`. Menu items that change the database (create, drop, rename, truncate, edit tables, import, generate data, restore) are hidden, and the data view does not edit rows. The row in the explorer says `read-only`.
+  - **Confirm changes in consoles**: before a run with a statement that changes data or structure, the console shows the first such statement and asks.
+
+![Read-only connection](crates/dbman/tests/snapshots/read_only.png)
+
+| Connection options | Confirming changes |
+|---|---|
+| ![options](crates/dbman/tests/snapshots/connection_options.png) | ![confirm](crates/dbman/tests/snapshots/confirm_changes.png) |
 - **Database Explorer**: a tree of connection → database → schema (on PostgreSQL) → object groups → objects → columns, indexes and foreign keys. Everything loads lazily as you expand it.
   - PostgreSQL: tables, views, materialized views, foreign tables, sequences, functions and procedures (with overloads), triggers, and types (enum, domain, composite).
   - MySQL / MariaDB: tables, views, sequences (MariaDB), functions, procedures and triggers.
