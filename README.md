@@ -80,6 +80,7 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 - **Query history**: every statement run in a console is kept with its time, duration and result (the last 2000, in `history.jsonl` next to the settings). `History` in the console shows those of its connection, newest first, with a search; a click adds the statement to the script.
 - **Script files**: `Script` in the console opens a `.sql` file, saves it (`Ctrl+S`) or saves it under another name, and lists recent files. The tab shows the file name, with `•` while there are unsaved changes.
+- **Tabs come back after a restart**: consoles (with their text, even unsaved, their database, file and commit mode), data, structure, diagram and session tabs reopen as they were, and the tab that was in front is in front again. Nothing connects until a tab is used. They are kept in `workspace.json` next to the settings, readable only by you; table editors, comparisons and copies are not kept, and tabs of a deleted connection are dropped.
 
 ![Query history](crates/dbman/tests/snapshots/query_history.png)
 

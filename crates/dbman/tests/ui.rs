@@ -1053,3 +1053,74 @@ fn query_parameters() {
     click_last(&mut h, "Run");
     assert!(h.state().console_summaries()[0].starts_with("1 rows"));
 }
+
+/// Tabs come back after a restart: a console with unsaved text, a table's
+/// data and the object structure, with the same tab active.
+#[test]
+fn restores_tabs() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let conn_id = cfg.id;
+    let settings = Settings { connections: vec![cfg], ..Default::default() };
+    let orders = DbObject {
+        kind: ObjectKind::Table,
+        path: ObjectPath::new("main", "main", "orders"),
+        detail: None,
+        comment: None,
+    };
+    let workspace = dir.path().join("workspace.json");
+    let start = |settings: Settings| {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let ctx = egui::Context::default();
+        let app = DbManApp::with_settings(&ctx, runtime, settings).keep_workspace(workspace.clone());
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 700.0))
+            .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+        settle(&mut h);
+        h
+    };
+
+    let mut h = start(settings.clone());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(conn_id, orders.clone()), &ctx);
+    h.state_mut().handle(Action::OpenObject(conn_id, orders.clone()), &ctx);
+    h.state_mut().handle(Action::OpenConsole(conn_id, None), &ctx);
+    settle(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("SELECT count(*) FROM orders -- draft");
+    // The data tab is the active one when the app closes.
+    click(&mut h, "orders");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    settle(&mut h);
+    let before = h.state().tab_titles();
+    assert_eq!(before.len(), 3, "{before:?}");
+    drop(h);
+
+    let mut h = start(settings);
+    assert_eq!(h.state().tab_titles(), before);
+    assert_eq!(h.state().workspace().active, Some(0));
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenConsole(conn_id, None), &ctx);
+    let w = h.state().workspace();
+    match &w.tabs[2] {
+        dbman::store::SavedTab::Console { sql, .. } => assert_eq!(sql, "SELECT count(*) FROM orders -- draft"),
+        other => panic!("{other:?}"),
+    }
+    // The restored console runs its text.
+    h.state_mut().select_tab(2);
+    settle(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    assert!(
+        h.state().console_summaries().iter().any(|s| s.starts_with("1 rows")),
+        "{:?}",
+        h.state().console_summaries()
+    );
+}
