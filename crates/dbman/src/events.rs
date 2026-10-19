@@ -105,6 +105,7 @@ pub enum TabEvent {
     /// News for a comparison tab.
     Compare(Box<crate::compare_view::CompareEvent>),
     Copy(Box<crate::copy_view::CopyEvent>),
+    Sessions(Box<crate::sessions_view::SessionsEvent>),
     /// Lists for a target picker.
     Picker(crate::target_picker::PickerEvent),
 }

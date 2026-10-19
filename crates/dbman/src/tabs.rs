@@ -23,6 +23,7 @@ use crate::explorer::{Action, ConnState, Load};
 use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
+use crate::sessions_view::SessionsView;
 use crate::sql_editor;
 use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
@@ -43,6 +44,7 @@ pub enum TabKind {
     Diagram(Box<ErView>),
     Compare(Box<CompareView>),
     Copy(Box<CopyView>),
+    Sessions(Box<SessionsView>),
 }
 
 /// What a tab can reach while drawing.
@@ -71,6 +73,7 @@ impl Tab {
             TabKind::Diagram(d) => d.title(),
             TabKind::Compare(c) => c.title(),
             TabKind::Copy(c) => c.title(),
+            TabKind::Sessions(s) => s.title(),
         }
     }
 
@@ -84,6 +87,7 @@ impl Tab {
             TabKind::Diagram(d) => &d.database,
             TabKind::Compare(c) => &c.database,
             TabKind::Copy(c) => &c.database,
+            TabKind::Sessions(_) => "",
         };
         (!db.is_empty()).then_some(db)
     }
@@ -95,7 +99,7 @@ impl Tab {
             TabKind::Data(d) => Some(d.object.path.name.clone()),
             TabKind::Object(o) => Some(o.object.path.name.clone()),
             TabKind::TableEditor(e) => e.table().map(str::to_owned),
-            TabKind::Diagram(_) | TabKind::Compare(_) => None,
+            TabKind::Diagram(_) | TabKind::Compare(_) | TabKind::Sessions(_) => None,
             TabKind::Copy(c) => c.only().map(str::to_owned),
         }
     }
@@ -110,6 +114,7 @@ impl Tab {
             TabKind::Diagram(d) => d.on_event(ev),
             TabKind::Compare(c) => c.on_event(ev),
             TabKind::Copy(c) => c.on_event(ev),
+            TabKind::Sessions(s) => s.on_event(ev, ctx),
         }
         Vec::new()
     }
@@ -124,6 +129,7 @@ impl Tab {
             TabKind::Diagram(d) => d.ui(ui, id, cx),
             TabKind::Compare(c) => c.ui(ui, id, cx),
             TabKind::Copy(c) => c.ui(ui, id, cx),
+            TabKind::Sessions(s) => s.ui(ui, id, cx),
         }
     }
 }

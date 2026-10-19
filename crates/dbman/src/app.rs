@@ -22,6 +22,7 @@ use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
 use crate::palette::{self, Pick};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
+use crate::sessions_view::SessionsView;
 use crate::store::{History, Settings};
 use crate::table_editor::TableEditor;
 use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
@@ -337,6 +338,14 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::Diagram(Box::new(ErView::new(cfg, db, schema)))),
                 }
             }
+            Action::OpenSessions(id) => {
+                let Some(c) = self.conn(id) else { return };
+                let kind = c.cfg.kind;
+                match self.tabs.iter().find(|t| t.conn == id && matches!(t.kind, TabKind::Sessions(_))) {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::Sessions(Box::new(SessionsView::new(kind)))),
+                }
+            }
             Action::OpenCompare(id, db, schema) => {
                 let Some(c) = self.conn(id) else { return };
                 let cfg = c.cfg.clone();
@@ -580,6 +589,15 @@ impl DbManApp {
         let active = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
             TabKind::Copy(c) => Some(c.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The sessions tab on screen, if the active tab is one.
+    pub fn active_sessions(&mut self) -> Option<&mut SessionsView> {
+        let active = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
+            TabKind::Sessions(s) => Some(s.as_mut()),
             _ => None,
         }
     }
@@ -901,6 +919,7 @@ impl DbManApp {
                                         TabKind::Diagram(_) => Icon::ForeignKey,
                                         TabKind::Compare(_) => Icon::Schema,
                                         TabKind::Copy(_) => Icon::Table,
+                                        TabKind::Sessions(_) => Icon::Console,
                                     };
                                     let color = if active { t.foreground } else { t.muted_foreground };
                                     icons::icon(ui, icon, color);

@@ -226,6 +226,8 @@ pub enum Action {
     OpenCompare(Uuid, String, String),
     /// Opens a copy of a schema's tables (or one table) to another connection.
     OpenCopy(Uuid, String, String, Option<String>),
+    /// Opens the server's sessions.
+    OpenSessions(Uuid),
     /// Opens a console in a database with a script in it.
     OpenConsoleWith(Uuid, Option<String>, String),
     StartJob(Box<crate::transfer_dialog::Start>),
@@ -375,6 +377,9 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             }
             if menu_item(ui, tr("Refresh"), None).clicked() {
                 actions.push(Action::Refresh(id));
+            }
+            if dbman_core::sessions::supported(kind) && menu_item(ui, tr("Sessions"), None).clicked() {
+                actions.push(Action::OpenSessions(id));
             }
             if kind.is_file_based() {
                 let database = if kind == DbKind::Sqlite { "main".into() } else { String::new() };
