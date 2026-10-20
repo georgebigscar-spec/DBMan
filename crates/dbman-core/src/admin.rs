@@ -134,8 +134,8 @@ pub fn principals_sql(kind: DbKind) -> &'static [&'static str] {
         DbKind::MsSql => &["SELECT dp.name AS name, CASE WHEN dp.type = 'R' THEN 1 ELSE 0 END AS is_role, \
              CASE WHEN sp.is_disabled = 1 THEN N'DISABLED' ELSE N'' END AS options, CAST(N'' AS nvarchar(128)) AS host, \
              ISNULL(sp.name, N'') AS login, \
-             LOWER(dp.type_desc) + CASE WHEN dp.default_schema_name IS NULL THEN N'' \
-             ELSE N', schema ' + dp.default_schema_name END AS note, \
+             LOWER(dp.type_desc) COLLATE DATABASE_DEFAULT + CASE WHEN dp.default_schema_name IS NULL THEN N'' \
+             ELSE N', schema ' + dp.default_schema_name COLLATE DATABASE_DEFAULT END AS note, \
              CASE WHEN dp.is_fixed_role = 1 OR dp.name IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys', 'public') \
              THEN 1 ELSE 0 END AS is_system \
              FROM sys.database_principals dp \
