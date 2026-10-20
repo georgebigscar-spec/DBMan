@@ -1124,3 +1124,143 @@ fn restores_tabs() {
         h.state().console_summaries()
     );
 }
+
+/// The users and roles tab of a PostgreSQL server (needs `DBMAN_TEST_POSTGRES`):
+/// the explorer offers it to a superuser, a role is created from the editor,
+/// gets a privilege and is dropped again.
+#[test]
+fn users_and_roles() {
+    let Some(url) = std::env::var("DBMAN_TEST_POSTGRES").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("DBMAN_TEST_POSTGRES not set, skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+    let (auth, addr) = rest.rsplit_once('@').unwrap();
+    let (user, password) = auth.split_once(':').unwrap();
+    let (hostport, db) = addr.split_once('/').unwrap();
+    let (host, port) = hostport.split_once(':').unwrap();
+    let mut cfg = ConnectionConfig::new(DbKind::Postgres);
+    cfg.name = "local".into();
+    cfg.host = host.into();
+    cfg.port = port.parse().unwrap();
+    cfg.user = user.into();
+    cfg.password = password.into();
+    cfg.database = db.into();
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let conn_id = cfg.id;
+    let settings = Settings { connections: vec![cfg.clone()], ..Default::default() };
+
+    // A role to look at, with a privilege, made beforehand on a runtime of its own.
+    let tag = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let (readers, made) = (format!("readers_{tag}"), format!("auditors_{tag}"));
+    let other = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let setup = other.block_on({
+        let (cfg, readers) = (cfg.clone(), readers.clone());
+        async move {
+            let c = dbman_drivers::connect(&cfg).await?;
+            for sql in [
+                "CREATE TABLE IF NOT EXISTS public.dbman_ui_admin (id int)".to_string(),
+                format!("CREATE ROLE {readers}"),
+                format!("GRANT SELECT ON public.dbman_ui_admin TO {readers}"),
+                format!("GRANT {readers} TO CURRENT_USER"),
+            ] {
+                c.execute(None, &sql, 0).await?;
+            }
+            Ok::<_, dbman_core::DbError>(c)
+        }
+    });
+    let setup = setup.unwrap();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 760.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &conn_id.to_string());
+    for _ in 0..20 {
+        if h.state().conn(conn_id).is_some_and(|c| c.admin) {
+            break;
+        }
+        settle(&mut h);
+    }
+    assert!(h.state().conn(conn_id).is_some_and(|c| c.admin), "a superuser may manage roles");
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenAdmin(conn_id), &ctx);
+    settle(&mut h);
+    assert_eq!(h.state().tab_titles(), ["Users and roles"]);
+    let listed = |h: &mut Harness<'_, DbManApp>, name: &str| {
+        h.state_mut().active_admin().unwrap().principals().iter().any(|p| p.name == name)
+    };
+    for _ in 0..20 {
+        if listed(&mut h, &readers) {
+            break;
+        }
+        settle(&mut h);
+    }
+    assert!(listed(&mut h, &readers), "the role is listed");
+    h.state_mut().active_admin().unwrap().pick(&readers);
+    for _ in 0..20 {
+        if !h.state_mut().active_admin().unwrap().grants().is_empty() {
+            break;
+        }
+        settle(&mut h);
+    }
+    let grants = h.state_mut().active_admin().unwrap().grants().to_vec();
+    assert!(grants.iter().any(|g| g.privilege == "SELECT" && g.object.ends_with("dbman_ui_admin")), "{grants:?}");
+    assert!(h.query_by_label("Grant privileges…").is_some());
+    snapshot(&mut h, "users_and_roles");
+    // INSERT on the table, picked from the loaded list.
+    click(&mut h, "Grant privileges…");
+    assert!(h.query_by_label("With grant option (may grant it to others)").is_some());
+    click_last(&mut h, "Select…");
+    click_last(&mut h, "dbman_ui_admin");
+    click_last(&mut h, "INSERT");
+    snapshot(&mut h, "grant_privileges");
+    click_last(&mut h, "Grant");
+    for _ in 0..20 {
+        if h.state_mut().active_admin().unwrap().grants().iter().any(|g| g.privilege == "INSERT") {
+            break;
+        }
+        settle(&mut h);
+    }
+    let grants = h.state_mut().active_admin().unwrap().grants().to_vec();
+    assert!(grants.iter().any(|g| g.privilege == "INSERT" && g.object.ends_with("dbman_ui_admin")), "{grants:?}");
+
+    // A new role from the editor; the name field has the focus.
+    click(&mut h, "New role…");
+    h.event(egui::Event::Text(made.clone()));
+    settle(&mut h);
+    assert!(h.query_by_label("Create").is_some());
+    click_last(&mut h, "Create");
+    for _ in 0..20 {
+        if listed(&mut h, &made) {
+            break;
+        }
+        settle(&mut h);
+    }
+    assert!(listed(&mut h, &made), "the new role is listed");
+
+    // And dropped again, after a confirmation.
+    h.state_mut().active_admin().unwrap().pick(&made);
+    settle(&mut h);
+    click(&mut h, "Drop…");
+    click_last(&mut h, "Drop");
+    for _ in 0..20 {
+        if !listed(&mut h, &made) {
+            break;
+        }
+        settle(&mut h);
+    }
+    assert!(!listed(&mut h, &made), "the role is dropped");
+
+    other.block_on(async {
+        let _ = setup.execute(None, &format!("REVOKE {readers} FROM CURRENT_USER"), 0).await;
+        let _ = setup.execute(None, &format!("DROP OWNED BY {readers}"), 0).await;
+        let _ = setup.execute(None, &format!("DROP ROLE {readers}"), 0).await;
+    });
+}

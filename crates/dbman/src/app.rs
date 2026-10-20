@@ -8,6 +8,7 @@ use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Button, ButtonSize, Select, Switch, Theme, Toaster, TooltipExt, alert_dialog, toast, toast_error};
 use uuid::Uuid;
 
+use crate::admin_view::{self, AdminView};
 use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
 use crate::compare_view::CompareView;
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
@@ -138,8 +139,11 @@ impl DbManApp {
                         SavedTab::Diagram { conn, database: d.database.clone(), schema: d.schema.clone() }
                     }
                     TabKind::Sessions(_) => SavedTab::Sessions { conn },
-                    // Editors and comparisons hold work in progress that does not keep.
-                    TabKind::TableEditor(_) | TabKind::Compare(_) | TabKind::Copy(_) => return None,
+                    // Editors and comparisons hold work in progress that does not keep;
+                    // the users tab depends on rights checked after connecting.
+                    TabKind::TableEditor(_) | TabKind::Compare(_) | TabKind::Copy(_) | TabKind::Admin(_) => {
+                        return None;
+                    }
                 };
                 Some((t.id, saved))
             })
@@ -211,7 +215,7 @@ impl DbManApp {
         }
     }
 
-    fn conn(&self, id: Uuid) -> Option<&ConnState> {
+    pub fn conn(&self, id: Uuid) -> Option<&ConnState> {
         self.conns.iter().find(|c| c.cfg.id == id)
     }
 
@@ -239,8 +243,11 @@ impl DbManApp {
                     match result {
                         Ok((session, version)) => {
                             c.version = version.clone();
-                            c.session = Load::Ready(session);
+                            c.session = Load::Ready(session.clone());
                             self.status = trf("Connected: {version}", &[("version", &version)]);
+                            self.tasks.spawn(async move {
+                                Event::AdminRights { conn, allowed: admin_view::may_manage(&session).await }
+                            });
                         }
                         Err(e) => {
                             let name = c.cfg.display_name();
@@ -251,6 +258,13 @@ impl DbManApp {
                                 Some(e.message.lines().next().unwrap_or("")),
                             );
                         }
+                    }
+                }
+                Event::AdminRights { conn, allowed } => {
+                    if let Some(c) = self.conn_mut(conn)
+                        && c.session().is_some()
+                    {
+                        c.admin = allowed;
                     }
                 }
                 Event::Databases { conn, result } => {
@@ -474,6 +488,14 @@ impl DbManApp {
                 match self.tabs.iter().find(|t| t.conn == id && matches!(t.kind, TabKind::Sessions(_))) {
                     Some(t) => self.active = Some(t.id),
                     None => self.add_tab(id, TabKind::Sessions(Box::new(SessionsView::new(kind)))),
+                }
+            }
+            Action::OpenAdmin(id) => {
+                let Some(c) = self.conn(id) else { return };
+                let (kind, database) = (c.cfg.kind, c.cfg.database.clone());
+                match self.tabs.iter().find(|t| t.conn == id && matches!(t.kind, TabKind::Admin(_))) {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::Admin(Box::new(AdminView::new(kind, database)))),
                 }
             }
             Action::OpenCompare(id, db, schema) => {
@@ -744,6 +766,15 @@ impl DbManApp {
         let active = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
             TabKind::Sessions(s) => Some(s.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The users and roles tab on screen, if the active tab is one.
+    pub fn active_admin(&mut self) -> Option<&mut AdminView> {
+        let active = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
+            TabKind::Admin(a) => Some(a.as_mut()),
             _ => None,
         }
     }
@@ -1077,6 +1108,7 @@ impl DbManApp {
                                         TabKind::Compare(_) => Icon::Schema,
                                         TabKind::Copy(_) => Icon::Table,
                                         TabKind::Sessions(_) => Icon::Console,
+                                        TabKind::Admin(_) => Icon::Key,
                                     };
                                     let color = if active { t.foreground } else { t.muted_foreground };
                                     icons::icon(ui, icon, color);

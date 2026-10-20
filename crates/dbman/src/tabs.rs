@@ -14,6 +14,7 @@ use shadcn_egui::{
     menu_label, menu_separator, tabs, toast, toast_error,
 };
 
+use crate::admin_view::AdminView;
 use crate::compare_view::CompareView;
 use crate::copy_view::CopyView;
 use crate::data_view::DataView;
@@ -46,6 +47,7 @@ pub enum TabKind {
     Compare(Box<CompareView>),
     Copy(Box<CopyView>),
     Sessions(Box<SessionsView>),
+    Admin(Box<AdminView>),
 }
 
 /// What a tab can reach while drawing.
@@ -77,6 +79,7 @@ impl Tab {
             TabKind::Compare(c) => c.title(),
             TabKind::Copy(c) => c.title(),
             TabKind::Sessions(s) => s.title(),
+            TabKind::Admin(a) => a.title(),
         }
     }
 
@@ -91,6 +94,7 @@ impl Tab {
             TabKind::Compare(c) => &c.database,
             TabKind::Copy(c) => &c.database,
             TabKind::Sessions(_) => "",
+            TabKind::Admin(a) => &a.database,
         };
         (!db.is_empty()).then_some(db)
     }
@@ -102,7 +106,7 @@ impl Tab {
             TabKind::Data(d) => Some(d.object.path.name.clone()),
             TabKind::Object(o) => Some(o.object.path.name.clone()),
             TabKind::TableEditor(e) => e.table().map(str::to_owned),
-            TabKind::Diagram(_) | TabKind::Compare(_) | TabKind::Sessions(_) => None,
+            TabKind::Diagram(_) | TabKind::Compare(_) | TabKind::Sessions(_) | TabKind::Admin(_) => None,
             TabKind::Copy(c) => c.only().map(str::to_owned),
         }
     }
@@ -118,6 +122,7 @@ impl Tab {
             TabKind::Compare(c) => c.on_event(ev),
             TabKind::Copy(c) => c.on_event(ev),
             TabKind::Sessions(s) => s.on_event(ev, ctx),
+            TabKind::Admin(a) => a.on_event(ev, ctx),
         }
         Vec::new()
     }
@@ -133,6 +138,7 @@ impl Tab {
             TabKind::Compare(c) => c.ui(ui, id, cx),
             TabKind::Copy(c) => c.ui(ui, id, cx),
             TabKind::Sessions(s) => s.ui(ui, id, cx),
+            TabKind::Admin(a) => a.ui(ui, id, cx),
         }
     }
 }

@@ -4,6 +4,7 @@
 //! The crate has no GUI or driver dependencies, so new database engines are
 //! added by implementing [`Connection`] in `dbman-drivers` (or any other crate).
 
+pub mod admin;
 pub mod backup;
 pub mod compare;
 pub mod complete;

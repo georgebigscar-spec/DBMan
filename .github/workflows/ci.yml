@@ -60,7 +60,7 @@ jobs:
       - name: Start ClickHouse
         run: |
           docker run -d --name clickhouse -p 8123:8123 \
-            -e CLICKHOUSE_PASSWORD=dbman -e CLICKHOUSE_DB=dbman_test \
+            -e CLICKHOUSE_PASSWORD=dbman -e CLICKHOUSE_DB=dbman_test -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
             -v "$GITHUB_WORKSPACE/ci/clickhouse-backups.xml:/etc/clickhouse-server/config.d/backups.xml" \
             clickhouse/clickhouse-server:24.8
           for i in $(seq 60); do

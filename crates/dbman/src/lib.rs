@@ -1,6 +1,7 @@
 //! DBMan: a multi-database client in the spirit of DataGrip, built on egui
 //! and shadcn_egui.
 
+pub mod admin_view;
 pub mod app;
 pub mod backup_dialog;
 pub mod compare_view;
