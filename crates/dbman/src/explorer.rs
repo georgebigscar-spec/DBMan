@@ -54,6 +54,8 @@ pub struct ConnState {
     pub schemas: HashMap<String, Load<Vec<String>>>,
     pub objects: HashMap<(String, String), Load<Vec<DbObject>>>,
     pub details: HashMap<ObjectPath, Load<TableDetails>>,
+    /// The connected user may manage users and roles.
+    pub admin: bool,
 }
 
 impl ConnState {
@@ -66,6 +68,7 @@ impl ConnState {
             schemas: HashMap::new(),
             objects: HashMap::new(),
             details: HashMap::new(),
+            admin: false,
         }
     }
 
@@ -84,6 +87,7 @@ impl ConnState {
     pub fn disconnect(&mut self) {
         self.session = Load::Idle;
         self.version.clear();
+        self.admin = false;
         self.clear_cache();
     }
 
@@ -228,6 +232,8 @@ pub enum Action {
     OpenCopy(Uuid, String, String, Option<String>),
     /// Opens the server's sessions.
     OpenSessions(Uuid),
+    /// Opens the users, roles and privileges.
+    OpenAdmin(Uuid),
     /// Opens a console in a database with a script in it.
     OpenConsoleWith(Uuid, Option<String>, String),
     StartJob(Box<crate::transfer_dialog::Start>),
@@ -419,6 +425,9 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             }
             if dbman_core::sessions::supported(kind) && menu_item(ui, tr("Sessions"), None).clicked() {
                 actions.push(Action::OpenSessions(id));
+            }
+            if c.admin && menu_item(ui, tr("Users and roles"), None).clicked() {
+                actions.push(Action::OpenAdmin(id));
             }
             if kind.is_file_based() {
                 let database = if kind == DbKind::Sqlite { "main".into() } else { String::new() };

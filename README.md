@@ -190,6 +190,13 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - A click on a row shows the whole statement below the table. There, and in the row's menu, `Cancel query` stops the statement and keeps the session (`pg_cancel_backend`, `KILL QUERY`, ClickHouse `KILL QUERY WHERE query_id`), and `Kill session…` asks first and then disconnects it, rolling back its open transaction (`pg_terminate_backend`, `KILL CONNECTION`, SQL Server `KILL`). `Open query in a console` and `Copy query` take the statement.
 
 ![Sessions](crates/dbman/tests/snapshots/sessions.png)
+- **Users and roles** (`Users and roles` in a server connection's menu, shown only when the connected user may manage users: a PostgreSQL superuser or `CREATEROLE` role, a MySQL account with `CREATE USER`, a SQL Server `sysadmin` or a holder of `ALTER ANY LOGIN` and `ALTER ANY USER`, a ClickHouse user with access management). SQLite and DuckDB have no users, so they have no such tab.
+  - On the left, the users and roles (PostgreSQL roles that can log in are users; MySQL and MariaDB accounts are `user@host`; on SQL Server the users and roles of one database; ClickHouse users and roles). `Show built-in` adds `pg_*` roles, `mysql.sys`, `dbo`, fixed database roles and the like.
+  - On the right, the picked one: its attributes (superuser, can create databases or roles, inherits, replication, row-level security bypass; locked MySQL account; disabled SQL Server login), the roles it belongs to and the members of a role (`×` removes one), and the privileges granted to it directly, with the object, the privilege and whether it may pass it on. On PostgreSQL and SQL Server the privileges are those of the database picked in the toolbar.
+  - `New user…`, `New role…` and `Edit…` set the name (and host on MySQL), password and attributes; `Add to role…` and `Add member…` grant a role, with the admin option where the engine has one; `Grant privileges…` grants privileges on a table, view, schema, database, sequence, function, every table of a schema or the whole server, depending on the engine, with the grant option; `Revoke…` in a privilege's menu takes it back, and `Drop…` drops the user or role. Every editor shows the exact SQL (`CREATE ROLE`, `CREATE USER`, `ALTER ROLE`, `GRANT`, `REVOKE`, `ALTER ROLE … ADD MEMBER`…) before it runs. A new SQL Server user gets a login of the same name; dropping the user keeps the login.
+  - On a read-only connection the tab only shows.
+
+![Users and roles](crates/dbman/tests/snapshots/users_and_roles.png)
 - **Backup and restore** from the context menu of a database, schema or table (`Back up…`, `Restore…`). The job runs in the background, and the window stays usable. The "Background tasks" panel shows progress, file size, time, the tool's log and a `Cancel` button.
   - **PostgreSQL**:
     - `pg_dump` in custom, plain SQL, directory (parallel) and tar formats;
@@ -295,6 +302,7 @@ crates/
   | Data transfer dialogs | `transfer_dialog.rs` | |
   | Background jobs | `jobs.rs` | |
   | Server sessions | `sessions_view.rs` | statements per engine in `dbman-core::sessions` |
+  | Users and roles | `admin_view.rs` | statements per engine in `dbman-core::admin` |
 
 ## Tests
 

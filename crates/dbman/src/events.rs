@@ -40,6 +40,11 @@ pub enum Event {
     TestedConnection {
         result: DbResult<String>,
     },
+    /// Whether the connected user may manage users and roles.
+    AdminRights {
+        conn: Uuid,
+        allowed: bool,
+    },
     /// Statements of a confirm dialog ran.
     PromptDone {
         result: DbResult<usize>,
@@ -106,6 +111,7 @@ pub enum TabEvent {
     Compare(Box<crate::compare_view::CompareEvent>),
     Copy(Box<crate::copy_view::CopyEvent>),
     Sessions(Box<crate::sessions_view::SessionsEvent>),
+    Admin(Box<crate::admin_view::AdminEvent>),
     /// Lists for a target picker.
     Picker(crate::target_picker::PickerEvent),
 }
