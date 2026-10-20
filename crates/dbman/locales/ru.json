@@ -711,5 +711,14 @@
   "Query parameters": "Параметры запроса",
   "Values go into the statement as written: put text in quotes, like 'Berlin'.": "Значения подставляются в выражение как написаны: текст берите в кавычки, например 'Berlin'.",
   "Every parameter needs a value (NULL for none).": "У каждого параметра должно быть значение (NULL, если пусто).",
-  "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}"
+  "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}",
+  "Edit in console": "Редактировать в консоли",
+  "Opens the DDL in a new console, to change and run it": "Открывает DDL в новой консоли, чтобы изменить и выполнить его",
+  "Current value:": "Текущее значение:",
+  "not used yet": "ещё не использовалась",
+  "Set value…": "Задать значение…",
+  "Opens a console with a statement that sets the value": "Открывает консоль с командой, задающей значение",
+  "Commit or roll back in the console's toolbar": "Зафиксируйте или откатите на панели консоли",
+  "auto-commit": "автофиксация",
+  "manual commit": "ручная фиксация"
 }

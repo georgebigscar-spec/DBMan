@@ -846,6 +846,39 @@ pub fn drop_object(kind: DbKind, o: &DbObject, cascade: bool) -> String {
     }
 }
 
+/// A query returning a sequence's current value in one cell (NULL before its first use);
+/// `None` if the engine does not report it.
+pub fn sequence_value(kind: DbKind, path: &ObjectPath) -> Option<String> {
+    let d = Dialect(kind);
+    let (schema, name) = (d.string(&path.schema), d.string(&path.name));
+    match kind {
+        DbKind::Postgres => {
+            Some(format!("SELECT last_value FROM pg_sequences WHERE schemaname = {schema} AND sequencename = {name}"))
+        }
+        DbKind::MsSql => Some(format!(
+            "SELECT CAST(current_value AS nvarchar(40)) FROM sys.sequences WHERE object_id = OBJECT_ID({})",
+            d.string(&d.qualified(path))
+        )),
+        DbKind::DuckDb => Some(format!(
+            "SELECT last_value FROM duckdb_sequences() WHERE schema_name = {schema} AND sequence_name = {name}"
+        )),
+        _ => None,
+    }
+}
+
+/// A statement that makes `value` the sequence's current value, so the next one follows it;
+/// `None` if the engine cannot set it.
+pub fn set_sequence_value(kind: DbKind, path: &ObjectPath, value: &str) -> Option<String> {
+    let d = Dialect(kind);
+    let q = d.qualified(path);
+    match kind {
+        DbKind::Postgres => Some(format!("SELECT setval({}, {value})", d.string(&q))),
+        // RESTART WITH sets the next value, which is the closest the engine offers.
+        DbKind::MsSql => Some(format!("ALTER SEQUENCE {q} RESTART WITH {value}")),
+        _ => None,
+    }
+}
+
 /// Renames a table, view or sequence; `None` if the engine cannot rename this kind.
 pub fn rename(kind: DbKind, o: &DbObject, new_name: &str) -> Option<String> {
     let d = Dialect(kind);
@@ -1191,5 +1224,26 @@ mod tests {
                 "ALTER TABLE `app`.`users` MODIFY COLUMN `team_id` REMOVE DEFAULT",
             ]
         );
+    }
+
+    #[test]
+    fn sequence_values() {
+        let p = ObjectPath::new("app", "public", "order's_id");
+        assert_eq!(
+            sequence_value(DbKind::Postgres, &p).unwrap(),
+            "SELECT last_value FROM pg_sequences WHERE schemaname = 'public' AND sequencename = 'order''s_id'"
+        );
+        assert_eq!(
+            set_sequence_value(DbKind::Postgres, &p, "41").unwrap(),
+            "SELECT setval('\"public\".\"order''s_id\"', 41)"
+        );
+        let p = ObjectPath::new("app", "dbo", "ids");
+        assert_eq!(
+            sequence_value(DbKind::MsSql, &p).unwrap(),
+            "SELECT CAST(current_value AS nvarchar(40)) FROM sys.sequences WHERE object_id = OBJECT_ID(N'[dbo].[ids]')"
+        );
+        assert_eq!(set_sequence_value(DbKind::MsSql, &p, "7").unwrap(), "ALTER SEQUENCE [dbo].[ids] RESTART WITH 7");
+        assert!(sequence_value(DbKind::Sqlite, &p).is_none());
+        assert!(set_sequence_value(DbKind::DuckDb, &p, "1").is_none());
     }
 }
