@@ -254,9 +254,18 @@ async fn check_ddl(c: Arc<dyn Connection>, db: &str, schema: &str) {
         dbman_core::DbObject { path: path("ddl_people"), ..members_obj }
     };
     exec(&c, db, &ddl::truncate(kind, &people.path)).await;
-    exec(&c, db, &ddl::drop_object(kind, &people, false)).await;
+    for how in ddl::Clear::modes(kind) {
+        exec(&c, db, &ddl::clear(kind, &people.path, *how)).await;
+    }
     let teams_obj =
         dbman_core::DbObject { kind: ObjectKind::Table, path: path("ddl_teams"), detail: None, comment: None };
+    if ddl::Clear::cascades(kind) {
+        // ddl_people references ddl_teams, so only a cascade truncates it.
+        let teams = dbman_core::sql::Dialect(kind).qualified(&teams_obj.path);
+        exec(&c, db, &ddl::clear(kind, &teams_obj.path, ddl::Clear::Truncate { cascade: true })).await;
+        assert!(rows(&c, db, &format!("SELECT * FROM {teams}")).await.is_empty());
+    }
+    exec(&c, db, &ddl::drop_object(kind, &people, false)).await;
     exec(&c, db, &ddl::drop_object(kind, &teams_obj, false)).await;
     let left = c.objects(db, schema).await.unwrap();
     assert!(!left.iter().any(|o| o.path.name.starts_with("ddl_")));

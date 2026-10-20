@@ -78,6 +78,10 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 ![Query parameters](crates/dbman/tests/snapshots/query_parameters.png)
 
+- **Query templates**: `New query` in a table's menu opens a console in the table's database with a `SELECT`, `INSERT`, `UPDATE` or `DELETE` of that table, its columns written out. Values and keys are `:column` parameters, so the console asks for them when it runs; `UPDATE` and `DELETE` find rows by the primary key. Views get `SELECT` only, and so do read-only connections. On ClickHouse, `UPDATE` and `DELETE` are `ALTER TABLE` mutations.
+
+![Query templates](crates/dbman/tests/snapshots/query_templates.png)
+
 - **Query history**: every statement run in a console is kept with its time, duration and result (the last 2000, in `history.jsonl` next to the settings). `History` in the console shows those of its connection, newest first, with a search; a click adds the statement to the script.
 - **Script files**: `Script` in the console opens a `.sql` file, saves it (`Ctrl+S`) or saves it under another name, and lists recent files. The tab shows the file name, with `•` while there are unsaved changes.
 - **Tabs come back after a restart**: consoles (with their text, even unsaved, their database, file and commit mode), data, structure, diagram and session tabs reopen as they were, and the tab that was in front is in front again. Nothing connects until a tab is used. They are kept in `workspace.json` next to the settings, readable only by you; table editors, comparisons and copies are not kept, and tabs of a deleted connection are dropped.
@@ -173,6 +177,7 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
     - **SQLite**: the table is rebuilt through a temporary copy when `ALTER` is not enough.
     - **DuckDB**: `ALTER` as in PostgreSQL. What DuckDB can't do (auto-increment, changing keys of an existing table, foreign key actions), the editor writes in the script notes.
 - **Creating and dropping** databases and schemas, and dropping, renaming and truncating (`TRUNCATE`) objects from the context menu.
+  - `Truncate…` empties a table with `TRUNCATE` (fast, without row triggers; on PostgreSQL optionally `CASCADE`, which empties the tables that reference it too) or `DELETE` (row by row, with triggers and foreign key checks). SQLite has only `DELETE`, ClickHouse only `TRUNCATE`.
   - The exact SQL is shown before it runs (`CASCADE` and `WITH (FORCE)` on PostgreSQL).
   - `CREATE` templates for views, functions, procedures, triggers and sequences open in a new console.
 - **The window never waits for the database**: connections, queries, metadata loading, file dialogs, export and import all run in the background.

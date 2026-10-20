@@ -3,7 +3,8 @@
 use crate::i18n::{self, Lang, tr, trf};
 use std::sync::mpsc::Receiver;
 
-use dbman_core::{ConnectionConfig, DbKind};
+use dbman_core::dml::QueryTemplate;
+use dbman_core::{ConnectionConfig, DbKind, DbObject};
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{Button, ButtonSize, Select, Switch, Theme, Toaster, TooltipExt, alert_dialog, toast, toast_error};
 use uuid::Uuid;
@@ -26,6 +27,7 @@ use crate::sessions_view::SessionsView;
 use crate::store::{History, SavedTab, Settings, Workspace};
 use crate::table_editor::TableEditor;
 use crate::tabs::{Console, ObjectView, Tab, TabCtx, TabKind};
+use crate::toolbar::{Side, toolbar};
 use crate::transfer_dialog::{ExportDialog, ImportDialog, Start, TransferOutcome};
 
 pub struct DbManApp {
@@ -51,6 +53,8 @@ pub struct DbManApp {
     generate: Option<GenerateDialog>,
     /// The command palette (Ctrl+K) is open.
     palette: bool,
+    /// A query template waiting for its table's columns to load.
+    pending_query: Option<(Uuid, DbObject, QueryTemplate)>,
     pub jobs: Jobs,
     status: String,
     // Keeps the runtime alive for the lifetime of the window.
@@ -107,6 +111,7 @@ impl DbManApp {
             import: None,
             generate: None,
             palette: false,
+            pending_query: None,
             jobs: Jobs::default(),
             status: tr("Ready").into(),
             runtime: Some(runtime),
@@ -272,6 +277,7 @@ impl DbManApp {
                     if let Some(c) = self.conn_mut(conn) {
                         c.details.insert(path, Load::from_result(result));
                     }
+                    self.open_pending_query();
                 }
                 Event::TestedConnection { result } => {
                     if let Some(d) = &mut self.dialog {
@@ -390,6 +396,14 @@ impl DbManApp {
                 let Some(c) = self.conn(id) else { return };
                 let sql = dbman_core::ddl::template(c.cfg.kind, what, &db, &schema);
                 self.open_console(id, Some(db), Some(sql));
+            }
+            Action::QueryTemplate(id, o, q) => {
+                let Some(c) = self.conn(id) else { return };
+                if matches!(c.details.get(&o.path), None | Some(Load::Idle)) {
+                    self.handle(Action::LoadDetails(id, o.path.clone()), ctx);
+                }
+                self.pending_query = Some((id, o, q));
+                self.open_pending_query();
             }
             Action::NewDatabase(id) => self.open_prompt(id, PromptKind::CreateDatabase),
             Action::NewSchema(id, db) => self.open_prompt(id, PromptKind::CreateSchema { db }),
@@ -603,6 +617,25 @@ impl DbManApp {
             self.connect(id);
         }
         self.add_tab(id, TabKind::Console(Box::new(console)));
+    }
+
+    /// Opens the waiting query template once its table's columns are read
+    /// (or could not be read: then it has placeholders).
+    fn open_pending_query(&mut self) {
+        let Some((id, o, q)) = &self.pending_query else { return };
+        let Some(c) = self.conn(*id) else {
+            self.pending_query = None;
+            return;
+        };
+        let columns = match c.details.get(&o.path) {
+            Some(Load::Ready(d)) => d.columns.clone(),
+            Some(Load::Loading) => return,
+            _ => Vec::new(),
+        };
+        let sql = q.sql(c.cfg.kind, &o.path, &columns);
+        let (id, db) = (*id, o.path.database.clone());
+        self.pending_query = None;
+        self.open_console(id, Some(db), Some(sql));
     }
 
     fn close_tab(&mut self, id: TabId) {
@@ -881,30 +914,32 @@ impl DbManApp {
 
         let bar = egui::Frame::new().fill(t.background).inner_margin(egui::Margin::symmetric(12, 8));
         egui::Panel::top("toolbar").frame(bar).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("DBMan").size(16.0).strong().color(t.foreground));
-                ui.add_space(12.0);
-                if ui.add(Button::new(tr("+ New connection")).size(ButtonSize::Sm)).clicked() {
-                    actions.push(Action::NewConnection);
+            toolbar(ui, "main-toolbar", |ui, side| match side {
+                Side::Left => {
+                    ui.label(RichText::new("DBMan").size(16.0).strong().color(t.foreground));
+                    ui.add_space(12.0);
+                    if ui.add(Button::new(tr("+ New connection")).size(ButtonSize::Sm)).clicked() {
+                        actions.push(Action::NewConnection);
+                    }
+                    let current = self.current_conn();
+                    if ui
+                        .add_enabled(current.is_some(), Button::outline(tr("New console")).size(ButtonSize::Sm))
+                        .tooltip(tr("Open a SQL console for the selected connection (Ctrl+T)"))
+                        .clicked()
+                        && let Some(id) = current
+                    {
+                        actions.push(Action::OpenConsole(id, None));
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .add(Button::ghost(tr("Search…")).size(ButtonSize::Sm))
+                        .tooltip(tr("Search tables, tabs and commands (Ctrl+K)"))
+                        .clicked()
+                    {
+                        self.palette = true;
+                    }
                 }
-                let current = self.current_conn();
-                if ui
-                    .add_enabled(current.is_some(), Button::outline(tr("New console")).size(ButtonSize::Sm))
-                    .tooltip(tr("Open a SQL console for the selected connection (Ctrl+T)"))
-                    .clicked()
-                    && let Some(id) = current
-                {
-                    actions.push(Action::OpenConsole(id, None));
-                }
-                ui.add_space(4.0);
-                if ui
-                    .add(Button::ghost(tr("Search…")).size(ButtonSize::Sm))
-                    .tooltip(tr("Search tables, tabs and commands (Ctrl+K)"))
-                    .clicked()
-                {
-                    self.palette = true;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                Side::Right => {
                     let mut dark = self.settings.dark;
                     if ui.add(Switch::new(&mut dark).label(tr("Dark"))).changed() {
                         self.settings.dark = dark;
@@ -918,7 +953,7 @@ impl DbManApp {
                     {
                         self.set_language(l);
                     }
-                });
+                }
             });
         });
 
@@ -1335,6 +1370,7 @@ fn changes(action: &Action) -> Option<Uuid> {
         | Action::ImportData(id, _)
         | Action::ImportNewTable(id, ..)
         | Action::GenerateData(id, _) => Some(*id),
+        Action::QueryTemplate(id, _, q) if q.changes_data() => Some(*id),
         _ => None,
     }
 }

@@ -1,7 +1,8 @@
-//! Builds INSERT / UPDATE / DELETE statements for edits made in a data grid.
+//! Builds INSERT / UPDATE / DELETE statements for edits made in a data grid,
+//! and query templates for a table that a console opens with.
 
 use crate::sql::Dialect;
-use crate::{Cell, DbKind, ObjectPath};
+use crate::{Cell, ColumnInfo, DbKind, ObjectPath};
 
 /// A column value used in a statement.
 #[derive(Debug, Clone, Copy)]
@@ -93,6 +94,103 @@ pub fn begin(kind: DbKind) -> &'static str {
     }
 }
 
+/// A query on one table to start from in a console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QueryTemplate {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
+impl QueryTemplate {
+    pub const ALL: [QueryTemplate; 4] =
+        [QueryTemplate::Select, QueryTemplate::Insert, QueryTemplate::Update, QueryTemplate::Delete];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            QueryTemplate::Select => "SELECT",
+            QueryTemplate::Insert => "INSERT",
+            QueryTemplate::Update => "UPDATE",
+            QueryTemplate::Delete => "DELETE",
+        }
+    }
+
+    pub fn changes_data(self) -> bool {
+        self != QueryTemplate::Select
+    }
+
+    /// The query on `table`, formatted. Values are `:column` parameters, so
+    /// the console asks for them when it runs. Without `columns` (they could
+    /// not be read) the query has placeholders to fill in instead.
+    pub fn sql(self, kind: DbKind, table: &ObjectPath, columns: &[ColumnInfo]) -> String {
+        use crate::complete::ident;
+        let t = if table.schema.is_empty() {
+            ident(kind, &table.name)
+        } else {
+            format!("{}.{}", ident(kind, &table.schema), ident(kind, &table.name))
+        };
+        let names = |cols: &[&ColumnInfo]| cols.iter().map(|c| ident(kind, &c.name)).collect::<Vec<_>>().join(", ");
+        let equals = |cols: &[&ColumnInfo], sep: &str| {
+            cols.iter().map(|c| format!("{} = :{}", ident(kind, &c.name), param(&c.name))).collect::<Vec<_>>().join(sep)
+        };
+        let all: Vec<&ColumnInfo> = columns.iter().collect();
+        let mut key: Vec<&ColumnInfo> = all.iter().copied().filter(|c| c.primary_key).collect();
+        if key.is_empty() {
+            key = all.iter().copied().take(1).collect();
+        }
+        let filter = if key.is_empty() { "column = :value".to_string() } else { equals(&key, " AND ") };
+        let sql = match self {
+            QueryTemplate::Select if all.is_empty() => format!("SELECT * FROM {t}"),
+            QueryTemplate::Select => format!("SELECT {} FROM {t}", names(&all)),
+            QueryTemplate::Insert => {
+                let given: Vec<&ColumnInfo> = all.iter().copied().filter(|c| !c.auto_increment).collect();
+                if given.is_empty() && !all.is_empty() {
+                    match kind {
+                        DbKind::MySql => format!("INSERT INTO {t} () VALUES ()"),
+                        _ => format!("INSERT INTO {t} DEFAULT VALUES"),
+                    }
+                } else if given.is_empty() {
+                    format!("INSERT INTO {t} (column) VALUES (:value)")
+                } else {
+                    let values = given.iter().map(|c| format!(":{}", param(&c.name))).collect::<Vec<_>>();
+                    format!("INSERT INTO {t} ({}) VALUES ({})", names(&given), values.join(", "))
+                }
+            }
+            QueryTemplate::Update => {
+                let mut set: Vec<&ColumnInfo> = all
+                    .iter()
+                    .copied()
+                    .filter(|c| !c.auto_increment && !key.iter().any(|k| k.name == c.name))
+                    .collect();
+                if set.is_empty() {
+                    set = all.iter().copied().filter(|c| !c.auto_increment).collect();
+                }
+                let set = if set.is_empty() { "column = :value".to_string() } else { equals(&set, ", ") };
+                match kind {
+                    // ClickHouse changes rows with mutations.
+                    DbKind::ClickHouse => format!("ALTER TABLE {t} UPDATE {set} WHERE {filter}"),
+                    _ => format!("UPDATE {t} SET {set} WHERE {filter}"),
+                }
+            }
+            QueryTemplate::Delete => match kind {
+                DbKind::ClickHouse => format!("ALTER TABLE {t} DELETE WHERE {filter}"),
+                _ => format!("DELETE FROM {t} WHERE {filter}"),
+            },
+        };
+        crate::format::format_sql(&format!("{sql};"), kind) + "\n"
+    }
+}
+
+/// A parameter name for a column: letters, digits and `_` only.
+fn param(column: &str) -> String {
+    let mut p: String = column.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    if !p.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        p.insert(0, '_');
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +239,39 @@ mod tests {
             delete(d, &t(), &[Value::new("name", &v, false)]),
             "DELETE FROM \"public\".\"users\" WHERE \"name\" = 'a'"
         );
+    }
+
+    fn columns() -> Vec<ColumnInfo> {
+        let col = |name: &str, pk: bool, auto: bool| ColumnInfo {
+            name: name.into(),
+            data_type: "int".into(),
+            primary_key: pk,
+            auto_increment: auto,
+            ..Default::default()
+        };
+        vec![col("id", true, true), col("Name", false, false), col("unit price", false, false)]
+    }
+
+    #[test]
+    fn query_templates() {
+        let pg = |q: QueryTemplate| q.sql(DbKind::Postgres, &t(), &columns());
+        assert_eq!(pg(QueryTemplate::Select), "SELECT id,\n    \"Name\",\n    \"unit price\"\nFROM public.users;\n");
+        assert_eq!(
+            pg(QueryTemplate::Insert),
+            "INSERT INTO public.users (\"Name\", \"unit price\")\nVALUES (:Name, :unit_price);\n"
+        );
+        assert_eq!(
+            pg(QueryTemplate::Update),
+            "UPDATE public.users\nSET \"Name\" = :Name,\n    \"unit price\" = :unit_price\nWHERE id = :id;\n"
+        );
+        assert_eq!(pg(QueryTemplate::Delete), "DELETE FROM public.users\nWHERE id = :id;\n");
+        let ch = QueryTemplate::Delete.sql(DbKind::ClickHouse, &ObjectPath::new("db", "", "events"), &columns());
+        assert_eq!(ch, "ALTER TABLE events DELETE WHERE id = :id;\n");
+        // Unknown columns leave placeholders.
+        assert_eq!(QueryTemplate::Select.sql(DbKind::MySql, &t(), &[]), "SELECT *\nFROM public.users;\n");
+        // Every value is a parameter the console asks for.
+        let sql = QueryTemplate::Update.sql(DbKind::MsSql, &t(), &columns());
+        let names = crate::params::names(&crate::params::find(DbKind::MsSql, &sql));
+        assert_eq!(names, ["Name", "unit_price", "id"]);
     }
 }

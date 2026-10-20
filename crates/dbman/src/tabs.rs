@@ -27,6 +27,7 @@ use crate::sessions_view::SessionsView;
 use crate::sql_editor;
 use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
+use crate::toolbar::{Side, toolbar};
 use crate::value_panel::ValuePanel;
 use dbman_core::explain::{self, Plan, PlanNode};
 use dbman_core::params;
@@ -778,102 +779,104 @@ impl Console {
             }
         }
 
-        ui.horizontal(|ui| {
-            let run = ui
-                .add_enabled(!self.running, Button::new(tr("▶ Run")).size(ButtonSize::Sm))
-                .tooltip(tr("Run the statement under the cursor or the selection (Ctrl+Enter)"));
-            if run.clicked() {
-                self.run(&cx, tab, false);
-            }
-            let all = ui
-                .add_enabled(!self.running, Button::outline(tr("Run script")).size(ButtonSize::Sm))
-                .tooltip(tr("Run every statement (Ctrl+Shift+Enter)"));
-            if all.clicked() {
-                self.run(&cx, tab, true);
-            }
-            let explain = ui
-                .add_enabled(!self.running, Button::outline(tr("Explain")).size(ButtonSize::Sm))
-                .tooltip(tr("Show the plan of the statement under the cursor without running it"));
-            if explain.clicked() {
-                self.explain(&cx, tab, false);
-            }
-            if explain::supports_analyze(self.cfg.kind) {
-                let analyze = ui
-                    .add_enabled(!self.running, Button::outline(tr("Explain analyze")).size(ButtonSize::Sm))
-                    .tooltip(tr("Run the statement and show the plan with the actual times and rows"));
-                if analyze.clicked() {
-                    self.explain(&cx, tab, true);
+        toolbar(ui, ("console-toolbar", tab), |ui, side| match side {
+            Side::Left => {
+                let run = ui
+                    .add_enabled(!self.running, Button::new(tr("▶ Run")).size(ButtonSize::Sm))
+                    .tooltip(tr("Run the statement under the cursor or the selection (Ctrl+Enter)"));
+                if run.clicked() {
+                    self.run(&cx, tab, false);
                 }
-            }
-            let format = ui
-                .add(Button::outline(tr("Format SQL")).size(ButtonSize::Sm))
-                .tooltip(tr("Lay out the selection or the whole script, one clause per line (Ctrl+Alt+L)"));
-            if format.clicked() {
-                self.format(&ctx, editor_id);
-            }
-            if self.running {
-                if ui
-                    .add(Button::destructive(tr("Stop")).size(ButtonSize::Sm))
-                    .tooltip(tr("Cancel the running statement on the server"))
-                    .clicked()
-                {
-                    self.stop(cx.tasks, tab);
+                let all = ui
+                    .add_enabled(!self.running, Button::outline(tr("Run script")).size(ButtonSize::Sm))
+                    .tooltip(tr("Run every statement (Ctrl+Shift+Enter)"));
+                if all.clicked() {
+                    self.run(&cx, tab, true);
                 }
-                ui.add(shadcn_egui::Spinner::new().size(14.0));
-                if let Some(t0) = self.started {
-                    ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                let explain = ui
+                    .add_enabled(!self.running, Button::outline(tr("Explain")).size(ButtonSize::Sm))
+                    .tooltip(tr("Show the plan of the statement under the cursor without running it"));
+                if explain.clicked() {
+                    self.explain(&cx, tab, false);
                 }
-            }
-            if sql::begin_statement(self.cfg.kind).is_some() {
-                ui.add_space(12.0);
-                let modes = [tr("Auto-commit"), tr("Manual commit")];
-                let mut mode = Some(usize::from(self.manual));
-                ui.add_enabled(!self.in_tx && !self.running, Select::new(&mut mode, &modes).width(150.0)).tooltip(
+                if explain::supports_analyze(self.cfg.kind) {
+                    let analyze = ui
+                        .add_enabled(!self.running, Button::outline(tr("Explain analyze")).size(ButtonSize::Sm))
+                        .tooltip(tr("Run the statement and show the plan with the actual times and rows"));
+                    if analyze.clicked() {
+                        self.explain(&cx, tab, true);
+                    }
+                }
+                let format = ui
+                    .add(Button::outline(tr("Format SQL")).size(ButtonSize::Sm))
+                    .tooltip(tr("Lay out the selection or the whole script, one clause per line (Ctrl+Alt+L)"));
+                if format.clicked() {
+                    self.format(&ctx, editor_id);
+                }
+                if self.running {
+                    if ui
+                        .add(Button::destructive(tr("Stop")).size(ButtonSize::Sm))
+                        .tooltip(tr("Cancel the running statement on the server"))
+                        .clicked()
+                    {
+                        self.stop(cx.tasks, tab);
+                    }
+                    ui.add(shadcn_egui::Spinner::new().size(14.0));
+                    if let Some(t0) = self.started {
+                        ui.label(RichText::new(format_elapsed(t0.elapsed())).color(t.muted_foreground));
+                        ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    }
+                }
+                if sql::begin_statement(self.cfg.kind).is_some() {
+                    ui.add_space(12.0);
+                    let modes = [tr("Auto-commit"), tr("Manual commit")];
+                    let mut mode = Some(usize::from(self.manual));
+                    ui.add_enabled(!self.in_tx && !self.running, Select::new(&mut mode, &modes).width(150.0)).tooltip(
+                        if self.in_tx {
+                            tr("Commit or roll back the open transaction first")
+                        } else {
+                            tr("Manual: statements wait for Commit, and Rollback undoes them")
+                        },
+                    );
+                    self.manual = mode == Some(1);
                     if self.in_tx {
-                        tr("Commit or roll back the open transaction first")
-                    } else {
-                        tr("Manual: statements wait for Commit, and Rollback undoes them")
-                    },
-                );
-                self.manual = mode == Some(1);
-                if self.in_tx {
-                    ui.add(Badge::new(tr("transaction open")).outline());
-                    let commit = ui
-                        .add_enabled(!self.running, Button::new(tr("Commit")).size(ButtonSize::Sm))
-                        .tooltip(tr("Make the transaction's changes permanent"));
-                    if commit.clicked() {
-                        self.finish(cx.tasks, tab, true, cx.page_size);
-                    }
-                    let rollback = ui
-                        .add_enabled(!self.running, Button::outline(tr("Rollback")).size(ButtonSize::Sm))
-                        .tooltip(tr("Undo the transaction's changes"));
-                    if rollback.clicked() {
-                        self.finish(cx.tasks, tab, false, cx.page_size);
+                        ui.add(Badge::new(tr("transaction open")).outline());
+                        let commit = ui
+                            .add_enabled(!self.running, Button::new(tr("Commit")).size(ButtonSize::Sm))
+                            .tooltip(tr("Make the transaction's changes permanent"));
+                        if commit.clicked() {
+                            self.finish(cx.tasks, tab, true, cx.page_size);
+                        }
+                        let rollback = ui
+                            .add_enabled(!self.running, Button::outline(tr("Rollback")).size(ButtonSize::Sm))
+                            .tooltip(tr("Undo the transaction's changes"));
+                        if rollback.clicked() {
+                            self.finish(cx.tasks, tab, false, cx.page_size);
+                        }
                     }
                 }
-            }
-            if let Some(dbs) = cx.conn.and_then(|c| c.databases.ready())
-                && dbs.len() > 1
-            {
-                ui.add_space(12.0);
-                ui.label(RichText::new(tr("Database")).color(t.muted_foreground));
-                let names: Vec<&str> = dbs.iter().map(String::as_str).collect();
-                let mut idx = self.database.as_ref().and_then(|d| dbs.iter().position(|x| x == d));
-                let before = idx;
-                // The transaction belongs to the session of the current database.
-                ui.add_enabled(!self.in_tx, Select::new(&mut idx, &names).width(180.0).placeholder(tr("default")));
-                if idx != before {
-                    self.database = idx.map(|i| dbs[i].clone());
+                if let Some(dbs) = cx.conn.and_then(|c| c.databases.ready())
+                    && dbs.len() > 1
+                {
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(tr("Database")).color(t.muted_foreground));
+                    let names: Vec<&str> = dbs.iter().map(String::as_str).collect();
+                    let mut idx = self.database.as_ref().and_then(|d| dbs.iter().position(|x| x == d));
+                    let before = idx;
+                    // The transaction belongs to the session of the current database.
+                    ui.add_enabled(!self.in_tx, Select::new(&mut idx, &names).width(180.0).placeholder(tr("default")));
+                    if idx != before {
+                        self.database = idx.map(|i| dbs[i].clone());
+                    }
+                }
+                if let Some(c) = cx.conn
+                    && c.databases.is_idle()
+                    && c.session.ready().is_some()
+                {
+                    cx.actions.push(Action::LoadDatabases(c.cfg.id));
                 }
             }
-            if let Some(c) = cx.conn
-                && c.databases.is_idle()
-                && c.session.ready().is_some()
-            {
-                cx.actions.push(Action::LoadDatabases(c.cfg.id));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            Side::Right => {
                 let history = if self.show_history {
                     ui.add(Button::secondary(tr("History")).size(ButtonSize::Sm))
                 } else {
@@ -883,7 +886,7 @@ impl Console {
                     self.show_history = !self.show_history;
                 }
                 self.script_menu(ui, &ctx, cx.recent_scripts, cx.actions);
-            });
+            }
         });
         ui.add_space(6.0);
 

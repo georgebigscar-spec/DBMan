@@ -3,7 +3,7 @@
 
 use dbman_core::{DbKind, DbObject, ObjectKind, ddl};
 use egui::{Context, RichText};
-use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Theme, footer, label};
+use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, RadioItem, Theme, footer, label};
 use uuid::Uuid;
 
 use crate::explorer::Action;
@@ -27,6 +27,8 @@ pub struct Prompt {
     name: String,
     cascade: bool,
     force: bool,
+    /// Truncate empties a table with DELETE rather than TRUNCATE.
+    delete: bool,
     pub running: bool,
     pub error: Option<String>,
 }
@@ -46,7 +48,8 @@ impl Prompt {
             PromptKind::Rename(o) => o.path.name.clone(),
             _ => String::new(),
         };
-        Self { conn, kind, db_kind, name, cascade: false, force: false, running: false, error: None }
+        let delete = ddl::Clear::modes(db_kind)[0] == ddl::Clear::Delete;
+        Self { conn, kind, db_kind, name, cascade: false, force: false, delete, running: false, error: None }
     }
 
     fn title(&self) -> String {
@@ -112,8 +115,12 @@ impl Prompt {
             PromptKind::Rename(o) => ddl::rename(k, o, name).ok_or_else(|| {
                 trf("{engine} cannot rename a {kind}.", &[("engine", &k.label()), ("kind", &tr(o.kind.label()))])
             })?,
-            PromptKind::Truncate(o) => ddl::truncate(k, &o.path),
+            PromptKind::Truncate(o) => ddl::clear(k, &o.path, self.clear()),
         }])
+    }
+
+    fn clear(&self) -> ddl::Clear {
+        if self.delete { ddl::Clear::Delete } else { ddl::Clear::Truncate { cascade: self.cascade } }
     }
 
     /// What to reload in the explorer after the statements ran.
@@ -165,6 +172,21 @@ impl Prompt {
                 };
             if cascade_applies {
                 ui.add(Checkbox::new(&mut self.cascade).label(tr("Cascade (also drop objects that depend on it)")));
+            }
+            if matches!(self.kind, PromptKind::Truncate(_)) {
+                if ddl::Clear::modes(self.db_kind).len() > 1 {
+                    ui.add(RadioItem::new(&mut self.delete, false, tr("TRUNCATE: fast, without row triggers")));
+                    ui.add(RadioItem::new(
+                        &mut self.delete,
+                        true,
+                        tr("DELETE: row by row, with triggers and foreign key checks"),
+                    ));
+                }
+                if ddl::Clear::cascades(self.db_kind) && !self.delete {
+                    ui.add(
+                        Checkbox::new(&mut self.cascade).label(tr("Cascade (also empty the tables that reference it)")),
+                    );
+                }
             }
             if pg && matches!(self.kind, PromptKind::DropDatabase { .. }) {
                 ui.add(Checkbox::new(&mut self.force).label(tr("Force (disconnect other sessions first)")));

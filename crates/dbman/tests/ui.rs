@@ -1124,3 +1124,67 @@ fn restores_tabs() {
         h.state().console_summaries()
     );
 }
+
+/// `New query` in a table's menu opens a console with the query, and the
+/// toolbars wrap their buttons in a narrow window.
+#[test]
+fn query_templates_and_narrow_toolbars() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let conn_id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 700.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &conn_id.to_string());
+    click(&mut h, "main");
+    click(&mut h, "tables");
+    h.get_all_by_label("orders").next().unwrap().click_secondary();
+    settle(&mut h);
+    h.get_by_label("New query").hover();
+    settle(&mut h);
+    for q in ["SELECT", "INSERT", "UPDATE", "DELETE"] {
+        assert!(h.query_by_label(q).is_some(), "{q} in the menu");
+    }
+    snapshot(&mut h, "query_templates");
+    click(&mut h, "INSERT");
+    let (_, _, sql) = h.state().active_console().expect("a console");
+    assert_eq!(
+        sql,
+        "INSERT INTO main.orders (customer_id, total, created_at, note)\n\
+         VALUES (:customer_id, :total, :created_at, :note);\n"
+    );
+
+    // A view has only SELECT.
+    let ctx = h.ctx.clone();
+    let view = DbObject {
+        kind: ObjectKind::View,
+        path: ObjectPath::new("main", "main", "big_orders"),
+        detail: None,
+        comment: None,
+    };
+    h.state_mut().handle(Action::QueryTemplate(conn_id, view, dbman_core::dml::QueryTemplate::Select), &ctx);
+    settle(&mut h);
+    let (_, _, sql) = h.state().active_console().expect("a console");
+    assert!(sql.starts_with("SELECT id,\n"), "{sql}");
+    assert!(sql.ends_with("FROM main.big_orders;\n"), "{sql}");
+
+    // In a narrow window the console's buttons go onto a second row, and the
+    // ones on the right stay inside the window.
+    h.set_size(egui::vec2(640.0, 700.0));
+    settle(&mut h);
+    let rect = |h: &Harness<'_, DbManApp>, label: &str| h.get_all_by_label(label).next().unwrap().rect();
+    let run = rect(&h, "▶ Run");
+    assert!(rect(&h, "Format SQL").top() > run.bottom(), "Format SQL wraps");
+    assert!(rect(&h, "History").right() <= 640.0);
+    assert!(rect(&h, "Dark").right() <= 640.0);
+    snapshot(&mut h, "narrow_toolbars");
+}
