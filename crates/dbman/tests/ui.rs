@@ -1054,6 +1054,44 @@ fn query_parameters() {
     assert!(h.state().console_summaries()[0].starts_with("1 rows"));
 }
 
+/// An object's DDL opens in a console; the status bar names the active tab's
+/// connection and the console's commit mode.
+#[test]
+fn ddl_in_console_and_status_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let conn_id = cfg.id;
+    let settings = Settings { connections: vec![cfg], ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 700.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::Connect(conn_id), &ctx);
+    settle(&mut h);
+    let trigger = DbObject {
+        kind: ObjectKind::Trigger,
+        path: ObjectPath::new("main", "main", "orders_touch"),
+        detail: Some("orders".into()),
+        comment: None,
+    };
+    h.state_mut().handle(Action::OpenObject(conn_id, trigger), &ctx);
+    settle(&mut h);
+    assert!(h.query_by_label("shop · main").is_some(), "the status bar names the tab's connection");
+    assert!(h.query_by_label("Set value…").is_none(), "only sequences have a value");
+    click(&mut h, "Edit in console");
+    let (_, _, sql) = h.state().active_console().expect("a console opens");
+    assert!(sql.contains("CREATE TRIGGER orders_touch"), "{sql}");
+    assert!(h.query_by_label("auto-commit").is_some(), "the console's commit mode is shown");
+}
+
 /// Tabs come back after a restart: a console with unsaved text, a table's
 /// data and the object structure, with the same tab active.
 #[test]

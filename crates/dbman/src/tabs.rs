@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dbman_core::sql::{self, split_statements, statement_at};
-use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
+use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, ObjectKind, StatementOutcome, TableDetails};
 use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{
@@ -1326,16 +1326,19 @@ pub struct ObjectView {
     section: usize,
     details: Load<TableDetails>,
     ddl: Load<String>,
+    /// A sequence's current value, where the engine reports it.
+    value: Load<Option<String>>,
 }
 
 impl ObjectView {
     pub fn new(object: DbObject, kind: DbKind) -> Self {
-        Self { object, kind, section: 0, details: Load::Idle, ddl: Load::Idle }
+        Self { object, kind, section: 0, details: Load::Idle, ddl: Load::Idle, value: Load::Idle }
     }
 
     fn on_event(&mut self, ev: TabEvent) {
         match ev {
             TabEvent::Ddl(r) => self.ddl = Load::from_result(r),
+            TabEvent::SequenceValue(r) => self.value = Load::from_result(r),
             TabEvent::Details(r) => self.details = Load::from_result(r),
             _ => {}
         }
@@ -1357,6 +1360,25 @@ impl ObjectView {
             let (s, o) = (session.clone(), self.object.clone());
             cx.tasks.spawn(async move { Event::Tab { tab, event: TabEvent::Ddl(s.ddl(&o).await) } });
         }
+        let value_sql = (self.object.kind == ObjectKind::Sequence)
+            .then(|| dbman_core::ddl::sequence_value(self.kind, &self.object.path))
+            .flatten();
+        if let Some(sql) = value_sql.clone()
+            && self.value.is_idle()
+        {
+            self.value = Load::Loading;
+            let (s, db) = (session.clone(), self.object.path.database.clone());
+            cx.tasks.spawn(async move {
+                let r = s.execute((!db.is_empty()).then_some(db.as_str()), &sql, 1).await.map(|out| match out {
+                    StatementOutcome::Rows(r) => {
+                        r.rows.first().and_then(|row| row.first()).and_then(|c| c.as_text()).map(|t| t.into_owned())
+                    }
+                    StatementOutcome::Done { .. } => None,
+                });
+                Event::Tab { tab, event: TabEvent::SequenceValue(r) }
+            });
+        }
+        let read_only = cx.conn.is_some_and(|c| c.cfg.read_only);
 
         let sections: &[&str] = if has_columns { &["Columns", "Indexes", "Foreign keys", "DDL"] } else { &["DDL"] };
         let labels: Vec<&str> = sections.iter().map(|s| tr(s)).collect();
@@ -1366,11 +1388,58 @@ impl ObjectView {
             if toolbar_button(ui, tr("⟳ Refresh")).clicked() {
                 self.details = Load::Idle;
                 self.ddl = Load::Idle;
+                self.value = Load::Idle;
             }
             if self.object.kind.has_data() && toolbar_button(ui, tr("Open data")).clicked() {
                 cx.actions.push(Action::OpenData(cx.conn_id, self.object.clone()));
             }
+            if let Load::Ready(ddl) = &self.ddl
+                && toolbar_button(ui, tr("Edit in console"))
+                    .on_hover_text(tr("Opens the DDL in a new console, to change and run it"))
+                    .clicked()
+            {
+                let db = Some(self.object.path.database.clone()).filter(|d| !d.is_empty());
+                cx.actions.push(Action::OpenConsoleWith(cx.conn_id, db, ddl.clone()));
+            }
         });
+        if value_sql.is_some() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Current value:")).color(Theme::get(ui.ctx()).muted_foreground));
+                let current = match &self.value {
+                    Load::Ready(Some(v)) => Some(v.clone()),
+                    Load::Ready(None) => {
+                        ui.label(tr("not used yet"));
+                        None
+                    }
+                    Load::Failed(e) => {
+                        ui.label(RichText::new(e.as_str()).color(Theme::get(ui.ctx()).destructive));
+                        None
+                    }
+                    _ => {
+                        ui.add(shadcn_egui::Spinner::new().size(12.0));
+                        None
+                    }
+                };
+                if let Some(v) = &current {
+                    ui.label(RichText::new(v).monospace().strong());
+                }
+                let set = dbman_core::ddl::set_sequence_value(
+                    self.kind,
+                    &self.object.path,
+                    current.as_deref().unwrap_or("1"),
+                );
+                if !read_only
+                    && let Some(sql) = set
+                    && toolbar_button(ui, tr("Set value…"))
+                        .on_hover_text(tr("Opens a console with a statement that sets the value"))
+                        .clicked()
+                {
+                    let db = Some(self.object.path.database.clone()).filter(|d| !d.is_empty());
+                    cx.actions.push(Action::OpenConsoleWith(cx.conn_id, db, format!("{sql};\n")));
+                }
+            });
+        }
         ui.add_space(8.0);
         let section = sections.get(self.section).copied().unwrap_or("DDL");
         if section == "DDL" {

@@ -90,6 +90,8 @@ pub enum TabEvent {
         result: DbResult<StatementOutcome>,
     },
     Ddl(DbResult<String>),
+    /// A sequence's current value; `None` before its first use.
+    SequenceValue(DbResult<Option<String>>),
     /// Grid edits were written; the number of statements run.
     Submitted(DbResult<usize>),
     /// DDL from the table editor ran.

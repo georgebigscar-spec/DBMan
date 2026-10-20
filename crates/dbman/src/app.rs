@@ -211,6 +211,37 @@ impl DbManApp {
         }
     }
 
+    /// The active tab's connection, database and, for a console, its commit mode, in the status bar.
+    fn active_tab_status(&self, ui: &mut egui::Ui) {
+        let Some(tab) = self.tabs.iter().find(|t| Some(t.id) == self.active) else { return };
+        let Some(c) = self.conn(tab.conn) else { return };
+        let t = Theme::get(ui.ctx());
+        let small = |text: &str| RichText::new(text).size(12.0);
+        // Right to left: the transaction state ends up rightmost, next to the connection count.
+        ui.separator();
+        if let TabKind::Console(console) = &tab.kind {
+            if console.in_tx {
+                ui.label(small(tr("transaction open")).color(t.primary).strong())
+                    .on_hover_text(tr("Commit or roll back in the console's toolbar"));
+            } else if console.manual {
+                ui.label(small(tr("manual commit")).color(t.muted_foreground));
+            } else {
+                ui.label(small(tr("auto-commit")).color(t.muted_foreground));
+            }
+        }
+        if c.cfg.read_only {
+            ui.label(small(tr("read-only")).color(t.muted_foreground));
+        }
+        // A file database shows its file name, not the whole path.
+        let db = tab.database().map(|db| std::path::Path::new(db).file_name().and_then(|f| f.to_str()).unwrap_or(db));
+        let place = match db {
+            Some(db) => format!("{} · {db}", c.cfg.display_name()),
+            None => c.cfg.display_name(),
+        };
+        ui.label(small(&place).color(t.foreground));
+        crate::explorer::kind_badge(ui, c.cfg.kind);
+    }
+
     fn conn(&self, id: Uuid) -> Option<&ConnState> {
         self.conns.iter().find(|c| c.cfg.id == id)
     }
@@ -945,6 +976,7 @@ impl DbManApp {
                     ui.label(
                         RichText::new(trf("{open} connected", &[("open", &open)])).size(12.0).color(t.muted_foreground),
                     );
+                    self.active_tab_status(ui);
                 });
             });
         });

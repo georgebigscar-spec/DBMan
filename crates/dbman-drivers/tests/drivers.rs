@@ -35,6 +35,13 @@ async fn exec(c: &Arc<dyn Connection>, db: &str, sql: &str) -> StatementOutcome 
     c.execute(Some(db), sql, 1000).await.unwrap_or_else(|e| panic!("{sql}: {e}"))
 }
 
+/// A sequence's current value as the object view reads it.
+async fn sequence_value(c: &Arc<dyn Connection>, db: &str, schema: &str, name: &str) -> Cell {
+    let path = ObjectPath::new(db, schema, name);
+    let sql = ddl::sequence_value(c.kind(), &path).unwrap();
+    rows(c, db, &sql).await.remove(0).remove(0)
+}
+
 async fn rows(c: &Arc<dyn Connection>, db: &str, sql: &str) -> Vec<Vec<Cell>> {
     match exec(c, db, sql).await {
         StatementOutcome::Rows(r) => r.rows,
@@ -339,6 +346,12 @@ async fn postgres() {
     assert!(objects.iter().any(|o| o.kind == ObjectKind::Type && o.path.name == "mood"));
     assert!(objects.iter().any(|o| o.kind == ObjectKind::Sequence && o.path.name == "counter"));
     check_ddl(c.clone(), &db, "dbman_test").await;
+    assert_eq!(sequence_value(&c, &db, "dbman_test", "counter").await, Cell::Null, "not used yet");
+    exec(&c, &db, "SELECT nextval('dbman_test.counter')").await;
+    assert_eq!(sequence_value(&c, &db, "dbman_test", "counter").await, Cell::Text("5".into()));
+    let path = ObjectPath::new(&db, "dbman_test", "counter");
+    exec(&c, &db, &ddl::set_sequence_value(DbKind::Postgres, &path, "41").unwrap()).await;
+    assert_eq!(sequence_value(&c, &db, "dbman_test", "counter").await, Cell::Text("41".into()));
     exec(&c, &db, "DROP SCHEMA dbman_test CASCADE").await;
     check_cancel(c, &db, "SELECT pg_sleep(30)").await;
 }
@@ -419,6 +432,9 @@ async fn duckdb() {
             Cell::Text("01:30:00".into()),
         ]
     );
+    exec(&c, "test", "CREATE SEQUENCE app.counter START 5").await;
+    exec(&c, "test", "SELECT nextval('app.counter')").await;
+    assert_eq!(sequence_value(&c, "test", "app", "counter").await, Cell::Text("5".into()));
     drop((c, other));
     // Both sessions closed: the file is released and opens again.
     let c = dbman_drivers::connect(&cfg).await.unwrap();
@@ -485,6 +501,10 @@ async fn mssql() {
     }
     assert_eq!(rows(&c, &db, "SELECT app.add_two(40)").await[0][0], Cell::Text("42".into()));
     assert_eq!(rows(&c, &db, "EXEC app.touch").await[0][0], Cell::Text("1".into()));
+    assert_eq!(sequence_value(&c, &db, "app", "counter").await, Cell::Text("5".into()));
+    let path = ObjectPath::new(&db, "app", "counter");
+    exec(&c, &db, &ddl::set_sequence_value(DbKind::MsSql, &path, "41").unwrap()).await;
+    assert_eq!(sequence_value(&c, &db, "app", "counter").await, Cell::Text("41".into()));
     let typed = rows(
         &c,
         &db,
