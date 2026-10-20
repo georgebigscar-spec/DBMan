@@ -228,6 +228,8 @@ pub enum Action {
     OpenCopy(Uuid, String, String, Option<String>),
     /// Opens the server's sessions.
     OpenSessions(Uuid),
+    /// Opens a console in the table's database with a query on it.
+    QueryTemplate(Uuid, DbObject, dbman_core::dml::QueryTemplate),
     /// Opens a console in a database with a script in it.
     OpenConsoleWith(Uuid, Option<String>, String),
     StartJob(Box<crate::transfer_dialog::Start>),
@@ -745,6 +747,18 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Edit table…"), None).clicked() {
             actions.push(Action::EditTable(id, o.path.clone()));
         }
+        if o.kind.has_data() {
+            submenu(ui, tr("New query"), |ui| {
+                for q in dbman_core::dml::QueryTemplate::ALL {
+                    let writes = q.changes_data();
+                    if (!writes || (o.kind == ObjectKind::Table && !c.cfg.read_only))
+                        && menu_item(ui, q.label(), None).clicked()
+                    {
+                        actions.push(Action::QueryTemplate(id, o.clone(), q));
+                    }
+                }
+            });
+        }
         menu_separator(ui);
         if menu_item(ui, tr("Copy name"), None).clicked() {
             actions.push(Action::CopyText(o.path.name.clone()));
@@ -790,6 +804,32 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if !c.cfg.read_only && menu_item(ui, tr("Drop…"), None).clicked() {
             actions.push(Action::DropObject(id, o.clone()));
         }
+    });
+}
+
+/// A menu row that opens `add_contents` beside it on hover, like `menu_item`
+/// looks.
+fn submenu(ui: &mut Ui, text: &str, add_contents: impl FnOnce(&mut Ui)) {
+    let t = Theme::get(ui.ctx());
+    let font = egui::FontId::proportional(14.0);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), t.popover_foreground);
+    let desired = 8.0 + galley.size().x + 32.0;
+    let width = if ui.is_sizing_pass() { desired } else { ui.available_width().max(desired) };
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::containers::menu::SubMenu::id_from_widget_id(r.id));
+    let lit = r.hovered() || r.has_focus() || open;
+    let fg = if lit { t.accent_foreground } else { t.popover_foreground };
+    let p = ui.painter();
+    if lit {
+        p.rect_filled(rect, t.radius_sm(), t.accent);
+    }
+    p.text(egui::pos2(rect.left() + 8.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font.clone(), fg);
+    p.text(egui::pos2(rect.right() - 8.0, rect.center().y), egui::Align2::RIGHT_CENTER, "›", font, fg);
+    egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
+        ui.set_min_width(140.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        add_contents(ui);
     });
 }
 

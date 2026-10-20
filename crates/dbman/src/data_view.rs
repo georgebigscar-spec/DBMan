@@ -22,6 +22,7 @@ use crate::grid;
 use crate::i18n::{tr, trf};
 use crate::sql_editor;
 use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, outcome_summary, toolbar_button};
+use crate::toolbar::{Side, toolbar};
 use crate::value_panel::{Current, ValuePanel};
 use dbman_drivers::transfer::ExportSource;
 use tokio::sync::OnceCell;
@@ -442,48 +443,50 @@ impl DataView {
         }
         let dirty = !self.edits.is_empty();
         let mut reload = false;
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!dirty, Button::outline(tr("⟳ Refresh")).size(ButtonSize::Sm)).clicked() {
-                reload = true;
+        toolbar(ui, ("data-toolbar", tab), |ui, side| match side {
+            Side::Left => {
+                if ui.add_enabled(!dirty, Button::outline(tr("⟳ Refresh")).size(ButtonSize::Sm)).clicked() {
+                    reload = true;
+                }
+                let has_next = self.rows.ready().is_some_and(|r| r.truncated);
+                if ui.add_enabled(self.page > 0 && !dirty, Button::outline("‹").size(ButtonSize::Sm)).clicked() {
+                    self.page -= 1;
+                    reload = true;
+                }
+                ui.label(RichText::new(trf("page {n}", &[("n", &(self.page + 1))])).color(t.muted_foreground));
+                if ui.add_enabled(has_next && !dirty, Button::outline("›").size(ButtonSize::Sm)).clicked() {
+                    self.page += 1;
+                    reload = true;
+                }
+                ui.add_space(8.0);
+                ui.label(RichText::new("WHERE").monospace().color(t.muted_foreground));
+                let f = ui.add(Input::new(&mut self.filter).placeholder("id > 10").width(220.0));
+                ui.label(RichText::new("ORDER BY").monospace().color(t.muted_foreground));
+                let o = ui.add(Input::new(&mut self.order_by).placeholder("id DESC").width(150.0));
+                let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                if (f.lost_focus() || o.lost_focus()) && enter && !dirty {
+                    self.page = 0;
+                    reload = true;
+                }
+                if let Some(r) = self.rows.ready()
+                    && grid::export_menu(ui, r, self.kind, Some(&self.object.path), true)
+                {
+                    cx.actions.push(Action::ExportData(cx.conn_id, self.export_source()));
+                }
+                if self.rows.ready().is_some() {
+                    grid::value_button(ui, &mut self.value_panel.open);
+                }
             }
-            let has_next = self.rows.ready().is_some_and(|r| r.truncated);
-            if ui.add_enabled(self.page > 0 && !dirty, Button::outline("‹").size(ButtonSize::Sm)).clicked() {
-                self.page -= 1;
-                reload = true;
-            }
-            ui.label(RichText::new(trf("page {n}", &[("n", &(self.page + 1))])).color(t.muted_foreground));
-            if ui.add_enabled(has_next && !dirty, Button::outline("›").size(ButtonSize::Sm)).clicked() {
-                self.page += 1;
-                reload = true;
-            }
-            ui.add_space(8.0);
-            ui.label(RichText::new("WHERE").monospace().color(t.muted_foreground));
-            let f = ui.add(Input::new(&mut self.filter).placeholder("id > 10").width(220.0));
-            ui.label(RichText::new("ORDER BY").monospace().color(t.muted_foreground));
-            let o = ui.add(Input::new(&mut self.order_by).placeholder("id DESC").width(150.0));
-            let enter = ui.input(|i| i.key_pressed(Key::Enter));
-            if (f.lost_focus() || o.lost_focus()) && enter && !dirty {
-                self.page = 0;
-                reload = true;
-            }
-            if let Some(r) = self.rows.ready()
-                && grid::export_menu(ui, r, self.kind, Some(&self.object.path), true)
-            {
-                cx.actions.push(Action::ExportData(cx.conn_id, self.export_source()));
-            }
-            if self.rows.ready().is_some() {
-                grid::value_button(ui, &mut self.value_panel.open);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            Side::Right => {
                 ui.label(RichText::new(&self.summary).color(t.muted_foreground));
-            });
+            }
         });
 
         let editable = self.editable();
         if editable {
             ui.add_space(4.0);
             let mut submit = false;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if toolbar_button(ui, tr("+ Row")).tooltip(tr("Add a row")).clicked() {
                     self.add_row();
                 }

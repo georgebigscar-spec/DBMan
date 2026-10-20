@@ -19,6 +19,7 @@ use crate::explorer::{Action, Load};
 use crate::files;
 use crate::i18n::{tr, trf};
 use crate::tabs::{TabCtx, error_alert, toolbar_button};
+use crate::toolbar::{Side, toolbar};
 
 pub struct ErView {
     pub database: String,
@@ -195,33 +196,35 @@ impl ErView {
             self.load(&cx, tab);
         }
         let mut find = false;
-        ui.horizontal(|ui| {
-            if toolbar_button(ui, tr("⟳ Refresh")).clicked() {
-                self.load(&cx, tab);
+        toolbar(ui, ("er-toolbar", tab), |ui, side| match side {
+            Side::Left => {
+                if toolbar_button(ui, tr("⟳ Refresh")).clicked() {
+                    self.load(&cx, tab);
+                }
+                if toolbar_button(ui, tr("Fit")).tooltip(tr("Show the whole diagram")).clicked() {
+                    self.fit = true;
+                }
+                if toolbar_button(ui, "−").clicked() {
+                    self.zoom = (self.zoom / 1.25).max(0.1);
+                }
+                ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(12.0));
+                if toolbar_button(ui, "+").clicked() {
+                    self.zoom = (self.zoom * 1.25).min(3.0);
+                }
+                ui.add_space(8.0);
+                let before = self.keys_only;
+                ui.add(Checkbox::new(&mut self.keys_only).label(tr("Keys only")));
+                if before != self.keys_only {
+                    self.rebuild();
+                }
+                ui.add_space(8.0);
+                let r = ui.add(Input::new(&mut self.search).placeholder(tr("Find table")).width(180.0));
+                find = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || r.changed();
+                ui.add_space(8.0);
+                self.export_menu(ui);
             }
-            if toolbar_button(ui, tr("Fit")).tooltip(tr("Show the whole diagram")).clicked() {
-                self.fit = true;
-            }
-            if toolbar_button(ui, "−").clicked() {
-                self.zoom = (self.zoom / 1.25).max(0.1);
-            }
-            ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(12.0));
-            if toolbar_button(ui, "+").clicked() {
-                self.zoom = (self.zoom * 1.25).min(3.0);
-            }
-            ui.add_space(8.0);
-            let before = self.keys_only;
-            ui.add(Checkbox::new(&mut self.keys_only).label(tr("Keys only")));
-            if before != self.keys_only {
-                self.rebuild();
-            }
-            ui.add_space(8.0);
-            let r = ui.add(Input::new(&mut self.search).placeholder(tr("Find table")).width(180.0));
-            find = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || r.changed();
-            ui.add_space(8.0);
-            self.export_menu(ui);
-            let t = Theme::get(ui.ctx());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            Side::Right => {
+                let t = Theme::get(ui.ctx());
                 let text = match &self.tables {
                     Load::Ready(_) => trf(
                         "{tables} tables · {links} relationships",
@@ -238,7 +241,7 @@ impl ErView {
                     },
                 };
                 ui.label(egui::RichText::new(text).color(t.muted_foreground));
-            });
+            }
         });
         ui.add_space(6.0);
         match &self.tables {

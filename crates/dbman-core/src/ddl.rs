@@ -880,12 +880,45 @@ pub fn rename(kind: DbKind, o: &DbObject, new_name: &str) -> Option<String> {
     }
 }
 
-/// Removes every row of a table.
+/// How a table is emptied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clear {
+    /// `TRUNCATE`: fast and not row by row, so no `DELETE` triggers fire. With
+    /// `cascade` (PostgreSQL), tables that reference it are emptied too.
+    Truncate { cascade: bool },
+    /// `DELETE FROM`: row by row, firing triggers and checking foreign keys.
+    Delete,
+}
+
+impl Clear {
+    /// The ways `kind` can empty a table, the usual one first. SQLite has no
+    /// `TRUNCATE`, and ClickHouse's `DELETE` works only on some engines.
+    pub fn modes(kind: DbKind) -> &'static [Clear] {
+        match kind {
+            DbKind::Sqlite => &[Clear::Delete],
+            DbKind::ClickHouse => &[Clear::Truncate { cascade: false }],
+            _ => &[Clear::Truncate { cascade: false }, Clear::Delete],
+        }
+    }
+
+    /// Whether `TRUNCATE … CASCADE` exists.
+    pub fn cascades(kind: DbKind) -> bool {
+        kind == DbKind::Postgres
+    }
+}
+
+/// Removes every row of a table, the usual way for its engine.
 pub fn truncate(kind: DbKind, table: &ObjectPath) -> String {
+    clear(kind, table, Clear::modes(kind)[0])
+}
+
+/// Removes every row of a table.
+pub fn clear(kind: DbKind, table: &ObjectPath, how: Clear) -> String {
     let q = Dialect(kind).qualified(table);
-    match kind {
-        DbKind::Sqlite => format!("DELETE FROM {q}"),
-        _ => format!("TRUNCATE TABLE {q}"),
+    match how {
+        Clear::Truncate { cascade: true } if Clear::cascades(kind) => format!("TRUNCATE TABLE {q} CASCADE"),
+        Clear::Truncate { .. } => format!("TRUNCATE TABLE {q}"),
+        Clear::Delete => format!("DELETE FROM {q}"),
     }
 }
 
@@ -1191,5 +1224,18 @@ mod tests {
                 "ALTER TABLE `app`.`users` MODIFY COLUMN `team_id` REMOVE DEFAULT",
             ]
         );
+    }
+
+    #[test]
+    fn clearing_tables() {
+        let t = ObjectPath::new("db", "public", "t");
+        assert_eq!(truncate(DbKind::Postgres, &t), "TRUNCATE TABLE \"public\".\"t\"");
+        assert_eq!(
+            clear(DbKind::Postgres, &t, Clear::Truncate { cascade: true }),
+            "TRUNCATE TABLE \"public\".\"t\" CASCADE"
+        );
+        assert_eq!(clear(DbKind::MySql, &t, Clear::Truncate { cascade: true }), "TRUNCATE TABLE `public`.`t`");
+        assert_eq!(clear(DbKind::MsSql, &t, Clear::Delete), "DELETE FROM [public].[t]");
+        assert_eq!(truncate(DbKind::Sqlite, &t), "DELETE FROM \"public\".\"t\"");
     }
 }
