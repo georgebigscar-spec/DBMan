@@ -131,19 +131,23 @@ pub fn principals_sql(kind: DbKind) -> &'static [&'static str] {
              CASE WHEN account_locked = 'Y' AND authentication_string <> '' THEN 'LOCKED' ELSE '' END, Host, '', plugin, \
              User IN ('mysql.sys', 'mysql.session', 'mysql.infoschema') FROM mysql.user ORDER BY User, Host",
         ],
-        DbKind::MsSql => &["SELECT dp.name, CASE WHEN dp.type = 'R' THEN 1 ELSE 0 END, \
-             CASE WHEN sp.is_disabled = 1 THEN 'DISABLED' ELSE '' END, '', ISNULL(sp.name, ''), \
-             CONCAT(LOWER(dp.type_desc), CASE WHEN dp.default_schema_name IS NULL THEN '' \
-             ELSE ', schema ' + dp.default_schema_name END), \
+        DbKind::MsSql => &["SELECT dp.name AS name, CASE WHEN dp.type = 'R' THEN 1 ELSE 0 END AS is_role, \
+             CASE WHEN sp.is_disabled = 1 THEN N'DISABLED' ELSE N'' END AS options, CAST(N'' AS nvarchar(128)) AS host, \
+             ISNULL(sp.name, N'') AS login, \
+             LOWER(dp.type_desc) + CASE WHEN dp.default_schema_name IS NULL THEN N'' \
+             ELSE N', schema ' + dp.default_schema_name END AS note, \
              CASE WHEN dp.is_fixed_role = 1 OR dp.name IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys', 'public') \
-             THEN 1 ELSE 0 END \
+             THEN 1 ELSE 0 END AS is_system \
              FROM sys.database_principals dp \
              LEFT JOIN sys.server_principals sp ON sp.sid = dp.sid AND dp.type <> 'R' \
              WHERE dp.type IN ('S', 'U', 'G', 'R', 'E', 'X') ORDER BY dp.name"],
+        // Column names keep the union's columns apart.
         DbKind::ClickHouse => &["SELECT * FROM (\
-             SELECT name, '0', '', '', '', concat('storage ', storage), '0' FROM system.users \
-             UNION ALL SELECT name, '1', '', '', '', concat('storage ', storage), '0' FROM system.roles) \
-             ORDER BY 1"],
+             SELECT name, '0' AS is_role, '' AS options, '' AS host, '' AS login, \
+             concat('storage ', storage) AS note, '0' AS is_system FROM system.users \
+             UNION ALL SELECT name, '1' AS is_role, '' AS options, '' AS host, '' AS login, \
+             concat('storage ', storage) AS note, '0' AS is_system FROM system.roles) \
+             ORDER BY name"],
         DbKind::Sqlite | DbKind::DuckDb => &[],
     }
 }

@@ -37,12 +37,15 @@ async fn rows(c: &Arc<dyn Connection>, sql: &str) -> dbman_core::QueryResult {
 
 /// The first of several alternative statements that works.
 async fn first_working(c: &Arc<dyn Connection>, list: &[&str]) -> dbman_core::QueryResult {
+    let mut errors = Vec::new();
     for sql in list {
-        if let Ok(StatementOutcome::Rows(r)) = c.execute(None, sql, 10_000).await {
-            return r;
+        match c.execute(None, sql, 10_000).await {
+            Ok(StatementOutcome::Rows(r)) => return r,
+            Ok(other) => errors.push(format!("{sql}: {other:?}")),
+            Err(e) => errors.push(format!("{sql}: {e}")),
         }
     }
-    panic!("none of these work: {list:#?}");
+    panic!("none of these work: {errors:#?}");
 }
 
 async fn principals(c: &Arc<dyn Connection>) -> Vec<Principal> {
