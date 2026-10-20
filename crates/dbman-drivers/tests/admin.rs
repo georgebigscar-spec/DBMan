@@ -127,11 +127,15 @@ async fn check(cfg: ConnectionConfig, password: &str, table: (&str, &str), creat
     }
     if kind == DbKind::Postgres {
         e.options.push("CREATEDB".into());
+        e.conn_limit = "3".into();
+        e.valid_until = "2099-01-01".into();
     }
     run(&c, admin::alter(kind, &user, &e)).await;
     let changed = find(&c, &e.name).await.unwrap_or_else(|| panic!("{kind:?}: renamed"));
     if kind == DbKind::Postgres {
         assert!(changed.has("CREATEDB"), "{changed:?}");
+        assert_eq!(changed.conn_limit, "3");
+        assert!(changed.valid_until.starts_with("2099-01-01"), "{changed:?}");
     }
     if kind == DbKind::MsSql {
         assert!(changed.has("DISABLED"), "{changed:?}");
@@ -140,7 +144,8 @@ async fn check(cfg: ConnectionConfig, password: &str, table: (&str, &str), creat
     run(&c, vec![admin::revoke_role(kind, &role, &changed)]).await;
     assert!(!memberships(&c).await.iter().any(|m| m.role == role.id() && m.member == changed.id()));
     run(&c, vec![admin::revoke(kind, &["INSERT"], &target, &role, false)]).await;
-    run(&c, vec![admin::drop(kind, &changed), admin::drop(kind, &role)]).await;
+    run(&c, vec![admin::drop(kind, &changed)]).await;
+    run(&c, admin::drop_owned(kind, &role)).await;
     if kind == DbKind::MsSql {
         // The login stays with the dropped user.
         run(&c, vec![format!("DROP LOGIN [{user_name}]")]).await;

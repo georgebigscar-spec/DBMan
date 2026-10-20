@@ -26,6 +26,10 @@ pub struct Principal {
     pub note: String,
     /// Built in (`pg_*`, `mysql.sys`, `dbo`, fixed database roles).
     pub system: bool,
+    /// PostgreSQL: how many sessions it may open at once; empty for no limit.
+    pub conn_limit: String,
+    /// PostgreSQL: when its password stops working; empty for never.
+    pub valid_until: String,
 }
 
 impl Principal {
@@ -112,17 +116,17 @@ pub fn parse_check(result: &QueryResult) -> bool {
 
 /// Statements that list users and roles, tried in order until one works, with
 /// the columns name, role, options (comma-separated keys), host, login, note
-/// and system.
+/// and system, and on PostgreSQL also connection limit and valid until.
 pub fn principals_sql(kind: DbKind) -> &'static [&'static str] {
     match kind {
         DbKind::Postgres => &["SELECT rolname, NOT rolcanlogin, concat_ws(',', \
              CASE WHEN rolcanlogin THEN 'LOGIN' END, CASE WHEN rolsuper THEN 'SUPERUSER' END, \
              CASE WHEN rolcreatedb THEN 'CREATEDB' END, CASE WHEN rolcreaterole THEN 'CREATEROLE' END, \
              CASE WHEN rolinherit THEN 'INHERIT' END, CASE WHEN rolreplication THEN 'REPLICATION' END, \
-             CASE WHEN rolbypassrls THEN 'BYPASSRLS' END), '', '', \
-             concat_ws(', ', CASE WHEN rolconnlimit >= 0 THEN 'connection limit ' || rolconnlimit END, \
-             CASE WHEN rolvaliduntil IS NOT NULL THEN 'valid until ' || rolvaliduntil END), \
-             rolname LIKE 'pg\\_%' FROM pg_roles ORDER BY rolname"],
+             CASE WHEN rolbypassrls THEN 'BYPASSRLS' END), '', '', '', rolname LIKE 'pg\\_%', \
+             CASE WHEN rolconnlimit >= 0 THEN rolconnlimit::text ELSE '' END, \
+             CASE WHEN rolvaliduntil IS NULL OR rolvaliduntil = 'infinity' THEN '' ELSE rolvaliduntil::text END \
+             FROM pg_roles ORDER BY rolname"],
         // MariaDB marks roles; MySQL roles are locked accounts without a password.
         DbKind::MySql => &[
             "SELECT User, is_role, '', Host, '', plugin, User IN ('mariadb.sys') \
@@ -165,6 +169,8 @@ pub fn parse_principals(result: &QueryResult) -> Vec<Principal> {
             login: text(r.get(4)),
             note: text(r.get(5)),
             system: truthy(&text(r.get(6))),
+            conn_limit: text(r.get(7)),
+            valid_until: text(r.get(8)),
         })
         .collect()
 }
@@ -546,6 +552,10 @@ pub struct Edit {
     pub password: String,
     /// Keys of the options that should be on.
     pub options: Vec<String>,
+    /// PostgreSQL: a number, or empty for no limit.
+    pub conn_limit: String,
+    /// PostgreSQL: a timestamp, or empty for never.
+    pub valid_until: String,
 }
 
 impl Edit {
@@ -557,6 +567,8 @@ impl Edit {
             role: p.role,
             password: String::new(),
             options: p.options.clone(),
+            conn_limit: p.conn_limit.clone(),
+            valid_until: p.valid_until.clone(),
         }
     }
 
@@ -567,7 +579,7 @@ impl Edit {
             options.insert(0, "LOGIN".into());
         }
         let host = if kind == DbKind::MySql && !role { "%".into() } else { String::new() };
-        Self { name: String::new(), host, role, password: String::new(), options }
+        Self { host, role, options, ..Default::default() }
     }
 
     fn has(&self, key: &str) -> bool {
@@ -600,6 +612,12 @@ pub fn create(kind: DbKind, e: &Edit) -> Vec<String> {
                 .collect();
             if let Some(pw) = &password {
                 words.push(format!("PASSWORD {pw}"));
+            }
+            if let Ok(n) = e.conn_limit.trim().parse::<i64>() {
+                words.push(format!("CONNECTION LIMIT {n}"));
+            }
+            if !e.valid_until.trim().is_empty() {
+                words.push(format!("VALID UNTIL {}", d.string(e.valid_until.trim())));
             }
             if words.is_empty() {
                 vec![format!("CREATE ROLE {acct}")]
@@ -654,6 +672,14 @@ pub fn alter(kind: DbKind, old: &Principal, e: &Edit) -> Vec<String> {
                 changed.iter().map(|o| if e.has(o.key) { o.key.to_string() } else { format!("NO{}", o.key) }).collect();
             if let Some(pw) = &password {
                 words.push(format!("PASSWORD {pw}"));
+            }
+            if e.conn_limit.trim() != old.conn_limit {
+                // -1 lifts the limit.
+                words.push(format!("CONNECTION LIMIT {}", e.conn_limit.trim().parse::<i64>().unwrap_or(-1)));
+            }
+            if e.valid_until.trim() != old.valid_until {
+                let until = Some(e.valid_until.trim()).filter(|v| !v.is_empty()).unwrap_or("infinity");
+                words.push(format!("VALID UNTIL {}", d.string(until)));
             }
             if !words.is_empty() {
                 out.push(format!("ALTER ROLE {acct} WITH {}", words.join(" ")));
@@ -713,6 +739,18 @@ pub fn drop(kind: DbKind, p: &Principal) -> String {
         _ => "USER",
     };
     format!("DROP {what} {}", account(kind, p))
+}
+
+/// PostgreSQL: drops a role that owns objects or holds privileges in the
+/// database the statements run in. Its objects there go to the current user
+/// and its privileges there go away; objects in other databases still keep
+/// the role from being dropped.
+pub fn drop_owned(kind: DbKind, p: &Principal) -> Vec<String> {
+    if kind != DbKind::Postgres {
+        return vec![drop(kind, p)];
+    }
+    let r = account(kind, p);
+    vec![format!("REASSIGN OWNED BY {r} TO CURRENT_USER"), format!("DROP OWNED BY {r}"), drop(kind, p)]
 }
 
 /// Makes `member` a member of `role`.
@@ -789,6 +827,19 @@ mod tests {
             ["ALTER ROLE \"app\" WITH SUPERUSER NOINHERIT", "ALTER ROLE \"app\" RENAME TO \"app2\""]
         );
         assert!(alter(DbKind::Postgres, &old, &Edit::of(&old)).is_empty());
+        let mut e = Edit::of(&old);
+        e.conn_limit = "5".into();
+        e.valid_until = "2027-01-01".into();
+        assert_eq!(
+            alter(DbKind::Postgres, &old, &e),
+            ["ALTER ROLE \"app\" WITH CONNECTION LIMIT 5 VALID UNTIL '2027-01-01'"]
+        );
+        let limited = Principal { conn_limit: "5".into(), valid_until: "2027-01-01".into(), ..old.clone() };
+        assert_eq!(
+            alter(DbKind::Postgres, &limited, &Edit::of(&old)),
+            ["ALTER ROLE \"app\" WITH CONNECTION LIMIT -1 VALID UNTIL 'infinity'"]
+        );
+        assert_eq!(drop_owned(DbKind::Postgres, &old)[0], "REASSIGN OWNED BY \"app\" TO CURRENT_USER");
         assert_eq!(drop(DbKind::Postgres, &old), "DROP ROLE \"app\"");
     }
 

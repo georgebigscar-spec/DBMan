@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use dbman_core::admin::{self, Edit, Grant, Membership, Principal, Scope, Target};
-use dbman_core::{Connection, ConnectionConfig, DbKind, DbResult, StatementOutcome};
+use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, DbResult, ObjectKind, StatementOutcome};
 use egui::{Context, RichText, Ui};
 use shadcn_egui::{
     Alert, Badge, Button, Checkbox, Column, DataTable, Dialog, Input, Select, Switch, Theme, footer, label, menu_item,
@@ -15,7 +15,7 @@ use shadcn_egui::{
 
 use crate::events::{Event, TabEvent, TabId};
 use crate::exec;
-use crate::explorer::{Action, Load};
+use crate::explorer::{Action, ConnState, Load};
 use crate::i18n::{tr, trf};
 use crate::sql_editor;
 use crate::tabs::{TabCtx, error_alert, not_connected, toolbar_button};
@@ -43,7 +43,10 @@ enum Form {
     Join { fixed: Principal, fixed_is_role: bool, candidates: Vec<Principal>, pick: Option<usize>, admin: bool },
     /// Grants privileges to a user or role.
     Grant { to: Principal, scope: usize, target: Target, picked: Vec<bool>, grant_option: bool },
-    /// Runs prepared statements once the user agrees (drops and revokes).
+    /// Drops a user or role; on PostgreSQL `owned` first hands its objects in
+    /// the database to the current user and drops its privileges there.
+    Drop { title: String, description: String, principal: Principal, owned: bool },
+    /// Runs prepared statements once the user agrees (revokes).
     Confirm { title: String, description: String, statements: Vec<String>, button: String, done: String },
 }
 
@@ -300,7 +303,7 @@ impl AdminView {
             self.open(form);
         }
 
-        self.change_ui(ui.ctx(), &cx, tab, cfg);
+        self.change_ui(ui.ctx(), &mut cx, tab, cfg);
     }
 
     /// The table of users and roles; returns the id of a clicked row.
@@ -362,7 +365,11 @@ impl AdminView {
         });
         let attrs: Vec<&str> = admin::options(kind).iter().filter(|o| p.has(o.key)).map(|o| tr(o.label)).collect();
         let mut facts = attrs.join(", ");
-        for extra in [p.note.as_str(), &p.login].into_iter().filter(|s| !s.is_empty() && **s != p.name) {
+        let limit = (!p.conn_limit.is_empty()).then(|| trf("at most {n} connections", &[("n", &p.conn_limit)]));
+        let until =
+            (!p.valid_until.is_empty()).then(|| trf("password valid until {date}", &[("date", &p.valid_until)]));
+        let extras = [Some(p.note.clone()), Some(p.login.clone()), limit, until];
+        for extra in extras.iter().flatten().filter(|s| !s.is_empty() && **s != p.name) {
             if !facts.is_empty() {
                 facts.push_str(" · ");
             }
@@ -392,12 +399,11 @@ impl AdminView {
                     if kind == DbKind::MsSql && !p.login.is_empty() {
                         description = trf("The login {login} stays on the server.", &[("login", &p.login)]);
                     }
-                    open = Some(Form::Confirm {
+                    open = Some(Form::Drop {
                         title: trf("Drop {what} {name}?", &[("what", &what), ("name", &display_name(p))]),
                         description,
-                        statements: vec![admin::drop(kind, p)],
-                        button: tr("Drop").into(),
-                        done: trf("{name} dropped", &[("name", &display_name(p))]),
+                        principal: p.clone(),
+                        owned: false,
                     });
                 }
             });
@@ -563,11 +569,15 @@ impl AdminView {
     }
 
     /// The open editor, and running its statements.
-    fn change_ui(&mut self, ctx: &Context, cx: &TabCtx<'_>, tab: TabId, cfg: ConnectionConfig) {
+    fn change_ui(&mut self, ctx: &Context, cx: &mut TabCtx<'_>, tab: TabId, cfg: ConnectionConfig) {
         let kind = self.kind;
         let database = self.database.clone();
         let Some(change) = &mut self.change else { return };
-        match change.show(ctx, kind) {
+        let known = match (&change.form, cx.conn) {
+            (Form::Grant { target, .. }, Some(conn)) => Known::of(conn, &database, target, cx.actions),
+            _ => Known::default(),
+        };
+        match change.show(ctx, kind, &known) {
             Some(Outcome::Close) => self.change = None,
             Some(Outcome::Run { statements, done }) => {
                 change.running = true;
@@ -598,7 +608,7 @@ impl Change {
             }
             Form::Join { fixed, .. } => trf("Add {name} to a role", &[("name", &display_name(fixed))]),
             Form::Grant { to, .. } => trf("Grant privileges to {name}", &[("name", &display_name(to))]),
-            Form::Confirm { title, .. } => title.clone(),
+            Form::Confirm { title, .. } | Form::Drop { title, .. } => title.clone(),
         }
     }
 
@@ -616,6 +626,10 @@ impl Change {
                     None => admin::create(kind, edit),
                     Some(p) => admin::alter(kind, p, edit),
                 };
+                let limit = edit.conn_limit.trim();
+                if !limit.is_empty() && limit.parse::<i64>().is_err() {
+                    return Err(tr("The connection limit is a whole number.").into());
+                }
                 if s.is_empty() {
                     return Err(tr("Nothing has changed.").into());
                 }
@@ -650,6 +664,8 @@ impl Change {
                 let on = admin::target_sql(kind, &trimmed);
                 Ok(vec![admin::grant(kind, &chosen, &on, to, *grant_option)])
             }
+            Form::Drop { principal, owned: true, .. } => Ok(admin::drop_owned(kind, principal)),
+            Form::Drop { principal, .. } => Ok(vec![admin::drop(kind, principal)]),
             Form::Confirm { statements, .. } => Ok(statements.clone()),
         }
     }
@@ -660,15 +676,16 @@ impl Change {
             Form::Principal { old: Some(p), .. } => trf("{name} changed", &[("name", &display_name(p))]),
             Form::Join { .. } => tr("Role membership added").into(),
             Form::Grant { to, .. } => trf("Privileges granted to {name}", &[("name", &display_name(to))]),
+            Form::Drop { principal, .. } => trf("{name} dropped", &[("name", &display_name(principal))]),
             Form::Confirm { done, .. } => done.clone(),
         }
     }
 
-    fn show(&mut self, ctx: &Context, kind: DbKind) -> Option<Outcome> {
+    fn show(&mut self, ctx: &Context, kind: DbKind, known: &Known) -> Option<Outcome> {
         let mut outcome = None;
         let title = self.title();
         let description = match &self.form {
-            Form::Confirm { description, .. } => description.clone(),
+            Form::Confirm { description, .. } | Form::Drop { description, .. } => description.clone(),
             _ => String::new(),
         };
         let mut dialog = Dialog::new("admin-change", title).width(560.0);
@@ -699,11 +716,22 @@ impl Change {
                     }
                 }
                 Form::Grant { scope, target, picked, grant_option, .. } => {
-                    grant_fields(ui, kind, scope, target, picked, width);
+                    grant_fields(ui, kind, scope, target, picked, known, width);
                     ui.add_space(6.0);
                     ui.add(Checkbox::new(grant_option).label(tr("With grant option (may grant it to others)")));
                 }
-                Form::Confirm { .. } => {}
+                Form::Drop { owned, .. } if kind == DbKind::Postgres => {
+                    ui.add(
+                        Checkbox::new(owned)
+                            .label(tr("Also give its objects in this database to me and drop its privileges here")),
+                    );
+                    ui.label(
+                        RichText::new(tr("Objects it owns in other databases still keep it from being dropped."))
+                            .size(12.0)
+                            .color(t.muted_foreground),
+                    );
+                }
+                Form::Drop { .. } | Form::Confirm { .. } => {}
             }
             let statements = self.statements(kind);
             ui.add_space(8.0);
@@ -721,6 +749,7 @@ impl Change {
             footer(ui, |ui| {
                 let (verb, destructive) = match &self.form {
                     Form::Confirm { button, .. } => (button.as_str(), true),
+                    Form::Drop { .. } => (tr("Drop"), true),
                     Form::Principal { old: None, .. } => (tr("Create"), false),
                     Form::Principal { .. } => (tr("Apply"), false),
                     Form::Join { .. } => (tr("Add"), false),
@@ -765,6 +794,20 @@ fn principal_fields(ui: &mut Ui, kind: DbKind, old: Option<&Principal>, edit: &m
         label(ui, password_label);
         ui.add(Input::new(&mut edit.password).password().width(width));
     }
+    if kind == DbKind::Postgres {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let half = (width - 12.0) / 2.0;
+            ui.vertical(|ui| {
+                label(ui, tr("Connection limit (empty for none)"));
+                ui.add(Input::new(&mut edit.conn_limit).width(half));
+            });
+            ui.vertical(|ui| {
+                label(ui, tr("Password valid until (empty for always)"));
+                ui.add(Input::new(&mut edit.valid_until).placeholder("2027-12-31").width(half));
+            });
+        });
+    }
     let options: Vec<_> = admin::options(kind).iter().filter(|o| !(o.users_only && edit.role)).collect();
     if !options.is_empty() {
         ui.add_space(8.0);
@@ -780,7 +823,108 @@ fn principal_fields(ui: &mut Ui, kind: DbKind, old: Option<&Principal>, edit: &m
     }
 }
 
-fn grant_fields(ui: &mut Ui, kind: DbKind, scope: &mut usize, target: &mut Target, picked: &mut Vec<bool>, width: f32) {
+/// Names the explorer has loaded, offered in the grant editor's pickers;
+/// `None` where they are not loaded (the field is then typed in).
+#[derive(Default)]
+struct Known {
+    databases: Option<Vec<String>>,
+    schemas: Option<Vec<String>>,
+    objects: Option<Vec<DbObject>>,
+}
+
+impl Known {
+    /// What is loaded for the target's fields, asking the explorer for what is not.
+    fn of(conn: &ConnState, database: &str, target: &Target, actions: &mut Vec<Action>) -> Self {
+        let id = conn.cfg.id;
+        let kind = conn.cfg.kind;
+        let (want_db, want_schema, want_name) = target.scope.fields(kind);
+        let mut known = Known::default();
+        if want_db || !admin::per_database(kind) {
+            known.databases = conn.databases.ready().cloned();
+            if conn.databases.is_idle() {
+                actions.push(Action::LoadDatabases(id));
+            }
+        }
+        // Where the object lives: the tab's database on PostgreSQL and SQL
+        // Server, the target's database where a database is a schema.
+        // Only names picked from a list are looked into, not half-typed ones.
+        let db = if admin::per_database(kind) {
+            database.to_string()
+        } else {
+            let typed = target.database.trim();
+            match &known.databases {
+                Some(list) if list.iter().any(|d| d == typed) => typed.to_string(),
+                _ => String::new(),
+            }
+        };
+        if want_schema && !db.is_empty() {
+            match conn.schemas.get(&db) {
+                Some(l) => known.schemas = l.ready().cloned(),
+                None => actions.push(Action::LoadSchemas(id, db.clone())),
+            }
+        }
+        if want_name && !db.is_empty() {
+            let schema = if want_schema { target.schema.trim().to_string() } else { conn.default_schema(&db) };
+            let listed = !want_schema || known.schemas.as_ref().is_some_and(|l| l.contains(&schema));
+            if listed && !schema.is_empty() {
+                match conn.objects.get(&(db.clone(), schema.clone())) {
+                    Some(l) => known.objects = l.ready().cloned(),
+                    None => actions.push(Action::LoadObjects(id, db, schema)),
+                }
+            }
+        }
+        known
+    }
+
+    /// The object names that fit a scope.
+    fn names(&self, scope: Scope) -> Option<Vec<String>> {
+        let fits = |k: ObjectKind| match scope {
+            Scope::Sequence => k == ObjectKind::Sequence,
+            Scope::Function => matches!(k, ObjectKind::Function | ObjectKind::Procedure),
+            _ => matches!(
+                k,
+                ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView | ObjectKind::ForeignTable
+            ),
+        };
+        let mut names: Vec<String> =
+            self.objects.as_ref()?.iter().filter(|o| fits(o.kind)).map(|o| o.path.name.clone()).collect();
+        names.dedup();
+        Some(names)
+    }
+}
+
+/// A field picked from `known` names when they are loaded, typed otherwise.
+fn name_field(ui: &mut Ui, text: &str, value: &mut String, known: Option<Vec<String>>, width: f32) {
+    ui.add_space(6.0);
+    label(ui, text);
+    match known.filter(|k| !k.is_empty()) {
+        Some(names) => {
+            let mut idx = names.iter().position(|n| n == value.trim());
+            let picker = shadcn_egui::Combobox::new(&mut idx, &names)
+                .width(width)
+                .placeholder(tr("Select…"))
+                .search_placeholder(tr("Search…"));
+            if ui.push_id(("admin-pick", text), |ui| ui.add(picker)).inner.changed()
+                && let Some(n) = idx.and_then(|i| names.get(i))
+            {
+                *value = n.clone();
+            }
+        }
+        None => {
+            ui.add(Input::new(value).width(width));
+        }
+    }
+}
+
+fn grant_fields(
+    ui: &mut Ui,
+    kind: DbKind,
+    scope: &mut usize,
+    target: &mut Target,
+    picked: &mut Vec<bool>,
+    known: &Known,
+    width: f32,
+) {
     let scopes = admin::scopes(kind);
     label(ui, tr("On"));
     let labels: Vec<&str> = scopes.iter().map(|s| tr(s.label(kind))).collect();
@@ -793,16 +937,19 @@ fn grant_fields(ui: &mut Ui, kind: DbKind, scope: &mut usize, target: &mut Targe
         *picked = vec![false; admin::privileges(kind, target.scope).len()];
     }
     let (db, schema, name) = target.scope.fields(kind);
-    let field = |ui: &mut Ui, text: &str, value: &mut String| {
-        ui.add_space(6.0);
-        label(ui, text);
-        ui.add(Input::new(value).width(width));
-    };
     if db {
-        field(ui, tr("Database"), &mut target.database);
+        let before = target.database.clone();
+        name_field(ui, tr("Database"), &mut target.database, known.databases.clone(), width);
+        if target.database != before {
+            target.name.clear();
+        }
     }
     if schema {
-        field(ui, tr("Schema"), &mut target.schema);
+        let before = target.schema.clone();
+        name_field(ui, tr("Schema"), &mut target.schema, known.schemas.clone(), width);
+        if target.schema != before {
+            target.name.clear();
+        }
     }
     if name {
         let what = match target.scope {
@@ -811,7 +958,7 @@ fn grant_fields(ui: &mut Ui, kind: DbKind, scope: &mut usize, target: &mut Targe
             _ if kind == DbKind::MsSql => tr("Object"),
             _ => tr("Table or view"),
         };
-        field(ui, what, &mut target.name);
+        name_field(ui, what, &mut target.name, known.names(target.scope), width);
     }
     ui.add_space(8.0);
     label(ui, tr("Privileges"));

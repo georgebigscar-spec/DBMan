@@ -1214,10 +1214,22 @@ fn users_and_roles() {
     assert!(grants.iter().any(|g| g.privilege == "SELECT" && g.object.ends_with("dbman_ui_admin")), "{grants:?}");
     assert!(h.query_by_label("Grant privileges…").is_some());
     snapshot(&mut h, "users_and_roles");
+    // INSERT on the table, picked from the loaded list.
     click(&mut h, "Grant privileges…");
     assert!(h.query_by_label("With grant option (may grant it to others)").is_some());
+    click_last(&mut h, "Select…");
+    click_last(&mut h, "dbman_ui_admin");
+    click_last(&mut h, "INSERT");
     snapshot(&mut h, "grant_privileges");
-    click_last(&mut h, "Cancel");
+    click_last(&mut h, "Grant");
+    for _ in 0..20 {
+        if h.state_mut().active_admin().unwrap().grants().iter().any(|g| g.privilege == "INSERT") {
+            break;
+        }
+        settle(&mut h);
+    }
+    let grants = h.state_mut().active_admin().unwrap().grants().to_vec();
+    assert!(grants.iter().any(|g| g.privilege == "INSERT" && g.object.ends_with("dbman_ui_admin")), "{grants:?}");
 
     // A new role from the editor; the name field has the focus.
     click(&mut h, "New role…");
