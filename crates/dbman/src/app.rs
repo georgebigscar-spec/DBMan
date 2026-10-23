@@ -800,7 +800,7 @@ impl DbManApp {
         }
     }
 
-    /// The users and roles tab on screen, if the active tab is one.
+    /// The search tab on screen, if the active tab is one.
     pub fn active_search(&mut self) -> Option<&mut SearchView> {
         let id = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
@@ -809,6 +809,16 @@ impl DbManApp {
         }
     }
 
+    /// The console on screen, if the active tab is one.
+    pub fn active_console_mut(&mut self) -> Option<&mut Console> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::Console(c) => Some(c.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The users and roles tab on screen, if the active tab is one.
     pub fn active_admin(&mut self) -> Option<&mut AdminView> {
         let active = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {

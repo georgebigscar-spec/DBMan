@@ -83,6 +83,11 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 ![Autocomplete](crates/dbman/tests/snapshots/autocomplete.png)
 
+  - Snippets: at the start of a statement, `sel`, `selw`, `cnt`, `ins`, `upd` and `del` expand to `SELECT * FROM`, `SELECT * FROM … WHERE`, `SELECT count(*) FROM`, `INSERT INTO … () VALUES ()`, `UPDATE … SET … WHERE` and `DELETE FROM … WHERE`, with the cursor where the table name goes.
+  - Find and replace: `Ctrl+F` opens a bar over the script with the selection to look for, and `Ctrl+R` (or `Ctrl+H`) also opens the replace row. Matches are highlighted, `Enter` and `Shift+Enter` go to the next and previous one, `Aa` matches case and `W` whole words only. `Replace` changes the current match and goes to the next, and `Replace all` changes them all. `Escape` closes the bar and puts the cursor on the current match.
+
+![Find and replace](crates/dbman/tests/snapshots/find_replace.png)
+
 - **Query parameters**: `:name`, `${name}` and, on MySQL, SQL Server, SQLite and DuckDB, `?` in a statement are asked for before it runs (`?` is an operator in PostgreSQL and ClickHouse). Strings, comments, `::` casts and ClickHouse's `{name:Type}` are left alone. The dialog shows the statement with the values in place; they go in as written, so text needs quotes (`'Berlin'`) and `NULL` means none. Values are remembered by name for the next time, and `Explain` asks for them too.
 
 ![Query parameters](crates/dbman/tests/snapshots/query_parameters.png)
@@ -252,6 +257,7 @@ Shortcuts:
 | `Ctrl+T` | New console |
 | `Ctrl+W` | Close the tab |
 | `Ctrl+Space` | Autocomplete in the console |
+| `Ctrl+F` / `Ctrl+R` | Find / replace in the console |
 | `Ctrl+S` | Save the console's script |
 | `F4` | Open the selected object |
 | Double click on a table | Open its data |

@@ -215,6 +215,10 @@ pub struct Console {
     /// Statements to run once the session is open.
     queued: Option<Queued>,
     autocomplete: sql_editor::Autocomplete,
+    /// The find and replace bar over the editor.
+    pub find: sql_editor::FindBar,
+    /// The editor had the focus in the last frame.
+    editor_focused: bool,
     /// The script file the console was opened from or saved to.
     pub file: Option<PathBuf>,
     /// The text as it was last opened or saved, to tell unsaved changes.
@@ -261,6 +265,8 @@ impl Console {
             selection: None,
             queued: None,
             autocomplete: Default::default(),
+            find: Default::default(),
+            editor_focused: false,
             file: None,
             saved_sql: String::new(),
             pending_open: None,
@@ -801,6 +807,22 @@ impl Console {
                 self.format(&ctx, editor_id);
             }
         }
+        // egui drops the focus on Escape before the editor sees it, so look at the last frame's.
+        if self.find.open
+            && self.editor_focused
+            && !self.autocomplete.is_open()
+            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.find.close(&ctx, editor_id, &self.sql);
+        }
+        // Ctrl+F finds in the script, Ctrl+R (or Ctrl+H) also replaces.
+        let find = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F));
+        let replace =
+            ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::R) || i.consume_key(Modifiers::COMMAND, Key::H));
+        if find || replace {
+            let selected = self.selection.clone().and_then(|r| self.sql.get(r));
+            self.find.show(replace, selected);
+        }
 
         ui.horizontal(|ui| {
             let run = ui
@@ -921,6 +943,8 @@ impl Console {
             .min_size(80.0)
             .frame(egui::Frame::new())
             .show(ui, |ui| {
+                let cursor = self.selection.as_ref().map_or(0, |r| r.start).min(self.sql.len());
+                let marks = self.find.ui(ui, editor_id, &mut self.sql, cursor);
                 egui::ScrollArea::vertical().id_salt(("console-scroll", tab)).show(ui, |ui| {
                     let conn = cx.conn;
                     let db = conn.and_then(|c| catalog_database(c, self.database.as_deref()));
@@ -937,10 +961,12 @@ impl Console {
                         height,
                         &mut self.autocomplete,
                         &catalog,
+                        &marks,
                     );
                     if out.selection.is_some() {
                         self.selection = out.selection.clone();
                     }
+                    self.editor_focused = ui.memory(|m| m.has_focus(editor_id));
                     // Load the tables and columns the popup could offer.
                     if let (Some(c), Some(db)) = (conn, &db)
                         && ui.memory(|m| m.has_focus(editor_id))

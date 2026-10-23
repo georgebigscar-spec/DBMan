@@ -804,7 +804,6 @@
   "Values go into the statement as written: put text in quotes, like 'Berlin'.": "Значения подставляются в выражение как написаны: текст берите в кавычки, например 'Berlin'.",
   "Every parameter needs a value (NULL for none).": "У каждого параметра должно быть значение (NULL, если пусто).",
   "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}",
-  "Folder…": "Папка…",
   "Open a folder of data files": "Открыть папку с файлами данных",
   "; {n} could not be read": "; не удалось прочитать: {n}",
   "A click opens the object, or for data the table filtered to the matching rows.": "Клик открывает объект, а для данных — таблицу, отфильтрованную по найденным строкам.",
@@ -821,5 +820,19 @@
   "The search failed": "Поиск не удался",
   "line {n}: {text}": "строка {n}: {text}",
   "{done} of {total}: {current}": "{done} из {total}: {current}",
-  "{n} found for “{text}”": "Найдено для «{text}»: {n}"
+  "{n} found for “{text}”": "Найдено для «{text}»: {n}",
+  "Find": "Найти",
+  "Match case": "Учитывать регистр",
+  "Whole words": "Только слова целиком",
+  "No matches": "Нет совпадений",
+  "{i} of {n}": "{i} из {n}",
+  "{n} matches": "Совпадений: {n}",
+  "Previous match (Shift+Enter)": "Предыдущее совпадение (Shift+Enter)",
+  "Next match (Enter)": "Следующее совпадение (Enter)",
+  "Replace (Ctrl+R)": "Заменить (Ctrl+R)",
+  "Close (Escape)": "Закрыть (Escape)",
+  "Replace with": "Заменить на",
+  "Replace": "Заменить",
+  "Replace all": "Заменить все",
+  "{n} replaced": "Заменено: {n}"
 }
