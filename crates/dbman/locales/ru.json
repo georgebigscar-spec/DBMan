@@ -834,5 +834,16 @@
   "Replace with": "Заменить на",
   "Replace": "Заменить",
   "Replace all": "Заменить все",
-  "{n} replaced": "Заменено: {n}"
+  "{n} replaced": "Заменено: {n}",
+  "Chart": "График",
+  "Bars": "Столбцы",
+  "Lines": "Линии",
+  "Pie": "Круговая",
+  "Slices": "Доли",
+  "X axis": "Ось X",
+  "Values": "Значения",
+  "Pick a column with numbers to plot.": "Выберите колонку с числами для графика.",
+  "The first {n} rows are shown.": "Показаны первые {n} строк.",
+  "No positive values to show.": "Нет положительных значений для показа.",
+  "Other": "Остальное"
 }

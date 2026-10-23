@@ -88,6 +88,10 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 ![Find and replace](crates/dbman/tests/snapshots/find_replace.png)
 
+- **Charts**: a result with a column of numbers switches from `Table` to `Chart` above it. Bars, lines or a pie; the X axis (or the slices) is a column of your choice, the first text column by default, and every numeric column can be turned on and off as a series. The pointer shows the values under it. Charts draw the first 1000 rows; a pie sums the values per slice and puts the ones past the 11 largest into `Other`.
+
+![Chart](crates/dbman/tests/snapshots/chart.png)
+
 - **Query parameters**: `:name`, `${name}` and, on MySQL, SQL Server, SQLite and DuckDB, `?` in a statement are asked for before it runs (`?` is an operator in PostgreSQL and ClickHouse). Strings, comments, `::` casts and ClickHouse's `{name:Type}` are left alone. The dialog shows the statement with the values in place; they go in as written, so text needs quotes (`'Berlin'`) and `NULL` means none. Values are remembered by name for the next time, and `Explain` asks for them too.
 
 ![Query parameters](crates/dbman/tests/snapshots/query_parameters.png)

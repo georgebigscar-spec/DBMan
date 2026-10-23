@@ -4,6 +4,7 @@
 pub mod admin_view;
 pub mod app;
 pub mod backup_dialog;
+pub mod chart_view;
 pub mod compare_view;
 pub mod connection_dialog;
 pub mod copy_view;

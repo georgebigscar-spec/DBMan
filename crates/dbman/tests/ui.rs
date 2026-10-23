@@ -1496,3 +1496,56 @@ fn find_replace_and_snippets_in_console() {
     settle(&mut h);
     assert!(!h.state_mut().active_console_mut().unwrap().find.open);
 }
+
+#[test]
+fn chart_of_a_result() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 1000.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenConsole(id, None), &ctx);
+    settle(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text(
+        "SELECT c.name, count(o.id) AS orders, sum(o.total) AS total\nFROM customers c LEFT JOIN orders o ON o.customer_id = c.id\nGROUP BY c.id ORDER BY total DESC;",
+    );
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+    assert!(h.state_mut().active_console_mut().unwrap().chart_mut().is_none());
+
+    // The names on the X axis, both number columns plotted.
+    click(&mut h, "Chart");
+    let spec = h.state_mut().active_console_mut().unwrap().chart_mut().cloned().unwrap();
+    assert_eq!((spec.kind, spec.x, spec.ys.clone()), (dbman_core::chart::ChartKind::Bar, 0, vec![1, 2]));
+    // Only the totals.
+    click(&mut h, "orders");
+    assert_eq!(h.state_mut().active_console_mut().unwrap().chart_mut().unwrap().ys, [2]);
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "chart");
+
+    h.state_mut().active_console_mut().unwrap().chart_mut().unwrap().kind = dbman_core::chart::ChartKind::Pie;
+    settle(&mut h);
+    snapshot(&mut h, "chart_pie");
+    h.state_mut().active_console_mut().unwrap().chart_mut().unwrap().kind = dbman_core::chart::ChartKind::Line;
+    settle(&mut h);
+
+    // Back to the table.
+    click(&mut h, "Table");
+    assert!(h.state_mut().active_console_mut().unwrap().chart_mut().is_none());
+}

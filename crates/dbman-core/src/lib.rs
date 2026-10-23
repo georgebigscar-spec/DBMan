@@ -6,6 +6,7 @@
 
 pub mod admin;
 pub mod backup;
+pub mod chart;
 pub mod compare;
 pub mod complete;
 mod config;

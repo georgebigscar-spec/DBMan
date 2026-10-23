@@ -11,10 +11,11 @@ use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{
     Alert, Badge, Button, ButtonSize, Column, DataTable, Select, Theme, TooltipExt, dropdown_menu, menu_item,
-    menu_label, menu_separator, tabs, toast, toast_error,
+    menu_label, menu_separator, tabs, toast, toast_error, toggle_group,
 };
 
 use crate::admin_view::AdminView;
+use crate::chart_view;
 use crate::compare_view::CompareView;
 use crate::copy_view::CopyView;
 use crate::data_view::DataView;
@@ -30,6 +31,7 @@ use crate::sql_editor;
 use crate::store::{History, HistoryEntry};
 use crate::table_editor::TableEditor;
 use crate::value_panel::ValuePanel;
+use dbman_core::chart::{self, ChartSpec};
 use dbman_core::explain::{self, Plan, PlanNode};
 use dbman_core::params;
 
@@ -182,6 +184,8 @@ pub struct Output {
     pub error: Option<String>,
     pub grid: Option<Grid>,
     pub plan: Option<Plan>,
+    /// The result shown as a chart instead of the table.
+    pub chart: Option<ChartSpec>,
 }
 
 /// Work a console starts once its session is open.
@@ -391,6 +395,11 @@ impl Console {
         history.find(self.cfg.id, &self.history_search).take(HISTORY_SHOWN).map(|e| e.sql.as_str()).collect()
     }
 
+    /// The chart of the shown result, when it is shown as one.
+    pub fn chart_mut(&mut self) -> Option<&mut ChartSpec> {
+        self.outputs.get_mut(self.shown_output)?.chart.as_mut()
+    }
+
     /// What the autocomplete popup offers (tests).
     pub fn completions(&self) -> Vec<String> {
         self.autocomplete.labels()
@@ -417,6 +426,7 @@ impl Console {
                         error: Some(e.clone()),
                         grid: None,
                         plan: None,
+                        chart: None,
                     }];
                 }
             }
@@ -454,7 +464,15 @@ impl Console {
                     summary: summary.clone(),
                     ok: error.is_none(),
                 })));
-                self.outputs.push(Output { sql, summary, cancelled, error: error.clone(), grid, plan: None });
+                self.outputs.push(Output {
+                    sql,
+                    summary,
+                    cancelled,
+                    error: error.clone(),
+                    grid,
+                    plan: None,
+                    chart: None,
+                });
                 // Show the newest result set, or the error.
                 if has_grid || error.is_some() {
                     self.shown_output = self.outputs.len() - 1;
@@ -472,6 +490,7 @@ impl Console {
                     error: Some(e),
                     grid: None,
                     plan: None,
+                    chart: None,
                 });
                 self.shown_output = self.outputs.len() - 1;
             }
@@ -489,7 +508,7 @@ impl Console {
                     Err(e) if cancelled => (tr("cancelled").into(), Some(e.message), None),
                     Err(e) => (tr("failed").into(), Some(e.message), None),
                 };
-                self.outputs.push(Output { sql, summary, cancelled, error, grid: None, plan });
+                self.outputs.push(Output { sql, summary, cancelled, error, grid: None, plan, chart: None });
                 self.shown_output = self.outputs.len() - 1;
             }
             _ => {}
@@ -1130,14 +1149,33 @@ impl Console {
             plan_view(ui, tab, p);
         }
         if let Some(g) = &mut o.grid {
+            let chartable = chart::default_spec(&g.result);
             ui.horizontal(|ui| {
+                if let Some(spec) = &chartable {
+                    let mut view = usize::from(o.chart.is_some());
+                    if toggle_group(ui, &mut view, &[tr("Table"), tr("Chart")]).changed() {
+                        o.chart = (view == 1).then(|| spec.clone());
+                    }
+                    ui.add_space(8.0);
+                }
                 if grid::export_menu(ui, &g.result, self.cfg.kind, None, true) {
                     let source = ExportSource::Query { database: self.database.clone(), sql: o.sql.clone() };
                     actions.push(Action::ExportData(conn, source));
                 }
-                grid::value_button(ui, &mut self.value.open);
+                if o.chart.is_none() {
+                    grid::value_button(ui, &mut self.value.open);
+                }
             });
             ui.add_space(4.0);
+            if chartable.is_none() {
+                o.chart = None;
+            }
+            if let Some(spec) = &mut o.chart {
+                chart_view::controls(ui, &g.result, spec);
+                ui.add_space(6.0);
+                chart_view::show(ui, &g.result, spec, ui.available_height() - 8.0);
+                return;
+            }
             self.value.show(ui, egui::Id::new(("console-value", tab)), g.current_value());
             if g.show(ui, egui::Id::new(("console-grid", tab, self.shown_output))) {
                 self.value.open = true;
