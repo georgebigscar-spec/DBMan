@@ -54,6 +54,135 @@ impl DbKind {
     }
 }
 
+/// A product that speaks an engine's protocol: it connects with that engine's
+/// driver, and the connection dialog fills in its usual port, user and TLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum Product {
+    /// The engine itself.
+    #[default]
+    Native,
+    CockroachDb,
+    YugabyteDb,
+    TimescaleDb,
+    Supabase,
+    Neon,
+    TiDb,
+    PlanetScale,
+    SingleStore,
+}
+
+impl Product {
+    /// The choices of the connection dialog, each engine followed by the products on its protocol.
+    pub const CHOICES: [(DbKind, Product); 14] = [
+        (DbKind::Postgres, Product::Native),
+        (DbKind::Postgres, Product::CockroachDb),
+        (DbKind::Postgres, Product::YugabyteDb),
+        (DbKind::Postgres, Product::TimescaleDb),
+        (DbKind::Postgres, Product::Supabase),
+        (DbKind::Postgres, Product::Neon),
+        (DbKind::MySql, Product::Native),
+        (DbKind::MySql, Product::TiDb),
+        (DbKind::MySql, Product::PlanetScale),
+        (DbKind::MySql, Product::SingleStore),
+        (DbKind::MsSql, Product::Native),
+        (DbKind::ClickHouse, Product::Native),
+        (DbKind::Sqlite, Product::Native),
+        (DbKind::DuckDb, Product::Native),
+    ];
+
+    /// The engine whose driver the product uses; `None` for `Native`.
+    pub const fn engine(self) -> Option<DbKind> {
+        match self {
+            Product::Native => None,
+            Product::CockroachDb | Product::YugabyteDb | Product::TimescaleDb | Product::Supabase | Product::Neon => {
+                Some(DbKind::Postgres)
+            }
+            Product::TiDb | Product::PlanetScale | Product::SingleStore => Some(DbKind::MySql),
+        }
+    }
+
+    pub const fn label(self, kind: DbKind) -> &'static str {
+        match self {
+            Product::Native => kind.label(),
+            Product::CockroachDb => "CockroachDB",
+            Product::YugabyteDb => "YugabyteDB",
+            Product::TimescaleDb => "TimescaleDB",
+            Product::Supabase => "Supabase",
+            Product::Neon => "Neon",
+            Product::TiDb => "TiDB",
+            Product::PlanetScale => "PlanetScale",
+            Product::SingleStore => "SingleStore",
+        }
+    }
+
+    /// The short tag of the explorer's badge.
+    pub const fn badge(self, kind: DbKind) -> &'static str {
+        match self {
+            Product::Native => match kind {
+                DbKind::Postgres => "PG",
+                DbKind::MySql => "MY",
+                DbKind::Sqlite => "SL",
+                DbKind::DuckDb => "DK",
+                DbKind::MsSql => "MS",
+                DbKind::ClickHouse => "CH",
+            },
+            Product::CockroachDb => "CR",
+            Product::YugabyteDb => "YB",
+            Product::TimescaleDb => "TS",
+            Product::Supabase => "SB",
+            Product::Neon => "NE",
+            Product::TiDb => "TI",
+            Product::PlanetScale => "PS",
+            Product::SingleStore => "S2",
+        }
+    }
+
+    pub fn default_port(self, kind: DbKind) -> Option<u16> {
+        match self {
+            Product::CockroachDb => Some(26257),
+            Product::YugabyteDb => Some(5433),
+            Product::TiDb => Some(4000),
+            _ => kind.default_port(),
+        }
+    }
+
+    pub fn default_user(self, kind: DbKind) -> &'static str {
+        match self {
+            Product::CockroachDb | Product::TiDb => "root",
+            Product::YugabyteDb => "yugabyte",
+            Product::TimescaleDb => "tsdbadmin",
+            Product::Neon => "neondb_owner",
+            Product::PlanetScale | Product::SingleStore => "",
+            _ => kind.default_user(),
+        }
+    }
+
+    /// The database to connect to when none is given.
+    pub fn default_database(self) -> &'static str {
+        match self {
+            Product::CockroachDb => "defaultdb",
+            Product::YugabyteDb => "yugabyte",
+            Product::TimescaleDb => "tsdb",
+            Product::Neon => "neondb",
+            _ => "",
+        }
+    }
+
+    /// Whether the engine's dump tools (`pg_dump`, `mysqldump`) work with it.
+    /// CockroachDB backs up with its own `BACKUP` statement to cloud storage.
+    pub fn supports_backup(self) -> bool {
+        self != Product::CockroachDb
+    }
+
+    /// Hosted services take only TLS connections.
+    pub fn default_ssl(self) -> SslMode {
+        match self {
+            Product::TimescaleDb | Product::Supabase | Product::Neon | Product::PlanetScale => SslMode::Require,
+            _ => SslMode::default(),
+        }
+    }
+}
+
 /// How to use TLS for server connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SslMode {
@@ -135,6 +264,9 @@ pub struct ConnectionConfig {
     pub id: Uuid,
     pub name: String,
     pub kind: DbKind,
+    /// The product on `kind`'s protocol, such as CockroachDB on PostgreSQL's.
+    #[serde(default)]
+    pub product: Product,
     #[serde(default)]
     pub host: String,
     #[serde(default)]
@@ -229,6 +361,7 @@ impl ConnectionConfig {
             id: Uuid::new_v4(),
             name: String::new(),
             kind,
+            product: Product::Native,
             host: if kind.is_file_based() { String::new() } else { "localhost".into() },
             port: kind.default_port().unwrap_or(0),
             user: kind.default_user().into(),
@@ -267,19 +400,38 @@ impl ConnectionConfig {
 
     /// Switches the engine, resetting the port and user if they were the old defaults.
     pub fn set_kind(&mut self, kind: DbKind) {
-        if self.kind == kind {
+        self.set_product(kind, Product::Native);
+    }
+
+    /// Switches the engine and product, resetting the port, user, database and
+    /// TLS mode if they were the old product's defaults.
+    pub fn set_product(&mut self, kind: DbKind, product: Product) {
+        if self.kind == kind && self.product == product {
             return;
         }
-        if self.port == self.kind.default_port().unwrap_or(0) {
-            self.port = kind.default_port().unwrap_or(0);
+        let (old_kind, old) = (self.kind, self.product);
+        if self.port == old.default_port(old_kind).unwrap_or(0) {
+            self.port = product.default_port(kind).unwrap_or(0);
         }
-        if self.user == self.kind.default_user() {
-            self.user = kind.default_user().into();
+        if self.user == old.default_user(old_kind) {
+            self.user = product.default_user(kind).into();
+        }
+        if self.database == old.default_database() {
+            self.database = product.default_database().into();
+        }
+        if self.ssl_mode == old.default_ssl() {
+            self.ssl_mode = product.default_ssl();
         }
         if !kind.is_file_based() && self.host.is_empty() {
             self.host = "localhost".into();
         }
         self.kind = kind;
+        self.product = product;
+    }
+
+    /// The name of the engine or product, as the connection dialog lists it.
+    pub fn type_label(&self) -> &'static str {
+        self.product.label(self.kind)
     }
 }
 
@@ -297,6 +449,30 @@ mod tests {
         c.set_kind(DbKind::Postgres);
         assert_eq!(c.port, 5432);
         assert_eq!(c.user, "app");
+    }
+
+    #[test]
+    fn set_product_moves_defaults() {
+        let mut c = ConnectionConfig::new(DbKind::Postgres);
+        c.set_product(DbKind::Postgres, Product::CockroachDb);
+        assert_eq!((c.port, c.user.as_str(), c.database.as_str()), (26257, "root", "defaultdb"));
+        c.set_product(DbKind::MySql, Product::PlanetScale);
+        assert_eq!((c.port, c.user.as_str(), c.database.as_str()), (3306, "", ""));
+        assert_eq!(c.ssl_mode, SslMode::Require);
+        c.user = "app".into();
+        c.set_kind(DbKind::Postgres);
+        assert_eq!((c.port, c.user.as_str(), c.ssl_mode), (5432, "app", SslMode::Prefer));
+        assert_eq!(c.type_label(), "PostgreSQL");
+        for (kind, product) in Product::CHOICES {
+            assert!(product.engine().is_none_or(|k| k == kind));
+        }
+    }
+
+    #[test]
+    fn old_settings_have_no_product() {
+        let mut v = serde_json::to_value(ConnectionConfig::new(DbKind::MySql)).unwrap();
+        v.as_object_mut().unwrap().remove("product");
+        assert_eq!(serde_json::from_value::<ConnectionConfig>(v).unwrap().product, Product::Native);
     }
 
     #[test]

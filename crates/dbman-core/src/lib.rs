@@ -29,7 +29,7 @@ pub mod sql;
 pub mod value;
 pub mod xlsx;
 
-pub use config::{ConnColor, ConnectionConfig, DbKind, SshAuth, SshTunnel, SslMode};
+pub use config::{ConnColor, ConnectionConfig, DbKind, Product, SshAuth, SshTunnel, SslMode};
 pub use driver::{Capabilities, Connection};
 pub use error::{DbError, DbResult};
 pub use result::{Cell, ColumnMeta, QueryResult, StatementOutcome};

@@ -1,14 +1,15 @@
 //! The sessions monitor on every server: a second session runs a slow query,
 //! the listing finds it (and marks its own session), and the query is
 //! cancelled or the session ended. Needs `DBMAN_TEST_POSTGRES`,
-//! `DBMAN_TEST_MYSQL`, `DBMAN_TEST_MSSQL` and `DBMAN_TEST_CLICKHOUSE`; each
+//! `DBMAN_TEST_MYSQL`, `DBMAN_TEST_MSSQL`, `DBMAN_TEST_CLICKHOUSE`,
+//! `DBMAN_TEST_COCKROACH` and `DBMAN_TEST_TIDB`; each
 //! server is skipped with a note otherwise.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use dbman_core::sessions::{self, Session};
-use dbman_core::{Connection, ConnectionConfig, DbKind, StatementOutcome};
+use dbman_core::{Connection, ConnectionConfig, DbKind, Product, StatementOutcome};
 
 fn from_url(kind: DbKind, var: &str) -> Option<ConnectionConfig> {
     let url = std::env::var(var).ok().filter(|u| !u.is_empty())?;
@@ -29,8 +30,8 @@ fn from_url(kind: DbKind, var: &str) -> Option<ConnectionConfig> {
     Some(cfg)
 }
 
-async fn list(c: &Arc<dyn Connection>) -> Vec<Session> {
-    let sql = sessions::list_sql(c.kind()).unwrap();
+async fn list(c: &Arc<dyn Connection>, product: Product) -> Vec<Session> {
+    let sql = sessions::list_sql(c.kind(), product).unwrap();
     match c.execute(None, sql, 10_000).await.unwrap_or_else(|e| panic!("{sql}: {e}")) {
         StatementOutcome::Rows(r) => sessions::parse(&r),
         other => panic!("{other:?}"),
@@ -39,7 +40,7 @@ async fn list(c: &Arc<dyn Connection>) -> Vec<Session> {
 
 /// Runs `slow` in a second session, finds it in the list and stops it.
 async fn check(cfg: ConnectionConfig, slow: &str, terminate: bool) {
-    let kind = cfg.kind;
+    let (kind, product) = (cfg.kind, cfg.product);
     let monitor = dbman_drivers::connect(&cfg).await.unwrap();
     let worker = dbman_drivers::connect(&cfg).await.unwrap();
     let slow_sql = slow.to_string();
@@ -47,7 +48,7 @@ async fn check(cfg: ConnectionConfig, slow: &str, terminate: bool) {
 
     let mut found = None;
     for _ in 0..50 {
-        let all = list(&monitor).await;
+        let all = list(&monitor, product).await;
         assert_eq!(all.iter().filter(|s| s.own).count(), 1, "{kind:?}: own session once: {all:#?}");
         found = all
             .into_iter()
@@ -61,7 +62,11 @@ async fn check(cfg: ConnectionConfig, slow: &str, terminate: bool) {
     assert!(!s.is_idle(), "{kind:?}: {s:#?}");
     assert!(!s.id.is_empty());
 
-    let sql = if terminate { sessions::terminate_sql(kind, &s.id) } else { sessions::cancel_sql(kind, &s.id) };
+    let sql = if terminate {
+        sessions::terminate_sql(kind, product, &s.id)
+    } else {
+        sessions::cancel_sql(kind, product, &s.id)
+    };
     let sql = sql.unwrap();
     monitor.execute(None, &sql, 1).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
     let result = tokio::time::timeout(Duration::from_secs(15), running)
@@ -79,6 +84,27 @@ async fn postgres() {
     };
     check(cfg.clone(), "SELECT pg_sleep(60)", false).await;
     check(cfg, "SELECT pg_sleep(60)", true).await;
+}
+
+#[tokio::test]
+async fn cockroach() {
+    let Some(mut cfg) = from_url(DbKind::Postgres, "DBMAN_TEST_COCKROACH") else {
+        eprintln!("DBMAN_TEST_COCKROACH not set, skipping");
+        return;
+    };
+    cfg.product = Product::CockroachDb;
+    check(cfg.clone(), "SELECT pg_sleep(60)", false).await;
+    check(cfg, "SELECT pg_sleep(60)", true).await;
+}
+
+#[tokio::test]
+async fn tidb() {
+    let Some(mut cfg) = from_url(DbKind::MySql, "DBMAN_TEST_TIDB") else {
+        eprintln!("DBMAN_TEST_TIDB not set, skipping");
+        return;
+    };
+    cfg.product = Product::TiDb;
+    check(cfg, "SELECT SLEEP(60)", true).await;
 }
 
 #[tokio::test]

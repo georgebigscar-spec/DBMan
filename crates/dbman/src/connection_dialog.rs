@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use dbman_core::{ConnColor, ConnectionConfig, DbKind, SshAuth, SslMode};
+use dbman_core::{ConnColor, ConnectionConfig, DbKind, Product, SshAuth, SslMode};
 use egui::{Context, RichText, Ui};
 use shadcn_egui::{Alert, Button, Checkbox, Dialog, Input, Select, Theme, footer, label, tabs};
 
@@ -42,11 +42,12 @@ pub enum DialogOutcome {
     Close,
 }
 
-const KINDS: [&str; DbKind::ALL.len()] = {
-    let mut labels = [""; DbKind::ALL.len()];
+const KINDS: [&str; Product::CHOICES.len()] = {
+    let mut labels = [""; Product::CHOICES.len()];
     let mut i = 0;
     while i < labels.len() {
-        labels[i] = DbKind::ALL[i].label();
+        let (kind, product) = Product::CHOICES[i];
+        labels[i] = product.label(kind);
         i += 1;
     }
     labels
@@ -75,6 +76,11 @@ impl ConnectionDialog {
             ssh_port,
             folders: Vec::new(),
         }
+    }
+
+    /// The port as typed.
+    pub fn port(&self) -> &str {
+        &self.port
     }
 
     /// The tab with color, folder and safety options.
@@ -244,15 +250,18 @@ impl ConnectionDialog {
                     ui.add(Input::new(&mut self.cfg.name).placeholder(placeholder).width(full));
                 });
                 field(ui, "Database type", |ui| {
-                    let mut idx = DbKind::ALL.iter().position(|k| *k == self.cfg.kind);
+                    let current = (self.cfg.kind, self.cfg.product);
+                    let mut idx = Product::CHOICES.iter().position(|c| *c == current);
                     ui.add(Select::new(&mut idx, &KINDS).width(full));
-                    if let Some(k) = idx.map(|i| DbKind::ALL[i])
-                        && k != self.cfg.kind
+                    if let Some((k, p)) = idx.map(|i| Product::CHOICES[i])
+                        && (k, p) != current
                     {
-                        let old_default = self.cfg.kind.default_port().map(|p| p.to_string()).unwrap_or_default();
-                        self.cfg.set_kind(k);
+                        let default_port =
+                            |(k, p): (DbKind, Product)| p.default_port(k).map(|p| p.to_string()).unwrap_or_default();
+                        let old_default = default_port(current);
+                        self.cfg.set_product(k, p);
                         if self.port == old_default {
-                            self.port = k.default_port().map(|p| p.to_string()).unwrap_or_default();
+                            self.port = default_port((k, p));
                         }
                     }
                 });
@@ -357,7 +366,11 @@ impl ConnectionDialog {
                         }
                     });
                     field(ui, "Database", |ui| {
-                        let hint = if self.cfg.kind == DbKind::Postgres { "postgres" } else { tr("(none)") };
+                        let hint = match self.cfg.product.default_database() {
+                            "" if self.cfg.kind == DbKind::Postgres => "postgres",
+                            "" => tr("(none)"),
+                            d => d,
+                        };
                         ui.add(Input::new(&mut self.cfg.database).placeholder(hint).width(full));
                     });
                     ui.add(Checkbox::new(&mut self.cfg.only_default_database).label(tr("Show only this database")));

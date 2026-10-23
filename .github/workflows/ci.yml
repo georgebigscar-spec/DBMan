@@ -52,6 +52,8 @@ jobs:
       DBMAN_TEST_MYSQL: mysql://root:dbman@127.0.0.1:3306/dbman_test
       DBMAN_TEST_MSSQL: mssql://sa:DbMan_Pass1@127.0.0.1:1433/dbman_test
       DBMAN_TEST_CLICKHOUSE: clickhouse://default:dbman@127.0.0.1:8123/dbman_test
+      DBMAN_TEST_COCKROACH: postgres://root@127.0.0.1:26257/dbman_test
+      DBMAN_TEST_TIDB: mysql://root@127.0.0.1:4000/dbman_test
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -68,6 +70,19 @@ jobs:
             sleep 1
           done
           docker logs clickhouse
+          exit 1
+      # Products on the PostgreSQL and MySQL protocols; their images need arguments services cannot pass.
+      - name: Start CockroachDB and TiDB
+        run: |
+          docker run -d --name cockroach -p 26257:26257 cockroachdb/cockroach:latest-v25.2 start-single-node --insecure
+          docker run -d --name tidb -p 4000:4000 pingcap/tidb:v8.5.1
+          for i in $(seq 60); do
+            psql "postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable" -c "CREATE DATABASE IF NOT EXISTS dbman_test" \
+              && mysql -h 127.0.0.1 -P 4000 -u root -e "CREATE DATABASE IF NOT EXISTS dbman_test" && exit 0
+            sleep 1
+          done
+          docker logs cockroach
+          docker logs tidb
           exit 1
       - run: cargo test --workspace
 

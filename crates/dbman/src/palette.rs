@@ -70,7 +70,7 @@ pub fn show(ctx: &egui::Context, open: &mut bool, cx: Ctx<'_>) -> Option<Pick> {
                 cmd.group(tr("Connections"), |cmd| {
                     for c in cx.conns {
                         let name = c.cfg.display_name();
-                        if cmd.item_with_keywords(&name, c.cfg.kind.label(), None) {
+                        if cmd.item_with_keywords(&name, c.cfg.type_label(), None) {
                             pick = Some(Pick::Conn(c.cfg.id));
                         }
                     }

@@ -787,6 +787,19 @@ fn browse_sqlite_database() {
     settle(&mut h);
     snapshot(&mut h, "connection_dialog");
 
+    // A database on PostgreSQL's protocol gets its own port, user and database.
+    click(&mut h, "PostgreSQL");
+    click(&mut h, "CockroachDB");
+    let d = h.state_mut().connection_dialog().expect("dialog open");
+    assert_eq!(d.cfg.kind, DbKind::Postgres);
+    assert_eq!(d.cfg.product, dbman_core::Product::CockroachDb);
+    assert_eq!((d.port(), d.cfg.user.as_str(), d.cfg.database.as_str()), ("26257", "root", "defaultdb"));
+    snapshot(&mut h, "compatible_databases");
+    click(&mut h, "CockroachDB");
+    click(&mut h, "PostgreSQL");
+    let d = h.state_mut().connection_dialog().unwrap();
+    assert_eq!((d.port(), d.cfg.user.as_str(), d.cfg.database.as_str()), ("5432", "postgres", ""));
+
     // The SSH tab: a tunnel through a bastion.
     click(&mut h, "SSH");
     click(&mut h, "Connect through an SSH server");

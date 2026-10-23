@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use dbman_core::sql::Dialect;
 use dbman_core::{
     Cell, ColumnInfo, ColumnMeta, Connection, ConnectionConfig, DbError, DbKind, DbObject, DbResult, ForeignKeyInfo,
-    IndexInfo, ObjectKind, ObjectPath, QueryResult, SslMode, StatementOutcome, TableDetails,
+    IndexInfo, ObjectKind, ObjectPath, Product, QueryResult, SslMode, StatementOutcome, TableDetails,
 };
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::prelude::*;
@@ -72,7 +72,12 @@ async fn open(cfg: &ConnectionConfig, ssl: Option<SslOpts>) -> DbResult<Conn> {
         .prefer_socket(false)
         // Report matched rather than changed rows, so an UPDATE that keeps a value still counts.
         .client_found_rows(true)
-        .init(if cfg.read_only { vec!["SET SESSION TRANSACTION READ ONLY"] } else { Vec::new() })
+        // TiDB refuses read-only transactions (they would be a no-op there); DBMan's own check still applies.
+        .init(if cfg.read_only && cfg.product != Product::TiDb {
+            vec!["SET SESSION TRANSACTION READ ONLY"]
+        } else {
+            Vec::new()
+        })
         .ssl_opts(ssl);
     match tokio::time::timeout(Duration::from_secs(10), Conn::new(opts)).await {
         Ok(r) => r.map_err(my_err),

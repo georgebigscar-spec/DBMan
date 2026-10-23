@@ -4,7 +4,7 @@
 
 Десктопный клиент для разных баз данных в духе DataGrip, на Rust + [egui](https://github.com/emilk/egui) с виджетами [shadcn_egui](https://github.com/georgebigscar-spec/shadcn_egui).
 
-Поддерживаются **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** и **DuckDB**; новые СУБД подключаются через общий трейт драйвера.
+Поддерживаются **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** и **DuckDB**, а также базы на протоколах PostgreSQL и MySQL: **CockroachDB**, **YugabyteDB**, **TimescaleDB**, **Supabase**, **Neon**, **TiDB**, **PlanetScale** и **SingleStore**; новые СУБД подключаются через общий трейт драйвера.
 
 ![SQL-консоль](crates/dbman/tests/snapshots/console.png)
 
@@ -35,6 +35,9 @@
 ## Что уже умеет
 
 - **Подключения**: создание, редактирование, копирование, удаление, проверка соединения; SSL-режимы `disable / prefer / require / verify-full`; для SQLite и DuckDB выбор файла (у DuckDB можно `:memory:`). Настройки хранятся в `settings.json` в каталоге конфигурации пользователя (пароль сохраняется, только если отмечено «Save password»). Сохранённые пароли хранятся в системном хранилище: Keychain в macOS, Credential Manager в Windows, Secret Service (GNOME Keyring, KWallet) в Linux; у каждого подключения один элемент `DBMan` с паролями базы и SSH. Без хранилища или с `DBMAN_KEYCHAIN=off` пароли остаются в `settings.json` (в Linux и macOS его может читать только владелец). Пароли, уже лежащие в `settings.json`, переезжают в хранилище при следующем сохранении. **SSH-туннели** (вкладка `SSH`): подключение к серверу может идти через SSH-сервер, со входом по паролю или по файлу закрытого ключа (OpenSSH, PEM или PKCS#8, можно с паролем ключа). Хост и порт базы открываются с SSH-сервера, так что `localhost` там означает сам SSH-сервер. Все сессии одного подключения используют один SSH-вход, через него же идут бэкапы, восстановление и экспорт. Ключ хоста проверяется по `~/.ssh/known_hosts` и собственному `known_hosts` DBMan рядом с настройками: ключ нового сервера запоминается при первом подключении, а изменившийся ключ отклоняется. Через туннель DBMan подключается к `127.0.0.1`, а это имя не совпадает с сертификатом сервера, поэтому используйте SSL `require`, а не `verify-full`.
+- **Совместимые базы**: в списке `Database type` после PostgreSQL идут CockroachDB, YugabyteDB, TimescaleDB, Supabase и Neon, а после MySQL / MariaDB идут TiDB, PlanetScale и SingleStore. Они подключаются драйвером PostgreSQL или MySQL; выбор подставляет привычные порт (CockroachDB 26257, YugabyteDB 5433, TiDB 4000), пользователя и базу, а для облачных сервисов (Timescale Cloud, Supabase, Neon, PlanetScale) TLS `require`. В дереве и на вкладках у них свой значок. CockroachDB и TiDB проверяются тестами так же, как сами PostgreSQL и MySQL: дерево объектов, структура и DDL, правка данных, редактор таблиц, отмена запросов, режим только чтения, план выполнения и монитор сеансов. Сеансы CockroachDB берутся из `crdb_internal.cluster_sessions` и останавливаются `CANCEL QUERIES` / `CANCEL SESSION`, а план читается из его текстового `EXPLAIN` и `EXPLAIN ANALYZE`. Бэкап через `pg_dump` с CockroachDB не работает, поэтому `Back up…` / `Restore…` у него в меню нет. План TiDB читается из его собственного дерева `EXPLAIN`. Транзакций только для чтения в TiDB нет, поэтому подключение TiDB в режиме только чтения полагается на проверку самого DBMan.
+
+![Совместимые базы](crates/dbman/tests/snapshots/compatible_databases.png)
 - **Параметры подключения** (вкладка `Options` в диалоге подключения). **Папка**: подключения с одной папкой собраны под ней в дереве, папки идут первыми, а уже используемые папки предлагаются под полем. **Цвет**: метка на строке подключения и его вкладках и линия над содержимым вкладок, чтобы прод был заметен (например, красным). **Только чтение**: выполняются только читающие выражения. Всё остальное (`INSERT`, `UPDATE`, `DELETE`, DDL, `SELECT … INTO`, `WITH`, меняющий данные, `EXPLAIN ANALYZE` изменения, вызовы процедур) отклоняется до отправки на сервер, в консолях и во всех остальных местах DBMan. Где можно, это проверяет и сам сервер: сессии PostgreSQL открываются с `default_transaction_read_only` (поэтому `SELECT` функции, которая пишет, тоже не пройдёт), MySQL с `SET SESSION TRANSACTION READ ONLY`, SQLite с `PRAGMA query_only`, а запросы ClickHouse идут с `readonly=2`. Пункты меню, которые меняют базу (создание, удаление, переименование, очистка, редактор таблиц, импорт, генерация данных, восстановление), скрыты, а просмотр данных не редактирует строки; в дереве у подключения написано `read-only`. **Подтверждать изменения в консолях**: перед запуском, в котором есть выражение, меняющее данные или структуру, консоль показывает первое такое выражение и спрашивает.
 
 ![Подключение только для чтения](crates/dbman/tests/snapshots/read_only.png)
@@ -134,13 +137,15 @@ crates/
 cargo test --workspace
 ```
 
-Тесты драйверов для SQLite и DuckDB идут всегда; для PostgreSQL, MySQL, SQL Server и ClickHouse нужны адреса серверов:
+Тесты драйверов для SQLite и DuckDB идут всегда; для PostgreSQL, MySQL, SQL Server, ClickHouse, CockroachDB и TiDB нужны адреса серверов:
 
 ```sh
 DBMAN_TEST_POSTGRES=postgres://postgres:secret@127.0.0.1:5432/postgres \
 DBMAN_TEST_MYSQL=mysql://root:secret@127.0.0.1:3306/dbman_test \
 DBMAN_TEST_MSSQL=mssql://sa:Secret_1@127.0.0.1:1433/dbman_test \
 DBMAN_TEST_CLICKHOUSE=clickhouse://default:secret@127.0.0.1:8123/dbman_test \
+DBMAN_TEST_COCKROACH=postgres://root@127.0.0.1:26257/dbman_test \
+DBMAN_TEST_TIDB=mysql://root@127.0.0.1:4000/dbman_test \
 cargo test --workspace
 ```
 

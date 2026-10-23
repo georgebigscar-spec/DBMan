@@ -187,7 +187,7 @@ impl DbManApp {
                 SavedTab::Diagram { database, schema, .. } => {
                     TabKind::Diagram(Box::new(ErView::new(cfg, database, schema)))
                 }
-                SavedTab::Sessions { .. } => TabKind::Sessions(Box::new(SessionsView::new(cfg.kind))),
+                SavedTab::Sessions { .. } => TabKind::Sessions(Box::new(SessionsView::new(cfg.kind, cfg.product))),
             };
             self.add_tab(conn, kind);
             if w.active == Some(i) {
@@ -484,10 +484,10 @@ impl DbManApp {
             }
             Action::OpenSessions(id) => {
                 let Some(c) = self.conn(id) else { return };
-                let kind = c.cfg.kind;
+                let (kind, product) = (c.cfg.kind, c.cfg.product);
                 match self.tabs.iter().find(|t| t.conn == id && matches!(t.kind, TabKind::Sessions(_))) {
                     Some(t) => self.active = Some(t.id),
-                    None => self.add_tab(id, TabKind::Sessions(Box::new(SessionsView::new(kind)))),
+                    None => self.add_tab(id, TabKind::Sessions(Box::new(SessionsView::new(kind, product)))),
                 }
             }
             Action::OpenAdmin(id) => {
@@ -672,6 +672,10 @@ impl DbManApp {
     }
 
     /// The open export dialog.
+    pub fn connection_dialog(&mut self) -> Option<&mut ConnectionDialog> {
+        self.dialog.as_mut()
+    }
+
     pub fn export_dialog(&mut self) -> Option<&mut ExportDialog> {
         self.export.as_mut()
     }
@@ -1083,7 +1087,7 @@ impl DbManApp {
                 for tab in &self.tabs {
                     let active = self.active == Some(tab.id);
                     let conn = self.conns.iter().find(|c| c.cfg.id == tab.conn);
-                    let kind = conn.map(|c| c.cfg.kind);
+                    let kind = conn.map(|c| (c.cfg.kind, c.cfg.product));
                     let color = conn.map_or(dbman_core::ConnColor::None, |c| c.cfg.color);
                     let frame = egui::Frame::new()
                         .fill(if active { t.secondary } else { t.background })
@@ -1096,8 +1100,8 @@ impl DbManApp {
                             frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     explorer::color_mark(ui, color);
-                                    if let Some(k) = kind {
-                                        explorer::kind_badge(ui, k);
+                                    if let Some((k, p)) = kind {
+                                        explorer::kind_badge(ui, k, p);
                                     }
                                     let icon = match tab.kind {
                                         TabKind::Console(_) => Icon::Console,
