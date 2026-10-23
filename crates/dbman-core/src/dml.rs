@@ -28,7 +28,7 @@ pub fn literal(d: Dialect, cell: &Cell, numeric: bool) -> String {
             let hex: String = b.iter().map(|x| format!("{x:02X}")).collect();
             match d.0 {
                 DbKind::Postgres => format!("'\\x{hex}'::bytea"),
-                DbKind::MySql | DbKind::Sqlite => format!("X'{hex}'"),
+                DbKind::MySql | DbKind::Sqlite | DbKind::Redis => format!("X'{hex}'"),
                 DbKind::MsSql => format!("0x{hex}"),
                 DbKind::ClickHouse => format!("unhex('{hex}')"),
                 DbKind::DuckDb => {

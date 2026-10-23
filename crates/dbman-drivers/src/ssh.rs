@@ -267,6 +267,10 @@ impl Connection for Tunneled {
     async fn cancel(&self) -> DbResult<()> {
         self.inner.cancel().await
     }
+
+    async fn command(&self, database: Option<&str>, args: &[String]) -> DbResult<dbman_core::redis::Reply> {
+        self.inner.command(database, args).await
+    }
 }
 
 #[cfg(test)]

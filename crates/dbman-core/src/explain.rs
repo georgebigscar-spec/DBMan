@@ -71,6 +71,7 @@ pub fn statements(kind: DbKind, product: Product, sql: &str, analyze: bool) -> V
         DbKind::ClickHouse => vec![format!("EXPLAIN indexes = 1 {sql}")],
         // SHOWPLAN must be alone in its batch; the statement is then planned, not run.
         DbKind::MsSql => vec!["SET SHOWPLAN_ALL ON".into(), sql.to_string(), "SET SHOWPLAN_ALL OFF".into()],
+        DbKind::Redis => Vec::new(),
     }
 }
 
@@ -84,7 +85,7 @@ pub fn parse(kind: DbKind, product: Product, r: &QueryResult) -> Result<Plan, St
         DbKind::MySql if col(r, "estRows").is_some() => tidb(r),
         DbKind::MySql => mysql(r),
         DbKind::Sqlite => sqlite(r),
-        DbKind::ClickHouse => indented(&lines(r)),
+        DbKind::ClickHouse | DbKind::Redis => indented(&lines(r)),
         DbKind::MsSql => mssql(r),
     };
     if plan.raw.is_empty() {

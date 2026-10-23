@@ -113,6 +113,7 @@ pub enum TabEvent {
     Sessions(Box<crate::sessions_view::SessionsEvent>),
     Search(Box<crate::search_view::SearchEvent>),
     Admin(Box<crate::admin_view::AdminEvent>),
+    Keys(Box<crate::keys_view::KeysEvent>),
     /// Lists for a target picker.
     Picker(crate::target_picker::PickerEvent),
 }

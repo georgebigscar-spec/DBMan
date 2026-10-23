@@ -94,7 +94,7 @@ pub fn value_filter(kind: DbKind, columns: &[String], needle: &str) -> String {
                 DbKind::Postgres => format!("CAST({col} AS text) ILIKE {} ESCAPE '!'", d.string(&pattern)),
                 DbKind::DuckDb => format!("CAST({col} AS VARCHAR) ILIKE {} ESCAPE '!'", d.string(&pattern)),
                 DbKind::MySql => format!("CAST({col} AS CHAR) LIKE {} ESCAPE '!'", d.string(&pattern)),
-                DbKind::Sqlite => format!("CAST({col} AS TEXT) LIKE {} ESCAPE '!'", d.string(&pattern)),
+                DbKind::Sqlite | DbKind::Redis => format!("CAST({col} AS TEXT) LIKE {} ESCAPE '!'", d.string(&pattern)),
                 DbKind::MsSql => format!("CAST({col} AS NVARCHAR(MAX)) LIKE {} ESCAPE '!'", d.string(&pattern)),
                 DbKind::ClickHouse => format!("positionCaseInsensitiveUTF8(toString({col}), {}) > 0", d.string(needle)),
             }

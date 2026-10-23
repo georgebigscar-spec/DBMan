@@ -4,7 +4,7 @@
 
 A desktop client for many databases in the spirit of DataGrip, written in Rust with [egui](https://github.com/emilk/egui) and the [shadcn_egui](https://github.com/georgebigscar-spec/shadcn_egui) widgets.
 
-It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** and **DuckDB**, and the databases on the PostgreSQL and MySQL protocols: **CockroachDB**, **YugabyteDB**, **TimescaleDB**, **Supabase**, **Neon**, **TiDB**, **PlanetScale** and **SingleStore**. New engines plug in through a common driver trait.
+It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite**, **DuckDB** and **Redis**, and the databases on the PostgreSQL and MySQL protocols: **CockroachDB**, **YugabyteDB**, **TimescaleDB**, **Supabase**, **Neon**, **TiDB**, **PlanetScale** and **SingleStore**. New engines plug in through a common driver trait.
 
 ![SQL console](crates/dbman/tests/snapshots/console.png)
 
@@ -50,6 +50,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **A folder of data files as a database**: pick DuckDB and `Folder…` in the connection dialog, or type a folder's path. The folder becomes a database of its name, with a view over every CSV, TSV, Parquet and JSON (or JSON Lines) file in it, compressed ones (`.gz`, `.zst`) too. Files at the top are in `main`, and those of each subfolder in a schema named after it; hidden files and folders are skipped. Nothing is imported: queries read the files as they are now, through DuckDB's `read_csv_auto`, `read_parquet` and `read_json_auto`, and you can join them, filter them and export the results. New and deleted files show up on the next refresh. A view's comment is the file's path in the folder. The database itself lives in memory, so tables made in a console are gone when the last session closes, and there is no backup for it.
 
 ![Folder of files](crates/dbman/tests/snapshots/folder_of_files.png)
+- **Redis** (and Valkey, KeyDB and other servers on its protocol): the explorer lists the numbered databases `db0`, `db1`…, and a double-click opens a **keys tab**. It scans the keys with `SCAN` (a pattern such as `user:*` narrows it, `Load more` reads the next 500) and groups them by their `:` prefixes into a tree, with the number of keys in each group and in the whole database (`DBSIZE`). The key picked shows its type, length and time to live, and its value: a string or JSON document as text, a hash, list, set, sorted set or stream as a table of its first 1000 items, binary data as hex. A string can be edited and saved (its TTL is kept), a TTL set or removed, and a key deleted after a confirmation. Consoles run Redis commands, one per line, quoted as in `redis-cli`; a reply becomes a table (a hash's fields and values, a list's items numbered). On a read-only connection only commands that read run, and the keys tab does not edit. TLS: `require` and `verify-full` connect over TLS, `disable` and `prefer` without it.
+
+![Redis keys](crates/dbman/tests/snapshots/redis_keys.png)
 - **Connection options** (the `Options` tab of the connection dialog):
   - **Folder**: connections with the same folder are grouped under it in the explorer, folders first. The folders already in use are offered below the field.
   - **Color**: a mark on the connection's row and tabs, and a line over its tabs' content, so that production stands out (for example in red).
