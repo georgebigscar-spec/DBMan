@@ -393,6 +393,11 @@ impl ConnectionConfig {
         format!("{}@{}{}", self.user, self.host, db)
     }
 
+    /// A DuckDB connection to a folder of data files rather than a database file.
+    pub fn is_folder(&self) -> bool {
+        self.kind == DbKind::DuckDb && std::path::Path::new(self.database.trim()).is_dir()
+    }
+
     /// Whether the connection goes through an SSH server.
     pub fn uses_ssh(&self) -> bool {
         self.ssh.enabled && !self.kind.is_file_based()

@@ -1277,3 +1277,46 @@ fn users_and_roles() {
         let _ = setup.execute(None, &format!("DROP ROLE {readers}"), 0).await;
     });
 }
+
+#[test]
+fn folder_of_files() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let root = dir.path().join("sales");
+    std::fs::create_dir_all(root.join("archive")).unwrap();
+    std::fs::write(root.join("orders.csv"), "id,customer,total\n1,Ada,9.5\n2,Linus,20\n3,Grace,7.25\n").unwrap();
+    std::fs::write(root.join("customers.json"), r#"[{"name": "Ada", "city": "London"}]"#).unwrap();
+    std::fs::write(root.join("archive").join("orders_2023.tsv"), "id\ttotal\n7\t1.5\n").unwrap();
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.name = "sales files".into();
+    cfg.database = root.to_string_lossy().into_owned();
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 640.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+
+    // The folder is a database, a subfolder a schema, and every file a view.
+    click(&mut h, &id.to_string());
+    click(&mut h, "sales");
+    assert!(h.query_all_by_label("archive").next().is_some());
+    click(&mut h, "main");
+    click(&mut h, "views");
+    assert!(h.query_all_by_label("customers").next().is_some());
+    let orders = DbObject {
+        kind: ObjectKind::View,
+        path: ObjectPath::new("sales", "main", "orders"),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(id, orders), &ctx);
+    settle(&mut h);
+    assert!(h.query_all_by_label("Grace").next().is_some(), "the CSV rows are shown");
+    snapshot(&mut h, "folder_of_files");
+}

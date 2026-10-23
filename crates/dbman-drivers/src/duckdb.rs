@@ -4,6 +4,10 @@
 //! A database file can be opened only once per process, so every session on
 //! the same file shares one database instance and gets its own connection
 //! from it (`try_clone`). Databases are the attached catalogs; each has schemas.
+//!
+//! A folder opens as an in-memory database named after it, with a view over
+//! every CSV, TSV, Parquet and JSON file in it: files at the top in `main`,
+//! and those of each subfolder in a schema named after the subfolder.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,33 +50,155 @@ pub fn open_shared(path: &str) -> DbResult<Shared> {
     });
     let mut reg = registry().lock().map_err(|_| DbError::new("registry poisoned"))?;
     reg.retain(|_, w| w.strong_count() > 0);
+    // A new connection to a folder's database starts in the detached default catalog.
+    let clone = |first: &duckdb::Connection| -> DbResult<duckdb::Connection> {
+        let conn = first.try_clone().map_err(DbError::from_display)?;
+        if key.is_dir() {
+            conn.execute_batch(&format!("USE {}", q(&folder_database(&key)))).map_err(DbError::from_display)?;
+        }
+        Ok(conn)
+    };
     if let Some(root) = reg.get(&key).and_then(Weak::upgrade) {
-        let conn = root.lock().map_err(|_| DbError::new("connection poisoned"))?.try_clone();
-        return Ok(Shared { conn: conn.map_err(DbError::from_display)?, _root: Some(root) });
+        let conn = clone(&*root.lock().map_err(|_| DbError::new("connection poisoned"))?)?;
+        return Ok(Shared { conn, _root: Some(root) });
     }
-    let first = duckdb::Connection::open(&key).map_err(|e| DbError::new(format!("{}: {e}", key.display())))?;
-    let conn = first.try_clone().map_err(DbError::from_display)?;
+    let first = if key.is_dir() {
+        open_folder(&key)?
+    } else {
+        duckdb::Connection::open(&key).map_err(|e| DbError::new(format!("{}: {e}", key.display())))?
+    };
+    let conn = clone(&first)?;
     let root = Arc::new(Mutex::new(first));
     reg.insert(key, Arc::downgrade(&root));
     Ok(Shared { conn, _root: Some(root) })
+}
+
+/// A new in-memory database named after `dir`, with views over its files.
+fn open_folder(dir: &Path) -> DbResult<duckdb::Connection> {
+    let conn = duckdb::Connection::open_in_memory().map_err(DbError::from_display)?;
+    let name = folder_database(dir);
+    conn.execute_batch(&format!("ATTACH ':memory:' AS {n}; USE {n}; DETACH memory;", n = q(&name)))
+        .map_err(DbError::from_display)?;
+    sync_folder(&conn, dir)?;
+    Ok(conn)
+}
+
+/// The catalog name of a folder: its own name, unless DuckDB keeps that name for itself.
+fn folder_database(dir: &Path) -> String {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match name.to_ascii_lowercase().as_str() {
+        "" | "memory" | "main" | "system" | "temp" => format!("{name}_files").trim_start_matches('_').to_string(),
+        _ => name,
+    }
+}
+
+/// The DuckDB function that reads a data file, by its extension.
+fn reader(file: &Path) -> Option<&'static str> {
+    let name = file.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let name = name.strip_suffix(".gz").or_else(|| name.strip_suffix(".zst")).unwrap_or(&name);
+    Some(match name.rsplit_once('.')?.1 {
+        "csv" | "tsv" => "read_csv_auto",
+        "parquet" => "read_parquet",
+        "json" | "jsonl" | "ndjson" => "read_json_auto",
+        _ => return None,
+    })
+}
+
+/// The data files of a folder as (schema, view name, path, reader), sorted.
+/// Files at the top go in `main`, files of a subfolder in its schema; hidden
+/// entries are skipped. Two files with one stem get the extension added.
+pub fn folder_files(dir: &Path) -> Vec<(String, String, PathBuf, &'static str)> {
+    fn entries(dir: &Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> =
+            std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        out.retain(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')));
+        out.sort();
+        out
+    }
+    let mut files = Vec::new();
+    for entry in entries(dir) {
+        if entry.is_dir() {
+            let schema = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            files.extend(entries(&entry).into_iter().filter(|f| f.is_file()).map(|f| (schema.clone(), f)));
+        } else {
+            files.push(("main".to_string(), entry));
+        }
+    }
+    let mut out: Vec<(String, String, PathBuf, &'static str)> = Vec::new();
+    for (schema, file) in files {
+        let Some(read) = reader(&file) else { continue };
+        let full = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let stem = full.split('.').next().unwrap_or(&full).to_string();
+        let taken = |n: &str| out.iter().any(|(s, v, ..)| *s == schema && v.eq_ignore_ascii_case(n));
+        let name = if taken(&stem) { full.replace('.', "_") } else { stem };
+        out.push((schema, name, file, read));
+    }
+    out
+}
+
+/// Makes the views of a folder database match the files: a view for each new
+/// file and schema, and none for a file that is gone. A view's comment is its
+/// file's path in the folder, which also tells it from views made in the console.
+pub fn sync_folder(c: &duckdb::Connection, dir: &Path) -> DbResult<()> {
+    let files: Vec<(String, String, String, PathBuf, &str)> = folder_files(dir)
+        .into_iter()
+        .map(|(schema, view, file, read)| {
+            let rel = file.strip_prefix(dir).unwrap_or(&file).to_string_lossy().replace('\\', "/");
+            (schema, view, rel, file, read)
+        })
+        .collect();
+    let db: String = c.query_row("SELECT current_database()", [], |r| r.get(0)).map_err(DbError::from_display)?;
+    let mut st = c
+        .prepare("SELECT schema_name, view_name, comment FROM duckdb_views() WHERE database_name = ? AND NOT internal")
+        .map_err(DbError::from_display)?;
+    let existing: Vec<(String, String, Option<String>)> = st
+        .query_map([&db], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .and_then(|rows| rows.collect())
+        .map_err(DbError::from_display)?;
+    for (schema, view, comment) in &existing {
+        let Some(rel) = comment.as_deref().filter(|c| reader(Path::new(c)).is_some()) else { continue };
+        if !files.iter().any(|(s, v, r, ..)| s == schema && v == view && r == rel) {
+            c.execute_batch(&format!("DROP VIEW IF EXISTS {}.{}", q(schema), q(view)))
+                .map_err(DbError::from_display)?;
+        }
+    }
+    let d = Dialect(DbKind::DuckDb);
+    for (schema, view, rel, file, read) in &files {
+        if existing.iter().any(|(s, v, c)| s == schema && v == view && c.as_deref() == Some(rel.as_str())) {
+            continue;
+        }
+        // A file DuckDB cannot read (not really CSV, say) is left out rather than failing the listing.
+        let _ = c.execute_batch(&format!(
+            "CREATE SCHEMA IF NOT EXISTS {s}; CREATE OR REPLACE VIEW {s}.{v} AS SELECT * FROM {read}({p}); \
+             COMMENT ON VIEW {s}.{v} IS {r};",
+            s = q(schema),
+            v = q(view),
+            p = d.string(&file.to_string_lossy()),
+            r = d.string(rel),
+        ));
+    }
+    Ok(())
 }
 
 pub struct DuckDbConnection {
     conn: Arc<Mutex<duckdb::Connection>>,
     interrupt: Arc<duckdb::InterruptHandle>,
     _root: Option<Root>,
+    /// The folder of a folder database, whose files are checked again on every listing.
+    folder: Option<PathBuf>,
 }
 
 impl DuckDbConnection {
     pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Self> {
         let path = cfg.database.trim().to_string();
         if path.is_empty() {
-            return Err(DbError::new("choose a database file (or :memory:)"));
+            return Err(DbError::new("choose a database file or folder (or :memory:)"));
         }
         tokio::task::spawn_blocking(move || {
             let Shared { conn, _root } = open_shared(&path)?;
             let interrupt = conn.interrupt_handle();
-            Ok(Self { conn: Arc::new(Mutex::new(conn)), interrupt, _root })
+            let folder = Some(PathBuf::from(&path)).filter(|p| p.is_dir()).and_then(|p| std::fs::canonicalize(p).ok());
+            Ok(Self { conn: Arc::new(Mutex::new(conn)), interrupt, _root, folder })
         })
         .await
         .map_err(DbError::from_display)?
@@ -86,6 +212,20 @@ impl DuckDbConnection {
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().map_err(|_| DbError::new("connection poisoned"))?;
             f(&c).map_err(DbError::from_display)
+        })
+        .await
+        .map_err(DbError::from_display)?
+    }
+}
+
+impl DuckDbConnection {
+    /// Brings a folder database's views up to date with its files.
+    async fn sync(&self) -> DbResult<()> {
+        let Some(dir) = self.folder.clone() else { return Ok(()) };
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().map_err(|_| DbError::new("connection poisoned"))?;
+            sync_folder(&c, &dir)
         })
         .await
         .map_err(DbError::from_display)?
@@ -349,6 +489,7 @@ impl Connection for DuckDbConnection {
     }
 
     async fn schemas(&self, database: &str) -> DbResult<Vec<String>> {
+        self.sync().await?;
         let db = database.to_string();
         self.with(move |c| {
             strings(
@@ -362,6 +503,7 @@ impl Connection for DuckDbConnection {
     }
 
     async fn objects(&self, database: &str, schema: &str) -> DbResult<Vec<DbObject>> {
+        self.sync().await?;
         let (db, sc) = (database.to_string(), schema.to_string());
         self.with(move |c| {
             let sql = "

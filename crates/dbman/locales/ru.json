@@ -9,10 +9,11 @@
   "+ New connection": "+ Новое подключение",
   "+ Row": "+ Строка",
   "/path/to/database.db": "/путь/к/базе.db",
-  "/path/to/database.duckdb  (or :memory:)": "/путь/к/базе.duckdb  (или :memory:)",
+  "/path/to/database.duckdb, a folder, or :memory:": "/путь/к/базе.duckdb, папка или :memory:",
   "<default>": "<по умолчанию>",
   "A console on the target, to read and run the script yourself": "Консоль на цели, чтобы просмотреть и выполнить скрипт самостоятельно",
   "A missing file is created on first connect.": "Если файла нет, он будет создан при первом подключении.",
+  "A missing file is created on first connect. A folder opens its CSV, TSV, Parquet and JSON files as views, those of subfolders in schemas of their names.": "Если файла нет, он будет создан при первом подключении. Папка открывается как база: её файлы CSV, TSV, Parquet и JSON становятся представлениями, а файлы подпапок попадают в схемы с их именами.",
   "A new DuckDB file with the same schemas, tables, views and sequences.": "Новый файл DuckDB с теми же схемами, таблицами, представлениями и последовательностями.",
   "Access key (empty for the server's own)": "Ключ доступа (пусто — ключ сервера)",
   "Actions": "Действия",
@@ -802,5 +803,7 @@
   "Query parameters": "Параметры запроса",
   "Values go into the statement as written: put text in quotes, like 'Berlin'.": "Значения подставляются в выражение как написаны: текст берите в кавычки, например 'Berlin'.",
   "Every parameter needs a value (NULL for none).": "У каждого параметра должно быть значение (NULL, если пусто).",
-  "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}"
+  "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}",
+  "Folder…": "Папка…",
+  "Open a folder of data files": "Открыть папку с файлами данных"
 }

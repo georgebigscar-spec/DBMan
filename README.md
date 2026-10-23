@@ -36,7 +36,7 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 - **Connections**: create, edit, duplicate, delete and test them.
   - SSL modes `disable / prefer / require / verify-full`.
-  - SQLite and DuckDB take a file (DuckDB also takes `:memory:`).
+  - SQLite and DuckDB take a file (DuckDB also takes `:memory:` and a folder, below).
   - **SSH tunnels** (the `SSH` tab): a server connection can go through an SSH server, signing in with a password or a private key file (OpenSSH, PEM or PKCS#8, with an optional passphrase). The database's host and port are reached from the SSH server, so `localhost` there is the SSH server itself. The sessions of a connection share one SSH login, and backups, restores and exports go through it too. Host keys are checked against `~/.ssh/known_hosts` and DBMan's own `known_hosts` next to its settings: a new server's key is remembered on the first connection, and a changed key is refused. Through a tunnel DBMan connects to `127.0.0.1`, which does not match the server certificate's host name, so use SSL `require` rather than `verify-full`.
 
 ![SSH tunnel](crates/dbman/tests/snapshots/ssh_tunnel.png)
@@ -47,6 +47,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - TiDB plans are read from its own `EXPLAIN` tree. TiDB has no read-only transactions, so a read-only TiDB connection relies on DBMan's own check.
 
 ![Compatible databases](crates/dbman/tests/snapshots/compatible_databases.png)
+- **A folder of data files as a database**: pick DuckDB and `Folder…` in the connection dialog, or type a folder's path. The folder becomes a database of its name, with a view over every CSV, TSV, Parquet and JSON (or JSON Lines) file in it, compressed ones (`.gz`, `.zst`) too. Files at the top are in `main`, and those of each subfolder in a schema named after it; hidden files and folders are skipped. Nothing is imported: queries read the files as they are now, through DuckDB's `read_csv_auto`, `read_parquet` and `read_json_auto`, and you can join them, filter them and export the results. New and deleted files show up on the next refresh. A view's comment is the file's path in the folder. The database itself lives in memory, so tables made in a console are gone when the last session closes, and there is no backup for it.
+
+![Folder of files](crates/dbman/tests/snapshots/folder_of_files.png)
 - **Connection options** (the `Options` tab of the connection dialog):
   - **Folder**: connections with the same folder are grouped under it in the explorer, folders first. The folders already in use are offered below the field.
   - **Color**: a mark on the connection's row and tabs, and a line over its tabs' content, so that production stands out (for example in red).
