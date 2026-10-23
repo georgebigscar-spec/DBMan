@@ -17,6 +17,7 @@ pub mod er;
 mod error;
 pub mod explain;
 pub mod export;
+pub mod find;
 pub mod format;
 pub mod generate;
 pub mod import;

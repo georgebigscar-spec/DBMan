@@ -29,6 +29,8 @@ pub struct Catalog {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ItemKind {
+    /// A statement template; `$0` in its insert marks where the cursor goes.
+    Snippet,
     Column,
     Table,
     View,
@@ -57,6 +59,19 @@ pub struct Completion {
     /// Schemas whose tables would be offered once loaded.
     pub want_schemas: Vec<String>,
 }
+
+/// Statement templates offered at the start of a statement: (label, insert).
+pub const SNIPPETS: &[(&str, &str)] = &[
+    ("sel", "SELECT * FROM $0"),
+    ("selw", "SELECT * FROM $0 WHERE "),
+    ("cnt", "SELECT count(*) FROM $0"),
+    ("ins", "INSERT INTO $0 () VALUES ()"),
+    ("upd", "UPDATE $0 SET  WHERE "),
+    ("del", "DELETE FROM $0 WHERE "),
+];
+
+/// The cursor marker in a snippet's insert.
+pub const CURSOR: &str = "$0";
 
 const FUNCTIONS: &[&str] = &[
     "abs",
@@ -380,6 +395,12 @@ pub fn complete(sql: &str, cursor: usize, kind: DbKind, catalog: &Catalog, expli
                 c.columns(t);
             }
         }
+        if head.is_empty() && !prefix.is_empty() {
+            for (label, insert) in SNIPPETS {
+                let detail = insert.replace(CURSOR, "…").trim().to_string();
+                c.push(label.to_string(), insert.to_string(), ItemKind::Snippet, detail);
+            }
+        }
         if !prefix.is_empty() || explicit {
             for t in catalog.tables.iter().filter(in_default) {
                 let (l, i, k, d) = table_item(t, true);
@@ -527,5 +548,17 @@ mod tests {
         assert_eq!(ident(DbKind::MySql, "Orders"), "Orders");
         assert_eq!(ident(DbKind::MySql, "select"), "`select`");
         assert_eq!(ident(DbKind::MsSql, "order lines"), "[order lines]");
+    }
+
+    #[test]
+    fn snippets_start_a_statement() {
+        let c = at("sel|").unwrap();
+        assert_eq!(c.items[0].kind, ItemKind::Snippet);
+        assert_eq!(c.items[0].insert, "SELECT * FROM $0");
+        assert!(labels(&at("sel|")).contains(&"select"));
+        let c = at("select 1; up|").unwrap();
+        assert_eq!(c.items[0].label, "upd");
+        // Not inside a statement.
+        assert!(at("select * from orders where del|").unwrap().items.iter().all(|i| i.kind != ItemKind::Snippet));
     }
 }

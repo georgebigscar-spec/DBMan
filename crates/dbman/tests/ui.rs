@@ -1393,3 +1393,106 @@ fn search_in_database() {
     assert!(h.query_all_by_label("Alice").next().is_some());
     assert!(h.query_all_by_label("Bob").next().is_none(), "only the matching row");
 }
+
+#[test]
+fn find_replace_and_snippets_in_console() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 640.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenConsole(id, None), &ctx);
+    settle(&mut h);
+    let editor = |h: &mut Harness<'_, DbManApp>| {
+        h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+        h.run_steps(2);
+    };
+
+    // A snippet at the start of a statement: `sel` becomes `SELECT * FROM ` with the cursor at its end.
+    editor(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("sel");
+    for _ in 0..10 {
+        settle(&mut h);
+        if !h.state().console_completion().0.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(h.state().console_completion().0.first().map(String::as_str), Some("sel"));
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("orders WHERE total > 10;");
+    settle(&mut h);
+    assert_eq!(h.state().console_completion().1, "SELECT * FROM orders WHERE total > 10;");
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .type_text("\nSELECT count(*) FROM Orders o JOIN order_lines l ON l.order_id = o.id;");
+    settle(&mut h);
+
+    // Ctrl+F opens the bar with the focus in its input; Enter steps through the matches.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    settle(&mut h);
+    h.event(egui::Event::Text("orders".into()));
+    settle(&mut h);
+    let find = |h: &mut Harness<'_, DbManApp>| {
+        let c = h.state_mut().active_console_mut().unwrap();
+        (c.find.matches(&c.sql).len(), c.find.current)
+    };
+    assert_eq!(find(&mut h), (2, Some(0)));
+    assert!(h.query_by_label("1 of 2").is_some());
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert_eq!(find(&mut h), (2, Some(1)));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+    settle(&mut h);
+    assert_eq!(find(&mut h), (2, Some(0)));
+
+    // Whole words skips `order_lines`; match case only the capitalised one.
+    h.state_mut().active_console_mut().unwrap().find.query.whole_word = true;
+    h.state_mut().active_console_mut().unwrap().find.query.text = "order".into();
+    settle(&mut h);
+    assert_eq!(find(&mut h).0, 0);
+    assert!(h.query_by_label("No matches").is_some());
+    h.state_mut().active_console_mut().unwrap().find.query = Default::default();
+    h.state_mut().active_console_mut().unwrap().find.query.text = "Orders".into();
+    h.state_mut().active_console_mut().unwrap().find.query.match_case = true;
+    settle(&mut h);
+    assert_eq!(find(&mut h).0, 1);
+
+    // Replace all, then Escape closes the bar.
+    h.state_mut().active_console_mut().unwrap().find.query.match_case = false;
+    h.key_press_modifiers(Modifiers::COMMAND, Key::R);
+    settle(&mut h);
+    h.state_mut().active_console_mut().unwrap().find.replacement = "orders_archive".into();
+    settle(&mut h);
+    snapshot(&mut h, "find_replace");
+    click(&mut h, "Replace all");
+    let sql = h.state().console_completion().1;
+    assert_eq!(
+        sql,
+        "SELECT * FROM orders_archive WHERE total > 10;\nSELECT count(*) FROM orders_archive o JOIN order_lines l ON l.order_id = o.id;"
+    );
+    editor(&mut h);
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(!h.state_mut().active_console_mut().unwrap().find.open);
+
+    // Escape in the find input closes the bar too.
+    editor(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    settle(&mut h);
+    assert!(h.state_mut().active_console_mut().unwrap().find.open);
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(!h.state_mut().active_console_mut().unwrap().find.open);
+}
