@@ -2,7 +2,7 @@
 //! run on each engine, and the statements that cancel a query or end a session.
 
 use crate::sql::Dialect;
-use crate::{Cell, DbKind, QueryResult};
+use crate::{Cell, DbKind, Product, QueryResult};
 
 /// One client session (or, on ClickHouse, one running query).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -41,8 +41,16 @@ pub fn supported(kind: DbKind) -> bool {
 }
 
 /// The statement that lists sessions, with the columns `Session` has, in its order.
-pub fn list_sql(kind: DbKind) -> Option<&'static str> {
+pub fn list_sql(kind: DbKind, product: Product) -> Option<&'static str> {
     Some(match kind {
+        // CockroachDB's pg_stat_activity is empty; its sessions are in crdb_internal.
+        DbKind::Postgres if product == Product::CockroachDb => {
+            "SELECT session_id, user_name, '', client_address, application_name, status, \
+             EXTRACT(EPOCH FROM (now() - COALESCE(active_query_start, session_start)))::float8, '', \
+             CASE WHEN active_queries <> '' THEN active_queries ELSE last_active_query END, \
+             session_id = (SELECT session_id FROM [SHOW session_id]) \
+             FROM crdb_internal.cluster_sessions WHERE status <> 'CLOSED' ORDER BY session_start"
+        }
         DbKind::Postgres => {
             "SELECT pid::text, usename, datname, \
              COALESCE(host(client_addr) || ':' || client_port, 'local'), application_name, state, \
@@ -106,8 +114,12 @@ pub fn can_terminate(kind: DbKind) -> bool {
 }
 
 /// Stops the statement a session runs.
-pub fn cancel_sql(kind: DbKind, id: &str) -> Option<String> {
+pub fn cancel_sql(kind: DbKind, product: Product, id: &str) -> Option<String> {
     Some(match kind {
+        DbKind::Postgres if product == Product::CockroachDb => format!(
+            "CANCEL QUERIES (SELECT query_id FROM crdb_internal.cluster_queries WHERE session_id = '{}')",
+            hex(id)?
+        ),
         DbKind::Postgres => format!("SELECT pg_cancel_backend({})", number(id)?),
         DbKind::MySql => format!("KILL QUERY {}", number(id)?),
         DbKind::ClickHouse => format!("KILL QUERY WHERE query_id = {}", Dialect(kind).string(id)),
@@ -116,8 +128,9 @@ pub fn cancel_sql(kind: DbKind, id: &str) -> Option<String> {
 }
 
 /// Ends a session; its open transaction rolls back.
-pub fn terminate_sql(kind: DbKind, id: &str) -> Option<String> {
+pub fn terminate_sql(kind: DbKind, product: Product, id: &str) -> Option<String> {
     Some(match kind {
+        DbKind::Postgres if product == Product::CockroachDb => format!("CANCEL SESSION '{}'", hex(id)?),
         DbKind::Postgres => format!("SELECT pg_terminate_backend({})", number(id)?),
         DbKind::MySql => format!("KILL CONNECTION {}", number(id)?),
         DbKind::MsSql => format!("KILL {}", number(id)?),
@@ -128,6 +141,12 @@ pub fn terminate_sql(kind: DbKind, id: &str) -> Option<String> {
 /// Process ids go into the statement as they are, so they must be numbers.
 fn number(id: &str) -> Option<u64> {
     id.trim().parse().ok()
+}
+
+/// CockroachDB's session ids are hexadecimal.
+fn hex(id: &str) -> Option<&str> {
+    let id = id.trim();
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
 }
 
 /// Seconds as `850 ms`, `12 s`, `4 min 05 s` or `3 h 20 min`.
@@ -150,14 +169,20 @@ mod tests {
 
     #[test]
     fn statements_take_numbers_only() {
-        assert_eq!(cancel_sql(DbKind::Postgres, "42").as_deref(), Some("SELECT pg_cancel_backend(42)"));
-        assert_eq!(terminate_sql(DbKind::MySql, "7").as_deref(), Some("KILL CONNECTION 7"));
-        assert_eq!(terminate_sql(DbKind::MsSql, "55").as_deref(), Some("KILL 55"));
-        assert_eq!(cancel_sql(DbKind::Postgres, "1; DROP TABLE x"), None);
-        assert_eq!(cancel_sql(DbKind::MsSql, "55"), None);
-        assert_eq!(terminate_sql(DbKind::ClickHouse, "q"), None);
-        assert_eq!(cancel_sql(DbKind::ClickHouse, "a'b").as_deref(), Some("KILL QUERY WHERE query_id = 'a''b'"));
-        assert!(list_sql(DbKind::Sqlite).is_none());
+        assert_eq!(
+            cancel_sql(DbKind::Postgres, Product::Native, "42").as_deref(),
+            Some("SELECT pg_cancel_backend(42)")
+        );
+        assert_eq!(terminate_sql(DbKind::MySql, Product::Native, "7").as_deref(), Some("KILL CONNECTION 7"));
+        assert_eq!(terminate_sql(DbKind::MsSql, Product::Native, "55").as_deref(), Some("KILL 55"));
+        assert_eq!(cancel_sql(DbKind::Postgres, Product::Native, "1; DROP TABLE x"), None);
+        assert_eq!(cancel_sql(DbKind::MsSql, Product::Native, "55"), None);
+        assert_eq!(terminate_sql(DbKind::ClickHouse, Product::Native, "q"), None);
+        assert_eq!(
+            cancel_sql(DbKind::ClickHouse, Product::Native, "a'b").as_deref(),
+            Some("KILL QUERY WHERE query_id = 'a''b'")
+        );
+        assert!(list_sql(DbKind::Sqlite, Product::Native).is_none());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath, TableDetails};
+use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, ObjectKind, ObjectPath, Product, TableDetails};
 use egui::{Color32, RichText, Ui};
 use shadcn_egui::{Theme, Tree, TreeUi, menu_item, menu_separator};
 use uuid::Uuid;
@@ -247,29 +247,32 @@ pub enum Action {
     RecordQuery(Box<crate::store::HistoryEntry>),
 }
 
-pub fn kind_color(kind: DbKind) -> Color32 {
-    match kind {
-        DbKind::Postgres => Color32::from_rgb(0x33, 0x67, 0x91),
-        DbKind::MySql => Color32::from_rgb(0xe4, 0x8e, 0x00),
-        DbKind::Sqlite => Color32::from_rgb(0x0f, 0x80, 0xcc),
-        DbKind::DuckDb => Color32::from_rgb(0xb8, 0x9a, 0x00),
-        DbKind::MsSql => Color32::from_rgb(0xa9, 0x1d, 0x22),
-        DbKind::ClickHouse => Color32::from_rgb(0xc8, 0x9b, 0x00),
+pub fn kind_color(kind: DbKind, product: Product) -> Color32 {
+    match product {
+        Product::Native => match kind {
+            DbKind::Postgres => Color32::from_rgb(0x33, 0x67, 0x91),
+            DbKind::MySql => Color32::from_rgb(0xe4, 0x8e, 0x00),
+            DbKind::Sqlite => Color32::from_rgb(0x0f, 0x80, 0xcc),
+            DbKind::DuckDb => Color32::from_rgb(0xb8, 0x9a, 0x00),
+            DbKind::MsSql => Color32::from_rgb(0xa9, 0x1d, 0x22),
+            DbKind::ClickHouse => Color32::from_rgb(0xc8, 0x9b, 0x00),
+        },
+        Product::CockroachDb => Color32::from_rgb(0x69, 0x33, 0xff),
+        Product::YugabyteDb => Color32::from_rgb(0xe8, 0x4c, 0x2a),
+        Product::TimescaleDb => Color32::from_rgb(0xc4, 0x8a, 0x00),
+        Product::Supabase => Color32::from_rgb(0x24, 0x9e, 0x68),
+        Product::Neon => Color32::from_rgb(0x00, 0x9e, 0x6b),
+        Product::TiDb => Color32::from_rgb(0xdc, 0x15, 0x3d),
+        Product::PlanetScale => Color32::from_rgb(0x40, 0x40, 0x48),
+        Product::SingleStore => Color32::from_rgb(0x8c, 0x1c, 0xd8),
     }
 }
 
-/// A small colored tag with the engine's initials.
-pub fn kind_badge(ui: &mut Ui, kind: DbKind) {
-    let text = match kind {
-        DbKind::Postgres => "PG",
-        DbKind::MySql => "MY",
-        DbKind::Sqlite => "SL",
-        DbKind::DuckDb => "DK",
-        DbKind::MsSql => "MS",
-        DbKind::ClickHouse => "CH",
-    };
+/// A small colored tag with the engine's or product's initials.
+pub fn kind_badge(ui: &mut Ui, kind: DbKind, product: Product) {
+    let text = product.badge(kind);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 16.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 4.0, kind_color(kind));
+    ui.painter().rect_filled(rect, 4.0, kind_color(kind, product));
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -384,7 +387,7 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
         |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             color_mark(ui, c.cfg.color);
-            kind_badge(ui, kind);
+            kind_badge(ui, kind, c.cfg.product);
             let t = Theme::get(ui.ctx());
             ui.add(egui::Label::new(RichText::new(&name).color(t.foreground)).truncate().selectable(false));
             if c.cfg.read_only {
@@ -508,7 +511,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             if menu_item(ui, tr("Copy name"), None).clicked() {
                 actions.push(Action::CopyText(db.clone()));
             }
-            if !c.cfg.kind.is_file_based() || (c.cfg.kind == DbKind::Sqlite && db == "main") {
+            if (!c.cfg.kind.is_file_based() || (c.cfg.kind == DbKind::Sqlite && db == "main"))
+                && c.cfg.product.supports_backup()
+            {
                 menu_separator(ui);
                 backup_items(ui, c, Scope { database: db.clone(), ..Default::default() }, actions);
             }
@@ -567,7 +572,10 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
             }
             menu_separator(ui);
             // Only pg_dump can back up one schema.
-            if c.cfg.kind == DbKind::Postgres && menu_item(ui, tr("Back up schema…"), None).clicked() {
+            if c.cfg.kind == DbKind::Postgres
+                && c.cfg.product.supports_backup()
+                && menu_item(ui, tr("Back up schema…"), None).clicked()
+            {
                 let scope = Scope { database: db.to_string(), schema: Some(s.clone()), table: None };
                 actions.push(Action::Backup(id, scope));
             }
@@ -581,6 +589,9 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
 /// "Back up… / Restore…" menu entries.
 fn backup_items(ui: &mut Ui, c: &ConnState, scope: Scope, actions: &mut Vec<Action>) {
     let id = c.cfg.id;
+    if !c.cfg.product.supports_backup() {
+        return;
+    }
     if menu_item(ui, tr("Back up…"), None).clicked() {
         actions.push(Action::Backup(id, scope.clone()));
     }
@@ -787,6 +798,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         }
         if o.kind == ObjectKind::Table
             && matches!(c.cfg.kind, DbKind::Postgres | DbKind::MySql | DbKind::ClickHouse)
+            && c.cfg.product.supports_backup()
             && menu_item(ui, tr("Back up table…"), None).clicked()
         {
             let table = match c.cfg.kind {

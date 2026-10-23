@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dbman_core::sql::{self, split_statements, statement_at};
-use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, StatementOutcome, TableDetails};
+use dbman_core::{Connection, ConnectionConfig, DbKind, DbObject, Product, StatementOutcome, TableDetails};
 use dbman_drivers::transfer::ExportSource;
 use egui::{Key, Modifiers, RichText, Ui};
 use shadcn_egui::{
@@ -707,9 +707,17 @@ impl Console {
         self.started = Some(Instant::now());
         self.stop = Arc::new(AtomicBool::new(false));
         match &self.session {
-            Load::Ready(s) => {
-                spawn_explain(tasks, tab, s.clone(), self.database.clone(), self.cfg.kind, sql, analyze, begin)
-            }
+            Load::Ready(s) => spawn_explain(
+                tasks,
+                tab,
+                s.clone(),
+                self.database.clone(),
+                self.cfg.kind,
+                self.cfg.product,
+                sql,
+                analyze,
+                begin,
+            ),
             Load::Loading => self.queued = Some(Queued::Explain(sql, analyze, begin)),
             Load::Idle | Load::Failed(_) => {
                 self.queued = Some(Queued::Explain(sql, analyze, begin));
@@ -765,7 +773,7 @@ impl Console {
             match work {
                 Queued::Run(batch) => spawn_run(cx.tasks, tab, s, db, batch, cx.page_size, self.stop.clone()),
                 Queued::Explain(sql, analyze, begin) => {
-                    spawn_explain(cx.tasks, tab, s, db, self.cfg.kind, sql, analyze, begin)
+                    spawn_explain(cx.tasks, tab, s, db, self.cfg.kind, self.cfg.product, sql, analyze, begin)
                 }
             }
         }
@@ -1109,6 +1117,7 @@ fn spawn_explain(
     session: Arc<dyn Connection>,
     database: Option<String>,
     kind: DbKind,
+    product: Product,
     sql: String,
     analyze: bool,
     begin: Option<String>,
@@ -1118,7 +1127,8 @@ fn spawn_explain(
         if !open_transaction(&tx, tab, &session, database.as_deref(), begin).await {
             return;
         }
-        let (elapsed, result) = timed(dbman_drivers::explain(&session, database.as_deref(), kind, &sql, analyze)).await;
+        let (elapsed, result) =
+            timed(dbman_drivers::explain(&session, database.as_deref(), kind, product, &sql, analyze)).await;
         tx.send(Event::Tab { tab, event: TabEvent::Plan { sql, elapsed, result } });
         tx.send(Event::Tab { tab, event: TabEvent::RunFinished });
     });

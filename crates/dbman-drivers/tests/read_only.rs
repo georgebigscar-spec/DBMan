@@ -1,7 +1,8 @@
 //! Read-only connections: reads work, changes are refused, and on PostgreSQL
 //! even a SELECT that writes through a function fails. SQLite and DuckDB
-//! always run; PostgreSQL and MySQL need `DBMAN_TEST_POSTGRES` and
-//! `DBMAN_TEST_MYSQL`, and are skipped with a note otherwise.
+//! always run; PostgreSQL, MySQL, CockroachDB and TiDB need
+//! `DBMAN_TEST_POSTGRES`, `DBMAN_TEST_MYSQL`, `DBMAN_TEST_COCKROACH` and
+//! `DBMAN_TEST_TIDB`, and are skipped with a note otherwise.
 
 use dbman_core::{ConnectionConfig, DbKind, StatementOutcome};
 
@@ -91,5 +92,25 @@ async fn mysql() {
         eprintln!("DBMAN_TEST_MYSQL not set, skipping");
         return;
     };
+    check(cfg).await;
+}
+
+#[tokio::test]
+async fn cockroach() {
+    let Some(mut cfg) = from_url(DbKind::Postgres, "DBMAN_TEST_COCKROACH") else {
+        eprintln!("DBMAN_TEST_COCKROACH not set, skipping");
+        return;
+    };
+    cfg.product = dbman_core::Product::CockroachDb;
+    check(cfg).await;
+}
+
+#[tokio::test]
+async fn tidb() {
+    let Some(mut cfg) = from_url(DbKind::MySql, "DBMAN_TEST_TIDB") else {
+        eprintln!("DBMAN_TEST_TIDB not set, skipping");
+        return;
+    };
+    cfg.product = dbman_core::Product::TiDb;
     check(cfg).await;
 }

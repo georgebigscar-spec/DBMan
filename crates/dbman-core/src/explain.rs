@@ -3,7 +3,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::{Cell, DbKind, QueryResult};
+use crate::{Cell, DbKind, Product, QueryResult};
 
 /// One step of a plan.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -55,10 +55,13 @@ pub fn supports_analyze(kind: DbKind) -> bool {
 }
 
 /// The statements to run, in order; the plan is in the last result set that has rows.
-pub fn statements(kind: DbKind, sql: &str, analyze: bool) -> Vec<String> {
+pub fn statements(kind: DbKind, product: Product, sql: &str, analyze: bool) -> Vec<String> {
     let sql = sql.trim().trim_end_matches(';').trim_end();
     let analyze = analyze && supports_analyze(kind);
     match kind {
+        // CockroachDB has no JSON plans; its text plan is a tree drawn with `•`.
+        DbKind::Postgres if product == Product::CockroachDb && analyze => vec![format!("EXPLAIN ANALYZE {sql}")],
+        DbKind::Postgres if product == Product::CockroachDb => vec![format!("EXPLAIN {sql}")],
         DbKind::Postgres if analyze => vec![format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}")],
         DbKind::Postgres => vec![format!("EXPLAIN (FORMAT JSON) {sql}")],
         DbKind::DuckDb if analyze => vec![format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}")],
@@ -72,10 +75,13 @@ pub fn statements(kind: DbKind, sql: &str, analyze: bool) -> Vec<String> {
 }
 
 /// Reads the plan from the result set of [`statements`].
-pub fn parse(kind: DbKind, r: &QueryResult) -> Result<Plan, String> {
+pub fn parse(kind: DbKind, product: Product, r: &QueryResult) -> Result<Plan, String> {
     let mut plan = match kind {
+        DbKind::Postgres if product == Product::CockroachDb => cockroach(&lines(r)),
         DbKind::Postgres => postgres(&json(r)?)?,
         DbKind::DuckDb => duckdb(r)?,
+        // TiDB answers MySQL's EXPLAIN with its own tree of operators.
+        DbKind::MySql if col(r, "estRows").is_some() => tidb(r),
         DbKind::MySql => mysql(r),
         DbKind::Sqlite => sqlite(r),
         DbKind::ClickHouse => indented(&lines(r)),
@@ -204,6 +210,107 @@ fn pg_node(o: &Map<String, Value>) -> PlanNode {
             .map(|a| a.iter().filter_map(Value::as_object).map(pg_node).collect())
             .unwrap_or_default(),
     }
+}
+
+// --- TiDB ---------------------------------------------------------------------
+
+/// Rows of `id, estRows, task, access object, operator info`, where `id` is
+/// the operator drawn as a tree (`│ └─Selection_38`).
+fn tidb(r: &QueryResult) -> Plan {
+    let mut stack: Vec<(usize, PlanNode)> = Vec::new();
+    let mut roots = Vec::new();
+    for row in &r.rows {
+        let id = cell(r, row, "id").unwrap_or_default();
+        let depth = id.chars().position(|c| c == '─').map_or(0, |p| p.div_ceil(2));
+        let name = id.trim_start_matches(['│', '├', '└', '─', ' ']);
+        // `TableReader_39(Build)`: the number only tells operators apart.
+        let (op, role) = name.split_once('(').map_or((name, ""), |(o, r)| (o, r.trim_end_matches(')')));
+        let op = op.rsplit_once('_').filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit())).map_or(op, |(o, _)| o);
+        let mut operation = op.to_string();
+        if let Some(object) = cell(r, row, "access object") {
+            operation.push_str(" on ");
+            operation.push_str(object.strip_prefix("table:").unwrap_or(object));
+        }
+        let mut details = Vec::new();
+        if !role.is_empty() {
+            details.push(format!("Side: {role}"));
+        }
+        for (k, label) in [("task", "Task"), ("operator info", "Info")] {
+            if let Some(v) = cell(r, row, k).filter(|v| *v != "N/A") {
+                details.push(format!("{label}: {v}"));
+            }
+        }
+        let node = PlanNode { operation, details, rows: num(cell(r, row, "estRows")), ..Default::default() };
+        close_steps(&mut stack, &mut roots, depth);
+        stack.push((depth, node));
+    }
+    close_steps(&mut stack, &mut roots, 0);
+    Plan { roots, ..Default::default() }
+}
+
+/// Moves the open steps at `depth` or deeper into their parents; the last
+/// open step is the parent of the next one.
+fn close_steps(stack: &mut Vec<(usize, PlanNode)>, roots: &mut Vec<PlanNode>, depth: usize) {
+    while stack.last().is_some_and(|(d, _)| *d >= depth) {
+        let Some((_, node)) = stack.pop() else { break };
+        match stack.last_mut() {
+            Some((_, parent)) => parent.children.push(node),
+            None => roots.push(node),
+        }
+    }
+}
+
+// --- CockroachDB ---------------------------------------------------------------
+
+/// CockroachDB's text plan: `key: value` totals, then one `• operator` per
+/// step, indented four columns per level, with its details below it.
+fn cockroach(lines: &[String]) -> Plan {
+    let mut totals = Vec::new();
+    let mut stack: Vec<(usize, PlanNode)> = Vec::new();
+    let mut roots = Vec::new();
+    for line in lines {
+        if let Some(at) = line.chars().position(|c| c == '•') {
+            let depth = at / 4;
+            close_steps(&mut stack, &mut roots, depth);
+            let operation = line.chars().skip(at + 1).collect::<String>().trim().to_string();
+            stack.push((depth, PlanNode { operation, ..Default::default() }));
+            continue;
+        }
+        let text = line.trim_start_matches(['│', '├', '└', '─', ' ']).trim();
+        let Some((key, value)) = text.split_once(": ") else { continue };
+        let Some((_, node)) = stack.last_mut() else {
+            totals.push((key.to_string(), value.to_string()));
+            continue;
+        };
+        let count = || value.split_whitespace().next().and_then(|n| n.replace(',', "").parse().ok());
+        match key {
+            "estimated row count" => node.rows = count(),
+            "actual row count" => node.actual_rows = count(),
+            "execution time" => node.actual_ms = crdb_ms(value),
+            "table" => {
+                node.operation.push_str(" on ");
+                node.operation.push_str(value);
+            }
+            _ => node.details.push(text.to_string()),
+        }
+    }
+    close_steps(&mut stack, &mut roots, 0);
+    Plan { roots, totals, raw: lines.join("\n") }
+}
+
+/// `7µs`, `1.5ms`, `2s` as milliseconds.
+fn crdb_ms(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let split = s.find(|c: char| !(c.is_ascii_digit() || c == '.'))?;
+    let n: f64 = s[..split].parse().ok()?;
+    Some(match &s[split..] {
+        "ns" => n / 1e6,
+        "µs" | "us" => n / 1e3,
+        "ms" => n,
+        "s" => n * 1e3,
+        "m" => n * 6e4,
+        _ => return None,
+    })
 }
 
 // --- DuckDB -----------------------------------------------------------------
@@ -466,7 +573,7 @@ mod tests {
               {"Node Type": "Index Scan", "Relation Name": "t", "Alias": "b", "Index Name": "t_pkey",
                "Index Cond": "(id = a.id)", "Total Cost": 4.17, "Plan Rows": 1, "Actual Total Time": 0.01,
                "Actual Rows": 1, "Actual Loops": 2}]}, "Planning Time": 0.2, "Execution Time": 0.7}]"#;
-        let p = parse(DbKind::Postgres, &result(&["QUERY PLAN"], &[&[json]])).unwrap();
+        let p = parse(DbKind::Postgres, Product::Native, &result(&["QUERY PLAN"], &[&[json]])).unwrap();
         assert_eq!(outline(&p), ["Nested Loop", "  Seq Scan on t a", "  Index Scan on t b"]);
         let scan = &p.roots[0].children[1];
         assert_eq!(scan.details, ["Index Name: t_pkey", "Index Cond: (id = a.id)"]);
@@ -479,15 +586,23 @@ mod tests {
         let plain = r#"[{"name": "HASH_JOIN", "children": [{"name": "SEQ_SCAN ", "children": [],
             "extra_info": {"Table": "t", "Filters": "v='x'", "Estimated Cardinality": "1"}}],
             "extra_info": {"Join Type": "INNER", "Estimated Cardinality": "1"}}]"#;
-        let p =
-            parse(DbKind::DuckDb, &result(&["explain_key", "explain_value"], &[&["physical_plan", plain]])).unwrap();
+        let p = parse(
+            DbKind::DuckDb,
+            Product::Native,
+            &result(&["explain_key", "explain_value"], &[&["physical_plan", plain]]),
+        )
+        .unwrap();
         assert_eq!(outline(&p), ["HASH_JOIN", "  SEQ_SCAN"]);
         assert_eq!(p.roots[0].children[0].details, ["Table: t", "Filters: v='x'"]);
         assert_eq!(p.roots[0].rows, Some(1.0));
         let analyzed = r#"{"latency": 0.005, "children": [{"operator_name": "EXPLAIN_ANALYZE", "children": [
             {"operator_name": "PROJECTION", "operator_timing": 0.001, "operator_cardinality": 3, "children": []}]}]}"#;
-        let p =
-            parse(DbKind::DuckDb, &result(&["explain_key", "explain_value"], &[&["analyzed_plan", analyzed]])).unwrap();
+        let p = parse(
+            DbKind::DuckDb,
+            Product::Native,
+            &result(&["explain_key", "explain_value"], &[&["analyzed_plan", analyzed]]),
+        )
+        .unwrap();
         assert_eq!(outline(&p), ["PROJECTION"]);
         assert_eq!((p.roots[0].actual_rows, p.roots[0].actual_ms), (Some(3.0), Some(1.0)));
         assert_eq!(p.totals[0].1, "5.000 ms");
@@ -504,7 +619,7 @@ mod tests {
                 &["12", "5", "0", "CORRELATED SCALAR SUBQUERY 1"],
             ],
         );
-        let p = parse(DbKind::Sqlite, &r).unwrap();
+        let p = parse(DbKind::Sqlite, Product::Native, &r).unwrap();
         assert_eq!(
             outline(&p),
             ["SCAN a", "SEARCH b", "  CORRELATED SCALAR SUBQUERY 1", "USE TEMP B-TREE FOR ORDER BY"]
@@ -521,7 +636,7 @@ mod tests {
                 &["1", "SIMPLE", "b", "eq_ref", "PRIMARY", "PRIMARY", "4", "db.a.id", "1", ""],
             ],
         );
-        let p = parse(DbKind::MySql, &r).unwrap();
+        let p = parse(DbKind::MySql, Product::Native, &r).unwrap();
         assert_eq!(outline(&p), ["Full scan on a", "eq_ref on b"]);
         assert_eq!(p.roots[0].rows, Some(10.0));
         assert!(p.roots[1].details.contains(&"Key: PRIMARY".to_string()));
@@ -530,7 +645,7 @@ mod tests {
     #[test]
     fn clickhouse_indented() {
         let text = "Expression ((Project names + Projection))\n  Expression\n    ReadFromMergeTree (db.t)\n    Indexes:\n      PrimaryKey\n        Condition: (id in [1, 1])\n";
-        let p = parse(DbKind::ClickHouse, &result(&["explain"], &[&[text]])).unwrap();
+        let p = parse(DbKind::ClickHouse, Product::Native, &result(&["explain"], &[&[text]])).unwrap();
         assert_eq!(
             outline(&p),
             [
@@ -576,7 +691,7 @@ mod tests {
                 ],
             ],
         );
-        let p = parse(DbKind::MsSql, &r).unwrap();
+        let p = parse(DbKind::MsSql, Product::Native, &r).unwrap();
         assert_eq!(outline(&p), ["SELECT", "  Nested Loops", "    Clustered Index Scan"]);
         assert_eq!(p.roots[0].details, ["select * from t"]);
         assert_eq!(p.roots[0].children[0].children[0].cost, Some(0.0033));
@@ -585,10 +700,73 @@ mod tests {
     #[test]
     fn statements_per_engine() {
         assert_eq!(
-            statements(DbKind::Postgres, "select 1;", true),
+            statements(DbKind::Postgres, Product::Native, "select 1;", true),
             ["EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) select 1"]
         );
-        assert_eq!(statements(DbKind::MySql, "select 1", true), ["EXPLAIN select 1"]);
-        assert_eq!(statements(DbKind::MsSql, "select 1", false).len(), 3);
+        assert_eq!(statements(DbKind::MySql, Product::Native, "select 1", true), ["EXPLAIN select 1"]);
+        assert_eq!(statements(DbKind::MsSql, Product::Native, "select 1", false).len(), 3);
+        assert_eq!(statements(DbKind::Postgres, Product::CockroachDb, "select 1", false), ["EXPLAIN select 1"]);
+    }
+
+    #[test]
+    fn tidb_tree() {
+        let r = result(
+            &["id", "estRows", "task", "access object", "operator info"],
+            &[
+                &["IndexJoin_14", "12.50", "root", "", "inner join"],
+                &["├─TableReader_39(Build)", "10.00", "root", "", "data:Selection_38"],
+                &["│ └─Selection_38", "10.00", "cop[tikv]", "", "eq(t.v, \"x\")"],
+                &["│   └─TableFullScan_37", "10000.00", "cop[tikv]", "table:a", "keep order:false"],
+                &["└─TableReader_11(Probe)", "10.00", "root", "", "data:TableRangeScan_10"],
+                &["  └─TableRangeScan_10", "10.00", "cop[tikv]", "table:b", "range: decided by [t.id]"],
+            ],
+        );
+        let p = parse(DbKind::MySql, Product::TiDb, &r).unwrap();
+        assert_eq!(
+            outline(&p),
+            [
+                "IndexJoin",
+                "  TableReader",
+                "    Selection",
+                "      TableFullScan on a",
+                "  TableReader",
+                "    TableRangeScan on b"
+            ]
+        );
+        assert_eq!(p.roots[0].children[0].details[0], "Side: Build");
+        assert_eq!(p.roots[0].children[0].children[0].children[0].rows, Some(10000.0));
+    }
+
+    #[test]
+    fn cockroach_tree() {
+        let rows = [
+            "planning time: 856µs",
+            "execution time: 1ms",
+            "",
+            "• sort",
+            "│ order: +v",
+            "│",
+            "└── • hash join",
+            "    │ actual row count: 1,200",
+            "    │ execution time: 25µs",
+            "    │ equality: (id) = (v)",
+            "    │",
+            "    ├── • scan",
+            "    │     estimated row count: 1,000 (100% of the table; stats collected 2 minutes ago)",
+            "    │     table: t@t_pkey",
+            "    │",
+            "    └── • scan",
+            "          table: t@t_pkey",
+            "          spans: [/4 - ]",
+        ];
+        let r = result(&["info"], &rows.iter().map(std::slice::from_ref).collect::<Vec<_>>());
+        let p = parse(DbKind::Postgres, Product::CockroachDb, &r).unwrap();
+        assert_eq!(outline(&p), ["sort", "  hash join", "    scan on t@t_pkey", "    scan on t@t_pkey"]);
+        assert_eq!(p.totals[0], ("planning time".into(), "856µs".into()));
+        let join = &p.roots[0].children[0];
+        assert_eq!((join.actual_rows, join.actual_ms), (Some(1200.0), Some(0.025)));
+        assert_eq!(join.details, ["equality: (id) = (v)"]);
+        assert_eq!(join.children[0].rows, Some(1000.0));
+        assert_eq!(join.children[1].details, ["spans: [/4 - ]"]);
     }
 }

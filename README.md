@@ -4,7 +4,7 @@
 
 A desktop client for many databases in the spirit of DataGrip, written in Rust with [egui](https://github.com/emilk/egui) and the [shadcn_egui](https://github.com/georgebigscar-spec/shadcn_egui) widgets.
 
-It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** and **DuckDB**. New engines plug in through a common driver trait.
+It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**, **SQLite** and **DuckDB**, and the databases on the PostgreSQL and MySQL protocols: **CockroachDB**, **YugabyteDB**, **TimescaleDB**, **Supabase**, **Neon**, **TiDB**, **PlanetScale** and **SingleStore**. New engines plug in through a common driver trait.
 
 ![SQL console](crates/dbman/tests/snapshots/console.png)
 
@@ -41,6 +41,12 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 
 ![SSH tunnel](crates/dbman/tests/snapshots/ssh_tunnel.png)
   - Settings live in `settings.json` in the user's config directory. A password is saved only when "Save password" is ticked, and it goes to the system keychain: Keychain on macOS, Credential Manager on Windows, and the Secret Service (GNOME Keyring, KWallet) on Linux. Each connection is one item named `DBMan`, holding its database and SSH passwords. Without a keychain, or with `DBMAN_KEYCHAIN=off`, passwords stay in `settings.json` (readable only by its owner on Linux and macOS). Passwords already in `settings.json` move to the keychain on the next save.
+- **Compatible databases**: the `Database type` list has, after PostgreSQL, CockroachDB, YugabyteDB, TimescaleDB, Supabase and Neon, and after MySQL / MariaDB, TiDB, PlanetScale and SingleStore. They connect with the PostgreSQL or MySQL driver; picking one fills in its usual port (CockroachDB 26257, YugabyteDB 5433, TiDB 4000), user and database, and `require` TLS for the hosted services (Timescale Cloud, Supabase, Neon, PlanetScale). The explorer and tabs show the product's own badge.
+  - CockroachDB and TiDB are tested like PostgreSQL and MySQL themselves: the explorer, structure and DDL, data editing, the table editor, cancelling queries, read-only mode, execution plans and the sessions monitor.
+  - CockroachDB sessions come from `crdb_internal.cluster_sessions` and stop with `CANCEL QUERIES` / `CANCEL SESSION`; its plans are read from its text `EXPLAIN` and `EXPLAIN ANALYZE`. Backups through `pg_dump` do not work with CockroachDB, so its menus have no `Back up…` / `Restore…`.
+  - TiDB plans are read from its own `EXPLAIN` tree. TiDB has no read-only transactions, so a read-only TiDB connection relies on DBMan's own check.
+
+![Compatible databases](crates/dbman/tests/snapshots/compatible_databases.png)
 - **Connection options** (the `Options` tab of the connection dialog):
   - **Folder**: connections with the same folder are grouped under it in the explorer, folders first. The folders already in use are offered below the field.
   - **Color**: a mark on the connection's row and tabs, and a line over its tabs' content, so that production stands out (for example in red).
@@ -310,13 +316,15 @@ crates/
 cargo test --workspace
 ```
 
-Driver tests for SQLite and DuckDB always run. PostgreSQL, MySQL, SQL Server and ClickHouse need server addresses:
+Driver tests for SQLite and DuckDB always run. PostgreSQL, MySQL, SQL Server, ClickHouse, CockroachDB and TiDB need server addresses:
 
 ```sh
 DBMAN_TEST_POSTGRES=postgres://postgres:secret@127.0.0.1:5432/postgres \
 DBMAN_TEST_MYSQL=mysql://root:secret@127.0.0.1:3306/dbman_test \
 DBMAN_TEST_MSSQL=mssql://sa:Secret_1@127.0.0.1:1433/dbman_test \
 DBMAN_TEST_CLICKHOUSE=clickhouse://default:secret@127.0.0.1:8123/dbman_test \
+DBMAN_TEST_COCKROACH=postgres://root@127.0.0.1:26257/dbman_test \
+DBMAN_TEST_TIDB=mysql://root@127.0.0.1:4000/dbman_test \
 cargo test --workspace
 ```
 

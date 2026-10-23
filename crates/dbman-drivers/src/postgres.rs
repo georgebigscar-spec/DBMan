@@ -27,7 +27,11 @@ pub struct PgConnection {
 
 impl PgConnection {
     pub async fn connect(cfg: &ConnectionConfig) -> DbResult<Self> {
-        let default_db = if cfg.database.trim().is_empty() { "postgres".to_string() } else { cfg.database.clone() };
+        let default_db = match (cfg.database.trim(), cfg.product.default_database()) {
+            ("", "") => "postgres".to_string(),
+            ("", d) => d.to_string(),
+            _ => cfg.database.clone(),
+        };
         let me = Self {
             cfg: cfg.clone(),
             default_db,

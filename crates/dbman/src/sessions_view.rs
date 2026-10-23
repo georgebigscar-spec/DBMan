@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use dbman_core::sessions::{self, Session};
-use dbman_core::{DbKind, DbResult, StatementOutcome};
+use dbman_core::{DbKind, DbResult, Product, StatementOutcome};
 use egui::{RichText, Ui};
 use shadcn_egui::{Column, DataTable, Switch, Theme, alert_dialog, menu_item, menu_separator, toast, toast_error};
 
@@ -35,6 +35,7 @@ enum Kill {
 
 pub struct SessionsView {
     pub kind: DbKind,
+    product: Product,
     list: Load<Vec<Session>>,
     /// The rows drawn last; kept while a reload runs so the table does not blink.
     shown: Vec<Session>,
@@ -49,9 +50,10 @@ pub struct SessionsView {
 }
 
 impl SessionsView {
-    pub fn new(kind: DbKind) -> Self {
+    pub fn new(kind: DbKind, product: Product) -> Self {
         Self {
             kind,
+            product,
             list: Load::Idle,
             shown: Vec::new(),
             version: 0,
@@ -100,7 +102,7 @@ impl SessionsView {
     }
 
     fn load(&mut self, cx: &TabCtx<'_>, tab: TabId, session: &std::sync::Arc<dyn dbman_core::Connection>) {
-        let Some(sql) = sessions::list_sql(self.kind) else { return };
+        let Some(sql) = sessions::list_sql(self.kind, self.product) else { return };
         self.list = Load::Loading;
         let s = session.clone();
         cx.tasks.spawn(async move {
@@ -121,8 +123,8 @@ impl SessionsView {
         id: &str,
     ) {
         let sql = match how {
-            Kill::Cancel => sessions::cancel_sql(self.kind, id),
-            Kill::Terminate => sessions::terminate_sql(self.kind, id),
+            Kill::Cancel => sessions::cancel_sql(self.kind, self.product, id),
+            Kill::Terminate => sessions::terminate_sql(self.kind, self.product, id),
         };
         let Some(sql) = sql else { return };
         let (s, id) = (session.clone(), id.to_string());

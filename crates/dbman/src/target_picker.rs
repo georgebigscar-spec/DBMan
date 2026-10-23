@@ -209,7 +209,7 @@ impl TargetPicker {
     pub fn ui(&mut self, ui: &mut Ui, tasks: &Tasks, tab: TabId, conns: &[ConnState]) {
         let t = Theme::get(ui.ctx());
         let names: Vec<String> =
-            conns.iter().map(|c| format!("{} ({})", c.cfg.display_name(), c.cfg.kind.label())).collect();
+            conns.iter().map(|c| format!("{} ({})", c.cfg.display_name(), c.cfg.type_label())).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let mut idx = self.conn.and_then(|id| conns.iter().position(|c| c.cfg.id == id));
         let before = idx;

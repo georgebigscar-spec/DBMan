@@ -2,7 +2,8 @@
 //!
 //! SQLite always runs. PostgreSQL and MySQL run when their URL is set, e.g.
 //! `DBMAN_TEST_POSTGRES=postgres://postgres:secret@127.0.0.1:5432/postgres` and
-//! `DBMAN_TEST_MYSQL=mysql://root:secret@127.0.0.1:3306/dbman_test`.
+//! `DBMAN_TEST_MYSQL=mysql://root:secret@127.0.0.1:3306/dbman_test`. Products on
+//! their protocols run the same way, with `DBMAN_TEST_COCKROACH` and `DBMAN_TEST_TIDB`.
 
 use std::sync::Arc;
 
@@ -377,6 +378,77 @@ async fn mysql() {
     let blob = rows(&c, &db, "SELECT CAST('ab' AS BINARY) AS b, 'x' AS t").await;
     assert_eq!(blob[0][0], Cell::Bytes(b"ab".to_vec()));
     assert_eq!(blob[0][1], Cell::Text("x".into()));
+    check_cancel(c, &db, "SELECT SLEEP(30)").await;
+}
+
+#[tokio::test]
+async fn cockroach() {
+    let Some(mut cfg) = from_url(DbKind::Postgres, "DBMAN_TEST_COCKROACH") else {
+        eprintln!("DBMAN_TEST_COCKROACH not set, skipping");
+        return;
+    };
+    cfg.product = dbman_core::Product::CockroachDb;
+    let db = cfg.database.clone();
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    assert!(c.server_version().await.unwrap().contains("CockroachDB"));
+    check_engine(
+        c.clone(),
+        &db,
+        "dbman_test",
+        &[
+            "DROP SCHEMA IF EXISTS dbman_test CASCADE",
+            "CREATE SCHEMA dbman_test",
+            "CREATE TABLE dbman_test.items (id int PRIMARY KEY, name varchar(50) NOT NULL, parent int REFERENCES dbman_test.items(id))",
+            "CREATE INDEX items_name_idx ON dbman_test.items(name)",
+            "CREATE VIEW dbman_test.item_names AS SELECT name FROM dbman_test.items",
+            "CREATE FUNCTION dbman_test.add(a int, b int) RETURNS int LANGUAGE sql AS $$ SELECT a + b; $$",
+            "CREATE TYPE dbman_test.mood AS ENUM ('ok', 'sad')",
+            "CREATE SEQUENCE dbman_test.counter START 5",
+        ],
+    )
+    .await;
+    let objects = c.objects(&db, "dbman_test").await.unwrap();
+    for o in &objects {
+        let ddl = c.ddl(o).await.unwrap_or_else(|e| panic!("ddl of {:?}: {e}", o.path));
+        assert!(ddl.contains("CREATE"), "{ddl}");
+    }
+    assert!(objects.iter().any(|o| o.kind == ObjectKind::Function && o.path.name == "add"));
+    assert!(objects.iter().any(|o| o.kind == ObjectKind::Type && o.path.name == "mood"));
+    assert!(objects.iter().any(|o| o.kind == ObjectKind::Sequence && o.path.name == "counter"));
+    check_ddl(c.clone(), &db, "dbman_test").await;
+    exec(&c, &db, "DROP SCHEMA dbman_test CASCADE").await;
+    check_cancel(c, &db, "SELECT pg_sleep(30)").await;
+}
+
+#[tokio::test]
+async fn tidb() {
+    let Some(mut cfg) = from_url(DbKind::MySql, "DBMAN_TEST_TIDB") else {
+        eprintln!("DBMAN_TEST_TIDB not set, skipping");
+        return;
+    };
+    cfg.product = dbman_core::Product::TiDb;
+    let db = cfg.database.clone();
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    assert!(c.server_version().await.unwrap().contains("TiDB"));
+    check_engine(
+        c.clone(),
+        &db,
+        &db,
+        &[
+            "DROP VIEW IF EXISTS item_names",
+            "DROP TABLE IF EXISTS items",
+            "CREATE TABLE items (id int PRIMARY KEY, name varchar(50) NOT NULL, parent int, \
+             CONSTRAINT items_parent_fk FOREIGN KEY (parent) REFERENCES items(id))",
+            "CREATE INDEX items_name_idx ON items(name)",
+            "CREATE VIEW item_names AS SELECT name FROM items",
+        ],
+    )
+    .await;
+    for o in &c.objects(&db, &db).await.unwrap() {
+        let ddl = c.ddl(o).await.unwrap_or_else(|e| panic!("ddl of {:?}: {e}", o.path));
+        assert!(ddl.contains("CREATE"), "{ddl}");
+    }
+    check_ddl(c.clone(), &db, &db).await;
     check_cancel(c, &db, "SELECT SLEEP(30)").await;
 }
 
