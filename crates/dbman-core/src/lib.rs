@@ -24,6 +24,7 @@ pub mod generate;
 pub mod import;
 pub mod infer;
 pub mod params;
+pub mod paste;
 mod result;
 mod schema;
 pub mod search;

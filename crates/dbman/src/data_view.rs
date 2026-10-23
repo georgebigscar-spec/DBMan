@@ -1,6 +1,7 @@
-//! Table data tab: rows page by page, with a WHERE filter and ORDER BY, and
-//! in-place editing (change cells, add and delete rows) written back in one
-//! transaction.
+//! Table data tab: rows page by page, with a WHERE filter and ORDER BY,
+//! in-place editing (change cells, add and delete rows, paste cells copied
+//! from a spreadsheet) written back in one transaction, and a record view
+//! that shows one row as a column of fields.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use dbman_core::sql::Dialect;
 use dbman_core::{
     Cell, Connection, ConnectionConfig, DbKind, DbObject, ObjectKind, QueryResult, StatementOutcome, TableDetails, dml,
+    paste,
 };
 use egui::{Color32, Key, RichText, Sense, Ui};
 use shadcn_egui::{
@@ -99,6 +101,8 @@ pub struct DataView {
     current: Option<(usize, usize)>,
     cells: grid::CellSelection,
     value_panel: ValuePanel,
+    /// One row at a time, its columns down the screen.
+    pub record: bool,
 }
 
 impl DataView {
@@ -138,6 +142,7 @@ impl DataView {
             current: None,
             cells: grid::CellSelection::default(),
             value_panel: ValuePanel::default(),
+            record: false,
         }
     }
 
@@ -258,6 +263,39 @@ impl DataView {
         let n = self.rows.ready().map_or(0, |r| r.columns.len());
         self.edits.inserted.push(vec![None; n]);
         self.rebuild();
+    }
+
+    /// Writes cells copied from a spreadsheet (tab-separated lines) from the
+    /// clicked cell to the right and down, adding rows past the last one; with
+    /// no clicked cell, the lines become new rows. `NULL` sets NULL, and an
+    /// empty cell leaves a new row's column to its default. Returns the rows written.
+    pub fn paste(&mut self, text: &str) -> usize {
+        let Some(ncols) = self.rows.ready().map(|r| r.columns.len()) else { return 0 };
+        let lines = paste::parse(text);
+        let base = self.base_len();
+        let total = base + self.edits.inserted.len();
+        let (row0, col0) = self.current.filter(|(r, c)| *r < total && *c < ncols).unwrap_or((total, 0));
+        for (i, line) in lines.iter().enumerate() {
+            let row = row0 + i;
+            while row >= base + self.edits.inserted.len() {
+                self.edits.inserted.push(vec![None; ncols]);
+            }
+            for (j, v) in line.iter().enumerate().take(ncols - col0) {
+                let col = col0 + j;
+                match v.as_str() {
+                    "" if row >= base => self.edits.inserted[row - base][col] = None,
+                    "NULL" => self.set(row, col, Cell::Null),
+                    v => self.set(row, col, Cell::Text(v.to_string())),
+                }
+            }
+        }
+        self.rebuild();
+        lines.len()
+    }
+
+    /// The row the record view shows.
+    pub fn record_row(&self) -> usize {
+        self.current.map_or(0, |(r, _)| r)
     }
 
     /// Marks rows for deletion (or restores rows already marked).
@@ -482,7 +520,14 @@ impl DataView {
                 cx.actions.push(Action::ExportData(cx.conn_id, self.export_source()));
             }
             if self.rows.ready().is_some() {
-                grid::value_button(ui, &mut self.value_panel.open);
+                let b = if self.record { Button::secondary(tr("Record")) } else { Button::outline(tr("Record")) };
+                if ui.add(b.size(ButtonSize::Sm)).tooltip(tr("Show one row with its columns down the screen")).clicked()
+                {
+                    self.record = !self.record;
+                }
+                if !self.record {
+                    grid::value_button(ui, &mut self.value_panel.open);
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(&self.summary).color(t.muted_foreground));
@@ -490,6 +535,22 @@ impl DataView {
         });
 
         let editable = self.editable();
+        // Ctrl+V with no text field focused pastes copied cells into the table.
+        let typing = ui.memory(|m| m.focused()).is_some_and(|f| egui::TextEdit::load_state(ui.ctx(), f).is_some());
+        if editable && self.editing.is_none() && !typing {
+            let pasted = ui.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Paste(text) => Some(text.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(text) = pasted {
+                let n = self.paste(&text);
+                if n > 0 {
+                    toast(ui.ctx(), trf("Pasted {n} rows", &[("n", &n)]), Some(tr("Submit writes them to the table.")));
+                }
+            }
+        }
         if editable {
             ui.add_space(4.0);
             let mut submit = false;
@@ -539,7 +600,11 @@ impl DataView {
                             .color(t.muted_foreground),
                     );
                 } else if !dirty {
-                    ui.label(RichText::new(tr("Double-click a cell to edit it.")).size(12.0).color(t.muted_foreground));
+                    ui.label(
+                        RichText::new(tr("Double-click a cell to edit it; Ctrl+V pastes cells copied from Excel."))
+                            .size(12.0)
+                            .color(t.muted_foreground),
+                    );
                 }
             });
             if submit && let Some(c) = cx.conn {
@@ -569,6 +634,7 @@ impl DataView {
                 });
             }
             Load::Failed(e) => error_alert(ui, tr("Query failed"), e),
+            Load::Ready(_) if self.record => self.record_view(ui, tab, editable),
             Load::Ready(_) => self.grid(ui, tab, editable),
         }
         if stop {
@@ -731,6 +797,144 @@ impl DataView {
         let mut cells = std::mem::take(&mut self.cells);
         cells.footer(ui, ncols, |row, col| self.value(row, col));
         self.cells = cells;
+    }
+
+    /// One row as a table of its columns: name, value and type. Values are edited
+    /// as in the grid; the arrows step through the rows.
+    fn record_view(&mut self, ui: &mut Ui, tab: TabId, editable: bool) {
+        let Some(result) = self.rows.ready() else { return };
+        let t = Theme::get(ui.ctx());
+        let ctx = ui.ctx().clone();
+        let base = result.rows.len();
+        let total = base + self.edits.inserted.len();
+        if total == 0 {
+            ui.label(RichText::new(tr("No rows.")).color(t.muted_foreground));
+            return;
+        }
+        let row = self.record_row().min(total - 1);
+        let col = self.current.map_or(0, |(_, c)| c);
+        ui.horizontal(|ui| {
+            if ui.add_enabled(row > 0, Button::outline("‹").size(ButtonSize::Sm)).clicked() {
+                self.current = Some((row - 1, col));
+            }
+            let label = trf("Row {n} of {total}", &[("n", &(row + 1)), ("total", &total)]);
+            ui.label(RichText::new(label).color(t.muted_foreground));
+            if ui.add_enabled(row + 1 < total, Button::outline("›").size(ButtonSize::Sm)).clicked() {
+                self.current = Some((row + 1, col));
+            }
+            if self.edits.deleted.contains(&row) {
+                ui.label(RichText::new(tr("marked for deletion")).color(t.destructive));
+            } else if row >= base {
+                ui.label(RichText::new(tr("new row")).color(t.muted_foreground));
+            }
+        });
+        ui.add_space(4.0);
+        let Some(result) = self.rows.ready() else { return };
+        let row = self.record_row().min(total - 1);
+        let id = egui::Id::new(("data-record", tab));
+        let types: Vec<String> = result
+            .columns
+            .iter()
+            .map(|c| {
+                let declared = self.details.ready().and_then(|d| d.columns.iter().find(|x| x.name == c.name));
+                declared.map_or_else(|| c.type_name.clone(), |d| d.data_type.clone())
+            })
+            .collect();
+        let texts: Vec<Vec<String>> = result
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let v = self.display.get(row).and_then(|d| d.get(i)).cloned().unwrap_or_default();
+                vec![c.name.clone(), v, types[i].clone()]
+            })
+            .collect();
+        let deleted = self.edits.deleted.contains(&row);
+        let values: Vec<Option<Cell>> = (0..result.columns.len()).map(|c| self.value(row, c)).collect();
+        let changed: Vec<bool> = (0..result.columns.len())
+            .map(|c| if row < base { self.edits.changed.contains_key(&(row, c)) } else { values[c].is_some() })
+            .collect();
+        let mut editing = self.editing.take();
+        let mut cmds = Vec::new();
+        let columns = vec![
+            Column::new(tr("Column")).weight(1.0),
+            Column::new(tr("Value")).weight(3.0),
+            Column::new(tr("Type")).weight(1.0),
+        ];
+        DataTable::new(id, columns)
+            .filter(tr("Filter columns…"))
+            .row_height(30.0)
+            .version(self.version + row as u64 * 1_000_003)
+            .max_height((ui.available_height() - 8.0).max(120.0))
+            .cell_ui(|ui, field, col| {
+                if col != 1 {
+                    return false;
+                }
+                let cell_rect = ui.max_rect().expand2(egui::vec2(12.0, 0.0));
+                if let Some(e) = editing.as_mut().filter(|e| e.row == row && e.col == field) {
+                    let te = ui.add(
+                        egui::TextEdit::singleline(&mut e.text)
+                            .id(id.with(("edit", row, field)))
+                            .desired_width(cell_rect.width() - 8.0),
+                    );
+                    if !e.focused {
+                        te.request_focus();
+                        e.focused = true;
+                    } else if te.lost_focus() {
+                        let cancel = ui.input(|i| i.key_pressed(Key::Escape));
+                        cmds.push(if cancel { GridCmd::Cancel } else { GridCmd::Commit });
+                    }
+                    return true;
+                }
+                if changed[field] && !deleted {
+                    let bg = if t.dark {
+                        Color32::from_rgba_unmultiplied(59, 130, 246, 50)
+                    } else {
+                        Color32::from_rgb(0xdb, 0xea, 0xfe)
+                    };
+                    ui.painter().rect_filled(cell_rect, 0.0, bg);
+                }
+                let text = match &values[field] {
+                    None if row >= base => RichText::new(tr("<default>")).italics().color(t.muted_foreground),
+                    None | Some(Cell::Null) => RichText::new("NULL").italics().color(t.muted_foreground),
+                    Some(_) => RichText::new(&texts[field][1]).color(t.foreground),
+                };
+                let text = if deleted { text.strikethrough() } else { text };
+                let r = ui.interact(cell_rect, id.with(("cell", field)), Sense::click());
+                ui.add(egui::Label::new(text).truncate().selectable(false));
+                if r.clicked() {
+                    cmds.push(GridCmd::Current(row, field));
+                }
+                if editable && !deleted && r.double_clicked() {
+                    cmds.push(GridCmd::StartEdit(row, field));
+                }
+                r.context_menu(|ui| {
+                    ui.set_min_width(180.0);
+                    if let Some(v) = values[field].as_ref().and_then(|v| v.as_text())
+                        && menu_item(ui, tr("Copy value"), None).clicked()
+                    {
+                        cmds.push(GridCmd::Copy(v.into_owned()));
+                    }
+                    if editable && !deleted {
+                        menu_separator(ui);
+                        if menu_item(ui, tr("Edit"), None).clicked() {
+                            cmds.push(GridCmd::StartEdit(row, field));
+                        }
+                        if menu_item(ui, tr("Set NULL"), None).clicked() {
+                            cmds.push(GridCmd::SetNull(row, field));
+                        }
+                        if changed[field] && menu_item(ui, tr("Revert cell"), None).clicked() {
+                            cmds.push(GridCmd::Revert(row, field));
+                        }
+                    }
+                });
+                true
+            })
+            .show(ui, &texts);
+        self.editing = editing;
+        for c in cmds {
+            self.apply(c, &ctx);
+        }
     }
 
     fn preview_dialog(&mut self, ctx: &egui::Context) {
