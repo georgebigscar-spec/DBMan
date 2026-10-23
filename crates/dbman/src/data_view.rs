@@ -102,6 +102,16 @@ pub struct DataView {
 }
 
 impl DataView {
+    /// Sets the `WHERE` filter, as typed in the toolbar, before the first load.
+    pub fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+    }
+
+    /// The `WHERE` filter.
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
     pub fn new(object: DbObject, kind: DbKind) -> Self {
         Self {
             object,

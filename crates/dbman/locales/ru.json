@@ -805,5 +805,21 @@
   "Every parameter needs a value (NULL for none).": "У каждого параметра должно быть значение (NULL, если пусто).",
   "Could not save the open tabs: {error}": "Не удалось сохранить открытые вкладки: {error}",
   "Folder…": "Папка…",
-  "Open a folder of data files": "Открыть папку с файлами данных"
+  "Open a folder of data files": "Открыть папку с файлами данных",
+  "; {n} could not be read": "; не удалось прочитать: {n}",
+  "A click opens the object, or for data the table filtered to the matching rows.": "Клик открывает объект, а для данных — таблицу, отфильтрованную по найденным строкам.",
+  "Definition": "Определение",
+  "Definitions": "Определения",
+  "Filter results…": "Фильтр результатов…",
+  "Found in": "Где найдено",
+  "Match": "Совпадение",
+  "Matching rows: {n}": "Найдено строк: {n}",
+  "Names": "Имена",
+  "Names and definitions of tables, views, routines and triggers; data searches every text-like column of every table, which reads whole tables.": "Имена и определения таблиц, представлений, процедур и триггеров; поиск по данным просматривает все текстовые колонки всех таблиц и читает таблицы целиком.",
+  "Search in {db}": "Поиск в {db}",
+  "Text to find": "Что искать",
+  "The search failed": "Поиск не удался",
+  "line {n}: {text}": "строка {n}: {text}",
+  "{done} of {total}: {current}": "{done} из {total}: {current}",
+  "{n} found for “{text}”": "Найдено для «{text}»: {n}"
 }

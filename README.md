@@ -193,6 +193,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
     - SQLite: `sqlite3_interrupt`;
     - DuckDB: `interrupt`.
   - The data view works in its own session, so a slow page does not hold up the object tree.
+- **Search in a database** (`Search…` in a database or schema menu): finds a text in the names of tables, views, routines, triggers and other objects, in the definitions of views, routines and triggers (with the matching line), and, when `Data` is ticked, in the values of every table. Data search casts every column except binary ones to text and looks for the text in it, ignoring case (`ILIKE` on PostgreSQL and DuckDB, `positionCaseInsensitiveUTF8` on ClickHouse); `%` and `_` are plain characters. It counts the matching rows of each table, up to 1000, so it reads whole tables: on a large database, search one schema. The search runs on a session of its own, shows its progress and can be stopped. A click on a result opens the object, or for data the table with a `WHERE` filter that selects the matching rows.
+
+![Search](crates/dbman/tests/snapshots/search.png)
 - **Sessions** (`Sessions` in a server connection's menu): who is connected and what they run, from `pg_stat_activity` on PostgreSQL, `information_schema.PROCESSLIST` on MySQL and MariaDB, `sys.dm_exec_sessions` and `sys.dm_exec_requests` on SQL Server, and `system.processes` (running queries) on ClickHouse.
   - Each row has the user, database, client, application, state, how long the session has been in that state, what it waits for, and its current or last statement. The session DBMan lists them with is marked `this`.
   - The list reloads every 3 seconds (`Auto-refresh` turns that off), and `Hide idle` keeps only sessions that run something. The filter searches every column.

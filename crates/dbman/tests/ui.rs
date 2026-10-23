@@ -1320,3 +1320,76 @@ fn folder_of_files() {
     assert!(h.query_all_by_label("Grace").next().is_some(), "the CSV rows are shown");
     snapshot(&mut h, "folder_of_files");
 }
+
+#[test]
+fn search_in_database() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 640.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenSearch(id, "main".into(), None), &ctx);
+    settle(&mut h);
+    assert_eq!(h.state().tab_titles(), ["Search in main"]);
+
+    // Names and definitions: the tables, the view and the trigger that mention orders.
+    h.state_mut().active_search().unwrap().text = "orders".into();
+    click(&mut h, "Search");
+    for _ in 0..20 {
+        if !h.state_mut().active_search().unwrap().is_running() {
+            break;
+        }
+        settle(&mut h);
+    }
+    let found = |h: &mut Harness<'_, DbManApp>| -> Vec<String> {
+        let mut v: Vec<String> = h
+            .state_mut()
+            .active_search()
+            .unwrap()
+            .hits
+            .iter()
+            .map(|x| format!("{} {}", x.kind.label(), x.object.path.name))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        found(&mut h),
+        ["Definition big_orders", "Definition orders_touch", "Name big_orders", "Name orders", "Name orders_touch"]
+    );
+    snapshot(&mut h, "search");
+
+    // Data: the customer in Berlin, opened as the table filtered to that row.
+    {
+        let s = h.state_mut().active_search().unwrap();
+        s.text = "berlin".into();
+        s.data = true;
+    }
+    click(&mut h, "Search");
+    for _ in 0..20 {
+        if !h.state_mut().active_search().unwrap().is_running() {
+            break;
+        }
+        settle(&mut h);
+    }
+    assert_eq!(found(&mut h), ["Data customers"]);
+    let hit = h.state_mut().active_search().unwrap().hits[0].clone();
+    assert_eq!(hit.detail, "Matching rows: 1");
+    h.state_mut().handle(Action::OpenDataFiltered(id, hit.object, hit.filter.unwrap()), &ctx);
+    settle(&mut h);
+    assert_eq!(h.state().tab_titles(), ["Search in main", "customers"]);
+    assert!(h.query_all_by_label("Alice").next().is_some());
+    assert!(h.query_all_by_label("Bob").next().is_none(), "only the matching row");
+}

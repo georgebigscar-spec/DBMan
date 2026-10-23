@@ -21,6 +21,7 @@ pub enum Icon {
     Console,
     Info,
     Folder,
+    Search,
 }
 
 pub const SIZE: f32 = 14.0;
@@ -120,6 +121,10 @@ pub fn paint(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Info => {
             p.circle_stroke(c, r.width() / 2.0, s);
             p.text(c, egui::Align2::CENTER_CENTER, "i", FontId::proportional(10.0), color);
+        }
+        Icon::Search => {
+            p.circle_stroke(at(0.42, 0.42), r.width() * 0.32, s);
+            p.line_segment([at(0.66, 0.66), at(0.98, 0.98)], s);
         }
     }
 }
