@@ -498,6 +498,54 @@ async fn duckdb() {
 }
 
 #[tokio::test]
+async fn duckdb_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("sales");
+    std::fs::create_dir_all(root.join("archive")).unwrap();
+    std::fs::create_dir_all(root.join(".hidden")).unwrap();
+    std::fs::write(root.join("orders.csv"), "id,total\n1,9.5\n2,20\n").unwrap();
+    std::fs::write(root.join("orders.json"), r#"[{"id": 3, "total": 1}]"#).unwrap();
+    std::fs::write(root.join("notes.txt"), "not data").unwrap();
+    std::fs::write(root.join(".hidden").join("x.csv"), "a\n1\n").unwrap();
+    std::fs::write(root.join("archive").join("old.tsv"), "id\tname\n7\tx\n").unwrap();
+    let mut cfg = ConnectionConfig::new(DbKind::DuckDb);
+    cfg.database = root.to_string_lossy().into_owned();
+    assert!(cfg.is_folder());
+    let c = dbman_drivers::connect(&cfg).await.unwrap();
+    // A Parquet file written through the folder's own session.
+    let parquet = root.join("archive").join("items.parquet");
+    exec(&c, "sales", &format!("COPY (SELECT 1 AS id, 'pen' AS name) TO '{}' (FORMAT parquet)", parquet.display()))
+        .await;
+
+    assert_eq!(c.databases().await.unwrap(), ["sales"]);
+    assert_eq!(c.schemas("sales").await.unwrap(), ["main", "archive"]);
+    let names = |objects: Vec<dbman_core::DbObject>| -> Vec<String> {
+        objects.into_iter().map(|o| format!("{:?} {}", o.kind, o.path.name)).collect()
+    };
+    assert_eq!(names(c.objects("sales", "main").await.unwrap()), ["View orders", "View orders_json"]);
+    assert_eq!(names(c.objects("sales", "archive").await.unwrap()), ["View items", "View old"]);
+    let r = rows(&c, "sales", "SELECT id, total FROM orders ORDER BY id").await;
+    assert_eq!(
+        r,
+        [[Cell::Text("1".into()), Cell::Text("9.5".into())], [Cell::Text("2".into()), Cell::Text("20".into())]]
+    );
+    let r = rows(&c, "sales", "SELECT name FROM archive.old").await;
+    assert_eq!(r, [[Cell::Text("x".into())]]);
+    let d = c.table_details(&ObjectPath::new("sales", "archive", "items")).await.unwrap();
+    assert_eq!(d.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+
+    // New and deleted files show up on the next listing, in every session.
+    let other = dbman_drivers::connect(&cfg).await.unwrap();
+    std::fs::write(root.join("customers.csv"), "id\n1\n").unwrap();
+    std::fs::remove_file(root.join("orders.json")).unwrap();
+    assert_eq!(names(other.objects("sales", "main").await.unwrap()), ["View customers", "View orders"]);
+    assert_eq!(rows(&c, "sales", "SELECT count(*) FROM customers").await, [[Cell::Text("1".into())]]);
+    // Tables made in the console stay; they live in memory only.
+    exec(&c, "sales", "CREATE TABLE scratch AS SELECT 1 AS x").await;
+    assert!(names(c.objects("sales", "main").await.unwrap()).contains(&"Table scratch".to_string()));
+}
+
+#[tokio::test]
 async fn mssql() {
     let Some(mut cfg) = from_url(DbKind::MsSql, "DBMAN_TEST_MSSQL") else {
         eprintln!("DBMAN_TEST_MSSQL not set, skipping");

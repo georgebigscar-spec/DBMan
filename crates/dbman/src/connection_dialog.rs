@@ -34,6 +34,8 @@ enum Browse {
     Create,
     /// The SSH private key.
     Key,
+    /// A folder of data files, opened with DuckDB.
+    Folder,
 }
 
 pub enum DialogOutcome {
@@ -271,7 +273,7 @@ impl ConnectionDialog {
                     if let Some(p) = answer {
                         match self.browse {
                             Browse::Create => outcome = self.create_at(p),
-                            Browse::Open => self.cfg.database = p.to_string_lossy().into_owned(),
+                            Browse::Open | Browse::Folder => self.cfg.database = p.to_string_lossy().into_owned(),
                             Browse::Key => self.cfg.ssh.key_file = p.to_string_lossy().into_owned(),
                         }
                     }
@@ -294,11 +296,11 @@ impl ConnectionDialog {
                             ui.add(
                                 Input::new(&mut self.cfg.database)
                                     .placeholder(if self.cfg.kind == DbKind::DuckDb {
-                                        tr("/path/to/database.duckdb  (or :memory:)")
+                                        tr("/path/to/database.duckdb, a folder, or :memory:")
                                     } else {
                                         tr("/path/to/database.db")
                                     })
-                                    .width(full - 230.0),
+                                    .width(full - if self.cfg.kind == DbKind::DuckDb { 320.0 } else { 230.0 }),
                             );
                             let (name, exts): (&str, &[&str]) = match self.cfg.kind {
                                 DbKind::DuckDb => ("DuckDB", &["duckdb", "ddb", "db"]),
@@ -312,6 +314,13 @@ impl ConnectionDialog {
                                 self.browse = Browse::Open;
                                 self.browsing = Some(files::pick_file(ui.ctx(), dialog));
                             }
+                            if self.cfg.kind == DbKind::DuckDb
+                                && ui.add_enabled(idle, Button::outline(tr("Folder…"))).clicked()
+                            {
+                                let dialog = rfd::AsyncFileDialog::new().set_title(tr("Open a folder of data files"));
+                                self.browse = Browse::Folder;
+                                self.browsing = Some(files::pick(ui.ctx(), dialog, files::Pick::Folder));
+                            }
                             if ui.add_enabled(idle, Button::outline(tr("Create new…"))).clicked() {
                                 let dialog = rfd::AsyncFileDialog::new()
                                     .set_title(tr("Create a new database file"))
@@ -322,11 +331,12 @@ impl ConnectionDialog {
                             }
                         });
                     });
-                    ui.label(
-                        RichText::new(tr("A missing file is created on first connect."))
-                            .size(12.0)
-                            .color(t.muted_foreground),
-                    );
+                    let hint = if self.cfg.kind == DbKind::DuckDb {
+                        tr("A missing file is created on first connect. A folder opens its CSV, TSV, Parquet and JSON files as views, those of subfolders in schemas of their names.")
+                    } else {
+                        tr("A missing file is created on first connect.")
+                    };
+                    ui.label(RichText::new(hint).size(12.0).color(t.muted_foreground));
                 } else {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {

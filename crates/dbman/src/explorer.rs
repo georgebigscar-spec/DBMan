@@ -589,7 +589,8 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
 /// "Back up… / Restore…" menu entries.
 fn backup_items(ui: &mut Ui, c: &ConnState, scope: Scope, actions: &mut Vec<Action>) {
     let id = c.cfg.id;
-    if !c.cfg.product.supports_backup() {
+    // A folder's database lives only in memory; its files are the data.
+    if !c.cfg.product.supports_backup() || c.cfg.is_folder() {
         return;
     }
     if menu_item(ui, tr("Back up…"), None).clicked() {
