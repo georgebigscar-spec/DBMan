@@ -1549,3 +1549,72 @@ fn chart_of_a_result() {
     click(&mut h, "Table");
     assert!(h.state_mut().active_console_mut().unwrap().chart_mut().is_none());
 }
+
+#[test]
+fn paste_from_a_spreadsheet_and_record_view() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    let db_path = sample_db(dir.path());
+    cfg.database = db_path.clone();
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 700.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let customers = DbObject {
+        kind: ObjectKind::Table,
+        path: ObjectPath::new("main", "main", "customers"),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(id, customers), &ctx);
+    settle(&mut h);
+
+    // Copied cells with no clicked cell become new rows; an empty id keeps its default.
+    h.event(egui::Event::Paste("\tEva\teva@example.com\tOslo\r\n\tFrank\tNULL\t\"Rome\"\r\n".into()));
+    settle(&mut h);
+    assert_eq!(h.state_mut().active_data_view().unwrap().statements().len(), 2);
+    // From the clicked cell (Alice's name) to the right: name and email of the first row.
+    click(&mut h, "Alice");
+    h.event(egui::Event::Paste("Alicia\talicia@example.com".into()));
+    settle(&mut h);
+    let stmts = h.state_mut().active_data_view().unwrap().statements();
+    assert_eq!(stmts.len(), 3, "{stmts:?}");
+    click(&mut h, "Submit (3)");
+    let check = rusqlite::Connection::open(&db_path).unwrap();
+    let rows: Vec<(String, Option<String>, Option<String>)> = check
+        .prepare("SELECT name, email, city FROM customers ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows[0], ("Alicia".into(), Some("alicia@example.com".into()), Some("Berlin".into())));
+    assert_eq!(rows[4], ("Eva".into(), Some("eva@example.com".into()), Some("Oslo".into())));
+    assert_eq!(rows[5], ("Frank".into(), None, Some("Rome".into())));
+
+    // The record view: one row down the screen, the arrows step through the rows.
+    click(&mut h, "Bob");
+    click(&mut h, "Record");
+    assert!(h.state_mut().active_data_view().unwrap().record);
+    assert_eq!(h.state_mut().active_data_view().unwrap().record_row(), 1);
+    assert!(h.query_by_label("Row 2 of 6").is_some());
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "record_view");
+    // The last one: the first steps through pages.
+    click_last(&mut h, "›");
+    assert_eq!(h.state_mut().active_data_view().unwrap().record_row(), 2);
+    assert!(h.query_by_label("carol@example.com").is_some());
+    click(&mut h, "Record");
+    assert!(!h.state_mut().active_data_view().unwrap().record);
+}

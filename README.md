@@ -120,6 +120,10 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - Changes stay highlighted until submitted. `Preview SQL` shows the resulting `INSERT / UPDATE / DELETE`.
   - `Submit` runs them in one transaction in a separate session.
   - Rows are found by primary key, or by all columns when there is none. If an `UPDATE` or `DELETE` touches anything other than exactly one row, everything rolls back.
+  - Paste from a spreadsheet: cells copied in Excel, LibreOffice or Google Sheets go in with `Ctrl+V`. They fill the table from the clicked cell to the right and down, adding rows past the last one; with no clicked cell they become new rows. `NULL` sets NULL, and an empty cell leaves a new row's column to its default. Nothing is written until `Submit`.
+- **Record view**: `Record` above table data shows the clicked row with its columns down the screen, with their types; `‹` and `›` step through the rows, and values are edited as in the grid.
+
+![Record view](crates/dbman/tests/snapshots/record_view.png)
 - **Export** of the rows on screen to CSV, TSV, JSON, JSON Lines, SQL `INSERT` or Markdown, to the clipboard or a file, and to Excel or Parquet files.
   - Excel (`.xlsx`): numbers, dates, timestamps and booleans keep their cell types, the header row is bold and frozen with a filter, and past 1,048,575 rows a new sheet begins. The workbook is written as rows arrive.
   - Parquet: rows are gathered in a temporary DuckDB file and written with zstd. Columns keep their types (integers, decimals, dates, timestamps, booleans, UUIDs, bytes) wherever every value fits, and become text otherwise.

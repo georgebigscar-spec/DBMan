@@ -177,7 +177,6 @@
   "Disconnect other sessions first": "Сначала отключить другие сеансы",
   "Disconnected from {name}": "Отключено от {name}",
   "Disk": "Диск",
-  "Double-click a cell to edit it.": "Дважды щёлкните ячейку, чтобы изменить её.",
   "Double-click a table": "Двойной щелчок по таблице",
   "Double-click to open the data": "Двойной щелчок открывает данные",
   "Drop": "Удалить",
@@ -845,5 +844,15 @@
   "Pick a column with numbers to plot.": "Выберите колонку с числами для графика.",
   "The first {n} rows are shown.": "Показаны первые {n} строк.",
   "No positive values to show.": "Нет положительных значений для показа.",
-  "Other": "Остальное"
+  "Other": "Остальное",
+  "Record": "Запись",
+  "Show one row with its columns down the screen": "Показать одну строку с колонками сверху вниз",
+  "Pasted {n} rows": "Вставлено строк: {n}",
+  "Submit writes them to the table.": "Submit запишет их в таблицу.",
+  "Double-click a cell to edit it; Ctrl+V pastes cells copied from Excel.": "Двойной клик по ячейке, чтобы изменить её; Ctrl+V вставляет ячейки, скопированные из Excel.",
+  "No rows.": "Нет строк.",
+  "Row {n} of {total}": "Строка {n} из {total}",
+  "marked for deletion": "помечена на удаление",
+  "new row": "новая строка",
+  "Filter columns…": "Фильтр колонок…"
 }
