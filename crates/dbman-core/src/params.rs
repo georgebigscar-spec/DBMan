@@ -18,6 +18,10 @@ pub struct Param {
 
 /// The parameters of a statement, in order.
 pub fn find(kind: DbKind, sql: &str) -> Vec<Param> {
+    // Redis keys are written `user:1:name`; its commands take no parameters.
+    if kind == DbKind::Redis {
+        return Vec::new();
+    }
     let tokens = tokenize(sql, kind);
     let text = |i: usize| tokens.get(i).map_or("", |t| &sql[t.range.clone()]);
     let adjacent = |a: usize, b: usize| tokens[a].range.end == tokens[b].range.start;

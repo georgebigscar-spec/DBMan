@@ -19,6 +19,7 @@ pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod read_only;
+pub mod redis;
 pub mod sqlite;
 pub mod ssh;
 pub mod transfer;
@@ -42,6 +43,7 @@ async fn connect_direct(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>>
         DbKind::DuckDb => Arc::new(duckdb::DuckDbConnection::connect(cfg).await?),
         DbKind::MsSql => Arc::new(mssql::MsSqlConnection::connect(cfg).await?),
         DbKind::ClickHouse => Arc::new(clickhouse::ClickHouseConnection::connect(cfg).await?),
+        DbKind::Redis => Arc::new(redis::RedisConnection::connect(cfg).await?),
     })
 }
 

@@ -378,6 +378,7 @@ impl ConnectionDialog {
                     field(ui, "Database", |ui| {
                         let hint = match self.cfg.product.default_database() {
                             "" if self.cfg.kind == DbKind::Postgres => "postgres",
+                            "" if self.cfg.kind == DbKind::Redis => "db0",
                             "" => tr("(none)"),
                             d => d,
                         };

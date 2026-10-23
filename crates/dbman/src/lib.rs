@@ -19,6 +19,7 @@ pub mod grid;
 pub mod i18n;
 pub mod icons;
 pub mod jobs;
+pub mod keys_view;
 pub mod palette;
 pub mod prompt;
 pub mod search_view;

@@ -77,6 +77,7 @@ impl Plan {
 /// Frequently used types, offered in the column type picker.
 pub fn common_types(kind: DbKind) -> &'static [&'static str] {
     match kind {
+        DbKind::Redis => &[],
         DbKind::Postgres => &[
             "integer",
             "bigint",
@@ -753,6 +754,7 @@ pub fn alter_table(kind: DbKind, old: &TableDef, new: &TableDef) -> Plan {
             DbKind::Sqlite => plan.notes.push("SQLite has no table comments; the comment is not saved.".into()),
             DbKind::MsSql => plan.statements.extend(ms_comment(&new.path, None, oc, nc)),
             DbKind::ClickHouse => unreachable!("handled by ch_alter_table"),
+            DbKind::Redis => {}
         }
     }
     plan

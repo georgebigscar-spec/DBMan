@@ -1618,3 +1618,97 @@ fn paste_from_a_spreadsheet_and_record_view() {
     click(&mut h, "Record");
     assert!(!h.state_mut().active_data_view().unwrap().record);
 }
+
+/// The keys tab of a Redis database (needs `DBMAN_TEST_REDIS`): keys grouped
+/// by prefix, a hash's fields, a string edited and saved, and a key deleted.
+#[test]
+fn redis_keys() {
+    let Some(url) = std::env::var("DBMAN_TEST_REDIS").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("DBMAN_TEST_REDIS not set, skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+    let (auth, addr) = rest.rsplit_once('@').unwrap_or(("", rest));
+    let (user, password) = auth.split_once(':').unwrap_or((auth, ""));
+    let (host, port) = addr.trim_end_matches('/').split_once(':').unwrap_or((addr, "6379"));
+    let mut cfg = ConnectionConfig::new(DbKind::Redis);
+    cfg.name = "cache".into();
+    cfg.host = host.into();
+    cfg.port = port.parse().unwrap();
+    cfg.user = user.into();
+    cfg.password = password.into();
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let id = cfg.id;
+
+    // The test's own connection, on a runtime of its own.
+    let other = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let c = other.block_on(dbman_drivers::connect(&cfg)).unwrap();
+    let run = |line: &str| other.block_on(c.execute(Some("db8"), line, 100)).unwrap();
+    for line in [
+        "FLUSHDB",
+        "SET greeting \"Hello, world\"",
+        "HSET user:1 name Alice city Berlin",
+        "HSET user:2 name Bob city Paris",
+        "RPUSH jobs:queue send-mail resize-image",
+        "ZADD jobs:done 3 report 7 backup",
+        "SET session:9f2c token EX 3600",
+    ] {
+        run(line);
+    }
+
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 640.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    assert!(h.query_all_by_label("db8").next().is_some(), "the databases are listed");
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenKeys(id, "db8".into()), &ctx);
+    let wait = |h: &mut Harness<'_, DbManApp>| {
+        for _ in 0..20 {
+            settle(h);
+            if !h.state_mut().active_keys().unwrap().is_busy() {
+                break;
+            }
+        }
+    };
+    wait(&mut h);
+    assert_eq!(h.state().tab_titles(), ["Keys in db8"]);
+    assert_eq!(h.state_mut().active_keys().unwrap().keys.len(), 6);
+
+    // A group of keys opens to its keys; a hash shows its fields.
+    click(&mut h, "user");
+    click(&mut h, "1");
+    wait(&mut h);
+    let key = h.state_mut().active_keys().unwrap().key.clone().unwrap();
+    assert_eq!((key.key.as_str(), key.kind.as_str(), key.len), ("user:1", "hash", Some(2)));
+    let dbman_drivers::redis::KeyValue::Rows { rows, .. } = &key.value else { panic!("{:?}", key.value) };
+    assert!(rows.contains(&vec!["city".to_string(), "Berlin".to_string()]), "{rows:?}");
+    click(&mut h, "jobs");
+    snapshot(&mut h, "redis_keys");
+
+    // A string is edited and saved.
+    click(&mut h, "greeting");
+    wait(&mut h);
+    assert_eq!(h.state_mut().active_keys().unwrap().edit, "Hello, world");
+    h.state_mut().active_keys().unwrap().edit = "Hello, Redis".into();
+    click(&mut h, "Save");
+    wait(&mut h);
+    let dbman_core::StatementOutcome::Rows(r) = run("GET greeting") else { panic!() };
+    assert_eq!(r.rows, [[Cell::Text("Hello, Redis".into())]]);
+
+    // Deleting asks first, then drops the key from the list.
+    click(&mut h, "Delete key");
+    press_and_release(&mut h, "Delete");
+    wait(&mut h);
+    let keys = &h.state_mut().active_keys().unwrap().keys;
+    assert_eq!(keys.len(), 5);
+    assert!(!keys.contains(&"greeting".to_string()));
+}

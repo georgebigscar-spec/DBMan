@@ -56,4 +56,10 @@ pub trait Connection: Send + Sync {
     /// Returns once the request is sent; the running `execute` then ends early,
     /// usually with an error. Does nothing when the session is idle.
     async fn cancel(&self) -> DbResult<()>;
+
+    /// Runs one Redis command, its arguments as typed, in `database` (`db3`)
+    /// or the current one. Only Redis connections take commands.
+    async fn command(&self, _database: Option<&str>, _args: &[String]) -> DbResult<crate::redis::Reply> {
+        Err(crate::DbError::new("This connection does not take Redis commands."))
+    }
 }

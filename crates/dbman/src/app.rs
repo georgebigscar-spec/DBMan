@@ -21,6 +21,7 @@ use crate::explorer::{self, Action, ConnState, Load, Node};
 use crate::generate_dialog::GenerateDialog;
 use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
+use crate::keys_view::KeysView;
 use crate::palette::{self, Pick};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::search_view::SearchView;
@@ -146,7 +147,8 @@ impl DbManApp {
                     | TabKind::Compare(_)
                     | TabKind::Copy(_)
                     | TabKind::Admin(_)
-                    | TabKind::Search(_) => {
+                    | TabKind::Search(_)
+                    | TabKind::Keys(_) => {
                         return None;
                     }
                 };
@@ -507,6 +509,18 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::Search(Box::new(SearchView::new(cfg, database, schema)))),
                 }
             }
+            Action::OpenKeys(id, database) => {
+                let Some(c) = self.conn(id) else { return };
+                let read_only = c.cfg.read_only;
+                let existing = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.conn == id && matches!(&t.kind, TabKind::Keys(k) if k.database == database));
+                match existing {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::Keys(Box::new(KeysView::new(database, read_only)))),
+                }
+            }
             Action::OpenDataFiltered(id, object, filter) => {
                 let Some(c) = self.conn(id) else { return };
                 let mut view = DataView::new(object, c.cfg.kind);
@@ -805,6 +819,15 @@ impl DbManApp {
         let id = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
             TabKind::Search(s) => Some(s.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The keys tab on screen, if the active tab is one.
+    pub fn active_keys(&mut self) -> Option<&mut KeysView> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::Keys(k) => Some(k.as_mut()),
             _ => None,
         }
     }
@@ -1158,6 +1181,7 @@ impl DbManApp {
                                         TabKind::Sessions(_) => Icon::Console,
                                         TabKind::Admin(_) => Icon::Key,
                                         TabKind::Search(_) => Icon::Search,
+                                        TabKind::Keys(_) => Icon::Key,
                                     };
                                     let color = if active { t.foreground } else { t.muted_foreground };
                                     icons::icon(ui, icon, color);

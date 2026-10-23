@@ -899,6 +899,7 @@ pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: P
         DbKind::DuckDb => format!("{base}_{stamp}"),
         DbKind::MsSql => format!("{base}_{stamp}.bak"),
         DbKind::ClickHouse => format!("{base}_{stamp}.zip"),
+        DbKind::Redis => format!("{base}_{stamp}.rdb"),
     }
 }
 

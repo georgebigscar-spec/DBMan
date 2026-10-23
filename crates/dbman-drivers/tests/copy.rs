@@ -48,6 +48,7 @@ struct Place {
 
 fn create_sql(kind: DbKind) -> &'static str {
     match kind {
+        DbKind::Redis => unreachable!("Redis has no tables"),
         DbKind::Postgres => {
             "CREATE TABLE {t} (id integer PRIMARY KEY, name varchar(50) NOT NULL, amount numeric(12,2), flag boolean, \
              created timestamp, note text, data bytea)"

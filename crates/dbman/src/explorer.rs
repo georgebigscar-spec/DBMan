@@ -234,6 +234,8 @@ pub enum Action {
     OpenSessions(Uuid),
     /// Opens a search in a database, or in one of its schemas.
     OpenSearch(Uuid, String, Option<String>),
+    /// Opens the keys of a Redis database.
+    OpenKeys(Uuid, String),
     /// Opens a table's data with a `WHERE` filter already set.
     OpenDataFiltered(Uuid, DbObject, String),
     /// Opens the users, roles and privileges.
@@ -260,6 +262,7 @@ pub fn kind_color(kind: DbKind, product: Product) -> Color32 {
             DbKind::DuckDb => Color32::from_rgb(0xb8, 0x9a, 0x00),
             DbKind::MsSql => Color32::from_rgb(0xa9, 0x1d, 0x22),
             DbKind::ClickHouse => Color32::from_rgb(0xc8, 0x9b, 0x00),
+            DbKind::Redis => Color32::from_rgb(0xd8, 0x2c, 0x20),
         },
         Product::CockroachDb => Color32::from_rgb(0x69, 0x33, 0xff),
         Product::YugabyteDb => Color32::from_rgb(0xe8, 0x4c, 0x2a),
@@ -472,6 +475,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
         }
     };
     let t = Theme::get(tree.ui().ctx());
+    if c.cfg.kind == DbKind::Redis {
+        return redis_databases(tree, c, dbs, actions);
+    }
     for db in dbs {
         let r = tree.folder_ui(
             Node::Database(id, db.clone()),
@@ -529,6 +535,35 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
                 if !c.cfg.read_only && menu_item(ui, tr("Drop database…"), None).clicked() {
                     actions.push(Action::DropDatabase(id, db.clone()));
                 }
+            }
+        });
+    }
+}
+
+/// Redis databases hold keys, not objects: each opens a keys tab.
+fn redis_databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, dbs: &[String], actions: &mut Vec<Action>) {
+    let id = c.cfg.id;
+    let t = Theme::get(tree.ui().ctx());
+    for db in dbs {
+        let r = tree.leaf_ui(Node::Database(id, db.clone()), db, |ui| {
+            row(ui, Some(Icon::Database), t.muted_foreground, db, None)
+        });
+        if r.double_clicked() {
+            actions.push(Action::OpenKeys(id, db.clone()));
+        }
+        r.context_menu(|ui| {
+            ui.set_min_width(200.0);
+            if menu_item(ui, tr("Open keys"), None).clicked() {
+                actions.push(Action::OpenKeys(id, db.clone()));
+            }
+            if menu_item(ui, tr("New console"), None).clicked() {
+                actions.push(Action::OpenConsole(id, Some(db.clone())));
+            }
+            if menu_item(ui, tr("Copy name"), None).clicked() {
+                actions.push(Action::CopyText(db.clone()));
+            }
+            if menu_item(ui, tr("Refresh"), None).clicked() {
+                actions.push(Action::Refresh(id));
             }
         });
     }
@@ -624,6 +659,7 @@ fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions:
         actions.push(Action::ImportNewTable(id, db.to_string(), schema.to_string()));
     }
     let kinds: &[(ObjectKind, &str)] = match c.cfg.kind {
+        DbKind::Redis => &[],
         DbKind::Postgres => &[
             (ObjectKind::View, "New view…"),
             (ObjectKind::MaterializedView, "New materialized view…"),

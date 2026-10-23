@@ -25,6 +25,7 @@ use crate::explorer::{Action, ConnState, Load};
 use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
+use crate::keys_view::KeysView;
 use crate::search_view::SearchView;
 use crate::sessions_view::SessionsView;
 use crate::sql_editor;
@@ -52,6 +53,7 @@ pub enum TabKind {
     Sessions(Box<SessionsView>),
     Admin(Box<AdminView>),
     Search(Box<SearchView>),
+    Keys(Box<KeysView>),
 }
 
 /// What a tab can reach while drawing.
@@ -85,6 +87,7 @@ impl Tab {
             TabKind::Sessions(s) => s.title(),
             TabKind::Admin(a) => a.title(),
             TabKind::Search(s) => s.title(),
+            TabKind::Keys(k) => k.title(),
         }
     }
 
@@ -101,6 +104,7 @@ impl Tab {
             TabKind::Sessions(_) => "",
             TabKind::Admin(a) => &a.database,
             TabKind::Search(s) => &s.database,
+            TabKind::Keys(k) => &k.database,
         };
         (!db.is_empty()).then_some(db)
     }
@@ -116,7 +120,8 @@ impl Tab {
             | TabKind::Compare(_)
             | TabKind::Sessions(_)
             | TabKind::Admin(_)
-            | TabKind::Search(_) => None,
+            | TabKind::Search(_)
+            | TabKind::Keys(_) => None,
             TabKind::Copy(c) => c.only().map(str::to_owned),
         }
     }
@@ -134,6 +139,7 @@ impl Tab {
             TabKind::Sessions(s) => s.on_event(ev, ctx),
             TabKind::Admin(a) => a.on_event(ev, ctx),
             TabKind::Search(s) => s.on_event(ev),
+            TabKind::Keys(k) => return k.on_event(ev),
         }
         Vec::new()
     }
@@ -151,6 +157,7 @@ impl Tab {
             TabKind::Sessions(s) => s.ui(ui, id, cx),
             TabKind::Admin(a) => a.ui(ui, id, cx),
             TabKind::Search(s) => s.ui(ui, id, cx),
+            TabKind::Keys(k) => k.ui(ui, id, cx),
         }
     }
 }
@@ -822,7 +829,7 @@ impl Console {
             if all || one {
                 self.run(&cx, tab, all);
             }
-            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::L)) {
+            if self.cfg.kind.is_sql() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::L)) {
                 self.format(&ctx, editor_id);
             }
         }
@@ -856,25 +863,28 @@ impl Console {
             if all.clicked() {
                 self.run(&cx, tab, true);
             }
-            let explain = ui
-                .add_enabled(!self.running, Button::outline(tr("Explain")).size(ButtonSize::Sm))
-                .tooltip(tr("Show the plan of the statement under the cursor without running it"));
-            if explain.clicked() {
-                self.explain(&cx, tab, false);
-            }
-            if explain::supports_analyze(self.cfg.kind) {
-                let analyze = ui
-                    .add_enabled(!self.running, Button::outline(tr("Explain analyze")).size(ButtonSize::Sm))
-                    .tooltip(tr("Run the statement and show the plan with the actual times and rows"));
-                if analyze.clicked() {
-                    self.explain(&cx, tab, true);
+            // Redis runs commands: nothing to explain or format.
+            if self.cfg.kind.is_sql() {
+                let explain = ui
+                    .add_enabled(!self.running, Button::outline(tr("Explain")).size(ButtonSize::Sm))
+                    .tooltip(tr("Show the plan of the statement under the cursor without running it"));
+                if explain.clicked() {
+                    self.explain(&cx, tab, false);
                 }
-            }
-            let format = ui
-                .add(Button::outline(tr("Format SQL")).size(ButtonSize::Sm))
-                .tooltip(tr("Lay out the selection or the whole script, one clause per line (Ctrl+Alt+L)"));
-            if format.clicked() {
-                self.format(&ctx, editor_id);
+                if explain::supports_analyze(self.cfg.kind) {
+                    let analyze = ui
+                        .add_enabled(!self.running, Button::outline(tr("Explain analyze")).size(ButtonSize::Sm))
+                        .tooltip(tr("Run the statement and show the plan with the actual times and rows"));
+                    if analyze.clicked() {
+                        self.explain(&cx, tab, true);
+                    }
+                }
+                let format = ui
+                    .add(Button::outline(tr("Format SQL")).size(ButtonSize::Sm))
+                    .tooltip(tr("Lay out the selection or the whole script, one clause per line (Ctrl+Alt+L)"));
+                if format.clicked() {
+                    self.format(&ctx, editor_id);
+                }
             }
             if self.running {
                 if ui
