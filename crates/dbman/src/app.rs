@@ -23,6 +23,7 @@ use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
 use crate::palette::{self, Pick};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
+use crate::search_view::SearchView;
 use crate::sessions_view::SessionsView;
 use crate::store::{History, SavedTab, Settings, Workspace};
 use crate::table_editor::TableEditor;
@@ -141,7 +142,11 @@ impl DbManApp {
                     TabKind::Sessions(_) => SavedTab::Sessions { conn },
                     // Editors and comparisons hold work in progress that does not keep;
                     // the users tab depends on rights checked after connecting.
-                    TabKind::TableEditor(_) | TabKind::Compare(_) | TabKind::Copy(_) | TabKind::Admin(_) => {
+                    TabKind::TableEditor(_)
+                    | TabKind::Compare(_)
+                    | TabKind::Copy(_)
+                    | TabKind::Admin(_)
+                    | TabKind::Search(_) => {
                         return None;
                     }
                 };
@@ -490,6 +495,25 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::Sessions(Box::new(SessionsView::new(kind, product)))),
                 }
             }
+            Action::OpenSearch(id, database, schema) => {
+                let Some(c) = self.conn(id) else { return };
+                let cfg = c.cfg.clone();
+                let existing = self.tabs.iter().find(|t| {
+                    t.conn == id
+                        && matches!(&t.kind, TabKind::Search(s) if s.database == database && s.schema == schema)
+                });
+                match existing {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::Search(Box::new(SearchView::new(cfg, database, schema)))),
+                }
+            }
+            Action::OpenDataFiltered(id, object, filter) => {
+                let Some(c) = self.conn(id) else { return };
+                let mut view = DataView::new(object, c.cfg.kind);
+                view.read_only = c.cfg.read_only;
+                view.set_filter(filter);
+                self.add_tab(id, TabKind::Data(Box::new(view)));
+            }
             Action::OpenAdmin(id) => {
                 let Some(c) = self.conn(id) else { return };
                 let (kind, database) = (c.cfg.kind, c.cfg.database.clone());
@@ -637,8 +661,10 @@ impl DbManApp {
             self.closing = None;
         }
         if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-            if let TabKind::Console(c) = &self.tabs[i].kind {
-                c.roll_back_on_close(&self.tasks);
+            match &mut self.tabs[i].kind {
+                TabKind::Console(c) => c.roll_back_on_close(&self.tasks),
+                TabKind::Search(s) => s.stop(),
+                _ => {}
             }
             self.tabs.remove(i);
             if self.active == Some(id) {
@@ -775,6 +801,14 @@ impl DbManApp {
     }
 
     /// The users and roles tab on screen, if the active tab is one.
+    pub fn active_search(&mut self) -> Option<&mut SearchView> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::Search(s) => Some(s.as_mut()),
+            _ => None,
+        }
+    }
+
     pub fn active_admin(&mut self) -> Option<&mut AdminView> {
         let active = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == active)?.kind {
@@ -1113,6 +1147,7 @@ impl DbManApp {
                                         TabKind::Copy(_) => Icon::Table,
                                         TabKind::Sessions(_) => Icon::Console,
                                         TabKind::Admin(_) => Icon::Key,
+                                        TabKind::Search(_) => Icon::Search,
                                     };
                                     let color = if active { t.foreground } else { t.muted_foreground };
                                     icons::icon(ui, icon, color);

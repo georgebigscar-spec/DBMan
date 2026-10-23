@@ -20,6 +20,7 @@ pub mod icons;
 pub mod jobs;
 pub mod palette;
 pub mod prompt;
+pub mod search_view;
 pub mod sessions_view;
 pub mod sql_editor;
 pub mod store;

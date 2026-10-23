@@ -111,6 +111,7 @@ pub enum TabEvent {
     Compare(Box<crate::compare_view::CompareEvent>),
     Copy(Box<crate::copy_view::CopyEvent>),
     Sessions(Box<crate::sessions_view::SessionsEvent>),
+    Search(Box<crate::search_view::SearchEvent>),
     Admin(Box<crate::admin_view::AdminEvent>),
     /// Lists for a target picker.
     Picker(crate::target_picker::PickerEvent),

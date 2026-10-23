@@ -24,6 +24,7 @@ use crate::explorer::{Action, ConnState, Load};
 use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
+use crate::search_view::SearchView;
 use crate::sessions_view::SessionsView;
 use crate::sql_editor;
 use crate::store::{History, HistoryEntry};
@@ -48,6 +49,7 @@ pub enum TabKind {
     Copy(Box<CopyView>),
     Sessions(Box<SessionsView>),
     Admin(Box<AdminView>),
+    Search(Box<SearchView>),
 }
 
 /// What a tab can reach while drawing.
@@ -80,6 +82,7 @@ impl Tab {
             TabKind::Copy(c) => c.title(),
             TabKind::Sessions(s) => s.title(),
             TabKind::Admin(a) => a.title(),
+            TabKind::Search(s) => s.title(),
         }
     }
 
@@ -95,6 +98,7 @@ impl Tab {
             TabKind::Copy(c) => &c.database,
             TabKind::Sessions(_) => "",
             TabKind::Admin(a) => &a.database,
+            TabKind::Search(s) => &s.database,
         };
         (!db.is_empty()).then_some(db)
     }
@@ -106,7 +110,11 @@ impl Tab {
             TabKind::Data(d) => Some(d.object.path.name.clone()),
             TabKind::Object(o) => Some(o.object.path.name.clone()),
             TabKind::TableEditor(e) => e.table().map(str::to_owned),
-            TabKind::Diagram(_) | TabKind::Compare(_) | TabKind::Sessions(_) | TabKind::Admin(_) => None,
+            TabKind::Diagram(_)
+            | TabKind::Compare(_)
+            | TabKind::Sessions(_)
+            | TabKind::Admin(_)
+            | TabKind::Search(_) => None,
             TabKind::Copy(c) => c.only().map(str::to_owned),
         }
     }
@@ -123,6 +131,7 @@ impl Tab {
             TabKind::Copy(c) => c.on_event(ev),
             TabKind::Sessions(s) => s.on_event(ev, ctx),
             TabKind::Admin(a) => a.on_event(ev, ctx),
+            TabKind::Search(s) => s.on_event(ev),
         }
         Vec::new()
     }
@@ -139,6 +148,7 @@ impl Tab {
             TabKind::Copy(c) => c.ui(ui, id, cx),
             TabKind::Sessions(s) => s.ui(ui, id, cx),
             TabKind::Admin(a) => a.ui(ui, id, cx),
+            TabKind::Search(s) => s.ui(ui, id, cx),
         }
     }
 }

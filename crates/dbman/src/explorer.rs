@@ -232,6 +232,10 @@ pub enum Action {
     OpenCopy(Uuid, String, String, Option<String>),
     /// Opens the server's sessions.
     OpenSessions(Uuid),
+    /// Opens a search in a database, or in one of its schemas.
+    OpenSearch(Uuid, String, Option<String>),
+    /// Opens a table's data with a `WHERE` filter already set.
+    OpenDataFiltered(Uuid, DbObject, String),
     /// Opens the users, roles and privileges.
     OpenAdmin(Uuid),
     /// Opens a console in a database with a script in it.
@@ -486,6 +490,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             if menu_item(ui, tr("New console"), None).clicked() {
                 actions.push(Action::OpenConsole(id, Some(db.clone())));
             }
+            if menu_item(ui, tr("Search…"), None).clicked() {
+                actions.push(Action::OpenSearch(id, db.clone(), None));
+            }
             if c.has_schemas() {
                 if !c.cfg.read_only && menu_item(ui, tr("New schema…"), None).clicked() {
                     actions.push(Action::NewSchema(id, db.clone()));
@@ -553,6 +560,9 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
             ui.set_min_width(200.0);
             if menu_item(ui, tr("New console"), None).clicked() {
                 actions.push(Action::OpenConsole(id, Some(db.to_string())));
+            }
+            if menu_item(ui, tr("Search…"), None).clicked() {
+                actions.push(Action::OpenSearch(id, db.to_string(), Some(s.clone())));
             }
             new_object_items(ui, c, db, s, actions);
             if menu_item(ui, tr("ER diagram"), None).clicked() {
