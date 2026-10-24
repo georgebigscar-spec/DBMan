@@ -896,5 +896,15 @@
   "Smallest": "Наименьшее",
   "Some figures are missing: the database cannot compute them for this type.": "Некоторых показателей нет: база не умеет считать их для этого типа.",
   "The profile could not be read": "Не удалось получить профиль",
-  "{lo} to {hi}: {n}": "от {lo} до {hi}: {n}"
+  "{lo} to {hi}: {n}": "от {lo} до {hi}: {n}",
+  "(rows)": "(строки)",
+  "Computed over the {n} rows fetched, not the whole result.": "Посчитано по {n} полученным строкам, а не по всему результату.",
+  "No rows to group.": "Нет строк для группировки.",
+  "Only the first {n} column values are shown.": "Показаны только первые {n} значений для колонок.",
+  "Total": "Итого",
+  "Values that are not numbers are skipped.": "Значения, которые не являются числами, пропущены.",
+  "Pivot": "Сводная",
+  "Count distinct": "Число уникальных",
+  "Minimum": "Минимум",
+  "Maximum": "Максимум"
 }
