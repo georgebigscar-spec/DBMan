@@ -1793,3 +1793,73 @@ fn column_profile() {
     let p = h.state_mut().active_data_view().unwrap().profile.as_ref().unwrap().result.ready().cloned().unwrap();
     assert_eq!(p.rows, 1 + 49);
 }
+
+/// A pivot table of a console result: cities down, months across, totals summed.
+#[test]
+fn pivot_of_a_result() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    let db_path = sample_db(dir.path());
+    let c = rusqlite::Connection::open(&db_path).unwrap();
+    c.execute_batch(
+        "INSERT INTO orders (customer_id, total, created_at) VALUES
+           (3, 80, '2026-09-12 10:00:00'), (3, 20, '2026-10-20 10:00:00'),
+           (2, 55, '2026-09-30 12:00:00'), (1, 9.5, '2026-08-01 08:00:00');",
+    )
+    .unwrap();
+    drop(c);
+    cfg.database = db_path;
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 1000.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenConsole(id, None), &ctx);
+    settle(&mut h);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text(
+        "SELECT c.city, strftime('%Y-%m', o.created_at) AS month, o.total\nFROM orders o JOIN customers c ON c.id = o.customer_id;",
+    );
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    settle(&mut h);
+
+    // It opens with the cities down and the totals summed.
+    click(&mut h, "Pivot");
+    let spec = h.state_mut().active_console_mut().unwrap().pivot_mut().cloned().unwrap();
+    assert_eq!((spec.rows.clone(), spec.column, spec.value), (vec![0], None, Some(2)));
+    // Months across.
+    h.state_mut().active_console_mut().unwrap().pivot_mut().unwrap().column = Some(1);
+    settle(&mut h);
+    for label in ["2026-08", "2026-09", "2026-10", "Lisbon", "Total"] {
+        assert!(h.query_all_by_label(label).next().is_some(), "{label}");
+    }
+    let spec = h.state_mut().active_console_mut().unwrap().pivot_mut().cloned().unwrap();
+    let result = h.state_mut().active_console_mut().unwrap().shown_result().cloned().unwrap();
+    let table = dbman_core::pivot::compute(&result, &spec);
+    let lisbon = table.rows.iter().find(|r| r[0] == "Lisbon").unwrap();
+    assert_eq!(lisbon, &["Lisbon", "", "80", "20", "100"]);
+    assert_eq!(table.rows.last().unwrap().last().unwrap(), "652.42");
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "pivot");
+
+    // Counting orders instead, then back to the table.
+    h.state_mut().active_console_mut().unwrap().pivot_mut().unwrap().value = None;
+    settle(&mut h);
+    let spec = h.state_mut().active_console_mut().unwrap().pivot_mut().cloned().unwrap();
+    let table = dbman_core::pivot::compute(&result, &spec);
+    assert_eq!(table.rows.last().unwrap().last().unwrap(), "8");
+    click(&mut h, "Table");
+    assert!(h.state_mut().active_console_mut().unwrap().pivot_mut().is_none());
+}

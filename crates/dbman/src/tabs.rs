@@ -26,6 +26,7 @@ use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
 use crate::keys_view::KeysView;
+use crate::pivot_view;
 use crate::search_view::SearchView;
 use crate::sessions_view::SessionsView;
 use crate::sql_editor;
@@ -35,6 +36,7 @@ use crate::value_panel::ValuePanel;
 use dbman_core::chart::{self, ChartSpec};
 use dbman_core::explain::{self, Plan, PlanNode};
 use dbman_core::params;
+use dbman_core::pivot::{self, PivotSpec};
 
 pub struct Tab {
     pub id: TabId,
@@ -193,6 +195,8 @@ pub struct Output {
     pub plan: Option<Plan>,
     /// The result shown as a chart instead of the table.
     pub chart: Option<ChartSpec>,
+    /// The result shown as a pivot table instead.
+    pub pivot: Option<PivotSpec>,
 }
 
 /// Work a console starts once its session is open.
@@ -402,6 +406,16 @@ impl Console {
         history.find(self.cfg.id, &self.history_search).take(HISTORY_SHOWN).map(|e| e.sql.as_str()).collect()
     }
 
+    /// The rows of the shown result, if it has any.
+    pub fn shown_result(&self) -> Option<&dbman_core::QueryResult> {
+        Some(&self.outputs.get(self.shown_output)?.grid.as_ref()?.result)
+    }
+
+    /// The pivot table of the shown result, when it is shown as one.
+    pub fn pivot_mut(&mut self) -> Option<&mut PivotSpec> {
+        self.outputs.get_mut(self.shown_output)?.pivot.as_mut()
+    }
+
     /// The chart of the shown result, when it is shown as one.
     pub fn chart_mut(&mut self) -> Option<&mut ChartSpec> {
         self.outputs.get_mut(self.shown_output)?.chart.as_mut()
@@ -434,6 +448,7 @@ impl Console {
                         grid: None,
                         plan: None,
                         chart: None,
+                        pivot: None,
                     }];
                 }
             }
@@ -479,6 +494,7 @@ impl Console {
                     grid,
                     plan: None,
                     chart: None,
+                    pivot: None,
                 });
                 // Show the newest result set, or the error.
                 if has_grid || error.is_some() {
@@ -498,6 +514,7 @@ impl Console {
                     grid: None,
                     plan: None,
                     chart: None,
+                    pivot: None,
                 });
                 self.shown_output = self.outputs.len() - 1;
             }
@@ -515,7 +532,16 @@ impl Console {
                     Err(e) if cancelled => (tr("cancelled").into(), Some(e.message), None),
                     Err(e) => (tr("failed").into(), Some(e.message), None),
                 };
-                self.outputs.push(Output { sql, summary, cancelled, error, grid: None, plan, chart: None });
+                self.outputs.push(Output {
+                    sql,
+                    summary,
+                    cancelled,
+                    error,
+                    grid: None,
+                    plan,
+                    chart: None,
+                    pivot: None,
+                });
                 self.shown_output = self.outputs.len() - 1;
             }
             _ => {}
@@ -1160,25 +1186,37 @@ impl Console {
         }
         if let Some(g) = &mut o.grid {
             let chartable = chart::default_spec(&g.result);
+            if chartable.is_none() {
+                o.chart = None;
+            }
             ui.horizontal(|ui| {
-                if let Some(spec) = &chartable {
-                    let mut view = usize::from(o.chart.is_some());
-                    if toggle_group(ui, &mut view, &[tr("Table"), tr("Chart")]).changed() {
-                        o.chart = (view == 1).then(|| spec.clone());
-                    }
-                    ui.add_space(8.0);
+                // Table, Chart (when there are numbers to plot) and Pivot.
+                let mut modes = vec![tr("Table")];
+                if chartable.is_some() {
+                    modes.push(tr("Chart"));
                 }
+                modes.push(tr("Pivot"));
+                let pivot_mode = modes.len() - 1;
+                let mut view = if o.pivot.is_some() { pivot_mode } else { usize::from(o.chart.is_some()) };
+                if toggle_group(ui, &mut view, &modes).changed() {
+                    o.chart = chartable.clone().filter(|_| view == 1 && view != pivot_mode);
+                    o.pivot = (view == pivot_mode).then(|| pivot::default_spec(&g.result));
+                }
+                ui.add_space(8.0);
                 if grid::export_menu(ui, &g.result, self.cfg.kind, None, true) {
                     let source = ExportSource::Query { database: self.database.clone(), sql: o.sql.clone() };
                     actions.push(Action::ExportData(conn, source));
                 }
-                if o.chart.is_none() {
+                if o.chart.is_none() && o.pivot.is_none() {
                     grid::value_button(ui, &mut self.value.open);
                 }
             });
             ui.add_space(4.0);
-            if chartable.is_none() {
-                o.chart = None;
+            if let Some(spec) = &mut o.pivot {
+                pivot_view::controls(ui, &g.result, spec);
+                ui.add_space(6.0);
+                pivot_view::show(ui, egui::Id::new(("console-pivot", tab, self.shown_output)), &g.result, spec);
+                return;
             }
             if let Some(spec) = &mut o.chart {
                 chart_view::controls(ui, &g.result, spec);

@@ -94,6 +94,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **Charts**: a result with a column of numbers switches from `Table` to `Chart` above it. Bars, lines or a pie; the X axis (or the slices) is a column of your choice, the first text column by default, and every numeric column can be turned on and off as a series. The pointer shows the values under it. Charts draw the first 1000 rows; a pie sums the values per slice and puts the ones past the 11 largest into `Other`.
 
 ![Chart](crates/dbman/tests/snapshots/chart.png)
+- **Pivot tables**: `Pivot` above a result groups its rows by one or two columns (`Rows`), spreads the values of another column across (`Columns`, up to 50), and fills each cell with the count of rows or the count of distinct values, sum, average, minimum or maximum of a column (`Value`). Totals end each row and column. It works on the rows fetched, without another query, so it suits any result, including ones from joins and functions. Values that are not numbers are skipped by the sums and averages.
+
+![Pivot table](crates/dbman/tests/snapshots/pivot.png)
 
 - **Query parameters**: `:name`, `${name}` and, on MySQL, SQL Server, SQLite and DuckDB, `?` in a statement are asked for before it runs (`?` is an operator in PostgreSQL and ClickHouse). Strings, comments, `::` casts and ClickHouse's `{name:Type}` are left alone. The dialog shows the statement with the values in place; they go in as written, so text needs quotes (`'Berlin'`) and `NULL` means none. Values are remembered by name for the next time, and `Explain` asks for them too.
 
