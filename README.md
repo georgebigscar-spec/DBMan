@@ -117,6 +117,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **Value panel**: `Value` above a result grid or table data opens a panel with the whole value of the clicked cell (a double click in console results opens it too). JSON objects and arrays are indented, XML gets one element per line, long text wraps, and bytes are shown as a hex dump with offsets and ASCII. PNG, JPEG, GIF, BMP and WebP images are recognized by their first bytes and drawn above the dump. The panel names the column, its type, the row and the size, and `Copy` copies the value as it is. Values over 1 MB are cut for display.
 
 ![Value panel](crates/dbman/tests/snapshots/value_panel.png)
+  - **JSON tree**: a JSON object or array opens as a tree (`Tree`; `Text` shows it indented), with its top two levels open, the size of each object and array, and strings, numbers and booleans in their own colors. The search box finds keys and values, ignoring case, opens the branches down to them and marks them. A node's menu copies its path (`$.items[1].sku`) or value. In table data a double-click (or `Edit` in the menu) edits a value in place: Enter writes the whole document back to the cell, to be sent with `Submit`, and Escape cancels. A value keeps its type: a string takes the text as typed, a number must be a number, a boolean `true` or `false`, and `null` takes any JSON.
+
+![JSON tree](crates/dbman/tests/snapshots/json_tree.png)
 - **Selected cells**: Ctrl+click adds or removes cells and Shift+click selects the rectangle between two cells, in the order the rows are shown. With more than one cell selected, a line under the grid shows the count, the NULLs, and for numbers the sum, average, minimum and maximum. `Copy` or Ctrl+C copies the selection as tab-separated text.
 
 ![Selected cells](crates/dbman/tests/snapshots/selection_stats.png)
