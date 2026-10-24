@@ -144,7 +144,12 @@ fn pie(rows: &[Vec<Cell>], spec: &ChartSpec, name: &str) -> ChartData {
 
 /// About `count` round values from `lo` to `hi` for an axis: steps of 1, 2 or 5 times a power of ten.
 pub fn ticks(lo: f64, hi: f64, count: usize) -> Vec<f64> {
-    let (lo, hi) = if hi > lo { (lo, hi) } else { (lo - 1.0, lo + 1.0) };
+    let (lo, hi) = match () {
+        _ if hi > lo => (lo, hi),
+        // All zeros: an axis from 0 to 1 rather than one going below zero.
+        _ if lo == 0.0 => (0.0, 1.0),
+        _ => (lo - 1.0, lo + 1.0),
+    };
     let raw = (hi - lo) / count.max(1) as f64;
     let power = 10f64.powf(raw.log10().floor());
     let step = [1.0, 2.0, 5.0, 10.0].into_iter().map(|m| m * power).find(|s| *s >= raw).unwrap_or(10.0 * power);
@@ -232,7 +237,8 @@ mod tests {
         assert_eq!(ticks(0.0, 120.5, 5), [0.0, 50.0, 100.0, 150.0]);
         assert_eq!(ticks(0.0, 1.0, 4), [0.0, 0.5, 1.0]);
         assert_eq!(ticks(-30.0, 0.0, 3), [-30.0, -20.0, -10.0, 0.0]);
-        assert_eq!(ticks(0.0, 0.0, 4), [-1.0, -0.5, 0.0, 0.5, 1.0]);
+        assert_eq!(ticks(0.0, 0.0, 4), [0.0, 0.5, 1.0]);
+        assert_eq!(ticks(5.0, 5.0, 4), [4.0, 4.5, 5.0, 5.5, 6.0]);
         assert_eq!(short_number(1500.0), "1500");
         assert_eq!(short_number(25_000.0), "25k");
         assert_eq!(short_number(2_500_000.0), "2.5M");

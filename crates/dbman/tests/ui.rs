@@ -1956,3 +1956,77 @@ fn json_tree_in_value_panel() {
     click(&mut h, "Text");
     assert!(h.state_mut().active_data_view().unwrap().value_panel_mut().json_text);
 }
+
+/// The dashboard of a PostgreSQL server (needs `DBMAN_TEST_POSTGRES`):
+/// readings every second, their charts, and the largest tables.
+#[test]
+fn server_dashboard() {
+    let Some(url) = std::env::var("DBMAN_TEST_POSTGRES").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("DBMAN_TEST_POSTGRES not set, skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+    let (auth, addr) = rest.rsplit_once('@').unwrap();
+    let (user, password) = auth.split_once(':').unwrap();
+    let (hostport, db) = addr.split_once('/').unwrap();
+    let (host, port) = hostport.split_once(':').unwrap();
+    let mut cfg = ConnectionConfig::new(DbKind::Postgres);
+    cfg.name = "local".into();
+    cfg.host = host.into();
+    cfg.port = port.parse().unwrap();
+    cfg.user = user.into();
+    cfg.password = password.into();
+    cfg.database = db.into();
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let id = cfg.id;
+    // A table big enough to lead the list of the largest.
+    let other = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let c = other.block_on(dbman_drivers::connect(&cfg)).unwrap();
+    for sql in [
+        "DROP TABLE IF EXISTS dashboard_big",
+        "CREATE TABLE dashboard_big AS SELECT g AS id, md5(g::text) AS v FROM generate_series(1, 20000) g",
+        "ANALYZE dashboard_big",
+    ] {
+        other.block_on(c.execute(None, sql, 0)).unwrap();
+    }
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 900.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenDashboard(id), &ctx);
+    for _ in 0..30 {
+        settle(&mut h);
+        let d = h.state_mut().active_dashboard().unwrap();
+        if d.samples().len() >= 3 && d.tables().is_some() {
+            break;
+        }
+    }
+    assert_eq!(h.state().tab_titles(), ["Dashboard"]);
+    let d = h.state_mut().active_dashboard().unwrap();
+    let samples: Vec<_> = d.samples().into_iter().cloned().collect();
+    assert!(samples.len() >= 3, "{samples:?}");
+    let last = samples.last().unwrap();
+    assert!(last.connections.unwrap() >= 2.0, "{last:?}");
+    assert!(last.total_queries.unwrap() > 0.0 && last.size.unwrap() > 0.0, "{last:?}");
+    let tables = d.tables().unwrap();
+    assert!(tables.rows.iter().any(|r| r[0].display().ends_with("dashboard_big")), "{:?}", tables.rows);
+    // Stopped, the readings stay as they are.
+    d.live = false;
+    let n = d.samples().len();
+    settle(&mut h);
+    settle(&mut h);
+    assert_eq!(h.state_mut().active_dashboard().unwrap().samples().len(), n);
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "dashboard");
+    other.block_on(c.execute(None, "DROP TABLE dashboard_big", 0)).unwrap();
+}

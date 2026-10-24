@@ -18,6 +18,7 @@ use crate::admin_view::AdminView;
 use crate::chart_view;
 use crate::compare_view::CompareView;
 use crate::copy_view::CopyView;
+use crate::dashboard_view::DashboardView;
 use crate::data_view::DataView;
 use crate::er_view::ErView;
 use crate::events::{Event, EventSender, TabEvent, TabId, Tasks, timed};
@@ -56,6 +57,7 @@ pub enum TabKind {
     Admin(Box<AdminView>),
     Search(Box<SearchView>),
     Keys(Box<KeysView>),
+    Dashboard(Box<DashboardView>),
 }
 
 /// What a tab can reach while drawing.
@@ -90,6 +92,7 @@ impl Tab {
             TabKind::Admin(a) => a.title(),
             TabKind::Search(s) => s.title(),
             TabKind::Keys(k) => k.title(),
+            TabKind::Dashboard(d) => d.title(),
         }
     }
 
@@ -107,6 +110,7 @@ impl Tab {
             TabKind::Admin(a) => &a.database,
             TabKind::Search(s) => &s.database,
             TabKind::Keys(k) => &k.database,
+            TabKind::Dashboard(_) => "",
         };
         (!db.is_empty()).then_some(db)
     }
@@ -123,7 +127,8 @@ impl Tab {
             | TabKind::Sessions(_)
             | TabKind::Admin(_)
             | TabKind::Search(_)
-            | TabKind::Keys(_) => None,
+            | TabKind::Keys(_)
+            | TabKind::Dashboard(_) => None,
             TabKind::Copy(c) => c.only().map(str::to_owned),
         }
     }
@@ -142,6 +147,7 @@ impl Tab {
             TabKind::Admin(a) => a.on_event(ev, ctx),
             TabKind::Search(s) => s.on_event(ev),
             TabKind::Keys(k) => return k.on_event(ev),
+            TabKind::Dashboard(d) => d.on_event(ev),
         }
         Vec::new()
     }
@@ -160,6 +166,7 @@ impl Tab {
             TabKind::Admin(a) => a.ui(ui, id, cx),
             TabKind::Search(s) => s.ui(ui, id, cx),
             TabKind::Keys(k) => k.ui(ui, id, cx),
+            TabKind::Dashboard(d) => d.ui(ui, id, cx),
         }
     }
 }

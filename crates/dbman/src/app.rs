@@ -13,6 +13,7 @@ use crate::backup_dialog::{BackupDialog, BackupOutcome, Mode, StartJob};
 use crate::compare_view::CompareView;
 use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
 use crate::copy_view::CopyView;
+use crate::dashboard_view::DashboardView;
 use crate::data_view::DataView;
 use crate::er_view::ErView;
 use crate::events::{Event, JobEvent, TabId, Tasks};
@@ -148,7 +149,8 @@ impl DbManApp {
                     | TabKind::Copy(_)
                     | TabKind::Admin(_)
                     | TabKind::Search(_)
-                    | TabKind::Keys(_) => {
+                    | TabKind::Keys(_)
+                    | TabKind::Dashboard(_) => {
                         return None;
                     }
                 };
@@ -509,6 +511,14 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::Search(Box::new(SearchView::new(cfg, database, schema)))),
                 }
             }
+            Action::OpenDashboard(id) => {
+                let Some(c) = self.conn(id) else { return };
+                let (kind, product) = (c.cfg.kind, c.cfg.product);
+                match self.tabs.iter().find(|t| t.conn == id && matches!(t.kind, TabKind::Dashboard(_))) {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::Dashboard(Box::new(DashboardView::new(kind, product)))),
+                }
+            }
             Action::OpenKeys(id, database) => {
                 let Some(c) = self.conn(id) else { return };
                 let read_only = c.cfg.read_only;
@@ -819,6 +829,15 @@ impl DbManApp {
         let id = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
             TabKind::Search(s) => Some(s.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The dashboard on screen, if the active tab is one.
+    pub fn active_dashboard(&mut self) -> Option<&mut DashboardView> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::Dashboard(d) => Some(d.as_mut()),
             _ => None,
         }
     }
@@ -1182,6 +1201,7 @@ impl DbManApp {
                                         TabKind::Admin(_) => Icon::Key,
                                         TabKind::Search(_) => Icon::Search,
                                         TabKind::Keys(_) => Icon::Key,
+                                        TabKind::Dashboard(_) => Icon::Info,
                                     };
                                     let color = if active { t.foreground } else { t.muted_foreground };
                                     icons::icon(ui, icon, color);
