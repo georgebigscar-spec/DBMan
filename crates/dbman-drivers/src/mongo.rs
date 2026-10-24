@@ -28,7 +28,16 @@ pub struct MongoConnection {
     default_db: String,
 }
 
-fn err(e: impl std::fmt::Display) -> DbError {
+/// The server's own message for a failed command, else the error as the driver words it.
+fn err(e: impl std::fmt::Display + 'static) -> DbError {
+    use mongodb::error::{Error, ErrorKind};
+    if let Some(e) = (&e as &dyn std::any::Any).downcast_ref::<Error>() {
+        match e.kind.as_ref() {
+            ErrorKind::Command(c) => return DbError::new(format!("{} ({})", c.message, c.code_name)),
+            ErrorKind::Write(mongodb::error::WriteFailure::WriteError(w)) => return DbError::new(w.message.clone()),
+            _ => {}
+        }
+    }
     DbError::from_display(e)
 }
 

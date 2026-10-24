@@ -117,6 +117,7 @@ pub enum TabEvent {
     Dashboard(Box<crate::dashboard_view::DashboardEvent>),
     /// News for a MongoDB documents tab.
     Documents(Box<crate::documents_view::DocumentsEvent>),
+    Pipeline(Box<crate::pipeline_view::PipelineEvent>),
     /// The rows of a query builder's query.
     Builder(DbResult<dbman_core::QueryResult>),
     /// The profile of a data view's column.

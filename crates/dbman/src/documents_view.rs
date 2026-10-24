@@ -325,6 +325,10 @@ impl DocumentsView {
                     self.confirm_delete = selected;
                 }
             }
+            if toolbar_button(ui, tr("Aggregate")).clicked() {
+                let filter = Some(self.filter.clone()).filter(|f| !f.trim().is_empty());
+                cx.actions.push(Action::OpenPipeline(cx.conn_id, self.object.clone(), filter));
+            }
             if toolbar_button(ui, tr("Open in console")).clicked() {
                 let db = Some(self.object.path.database.clone());
                 cx.actions.push(Action::OpenConsoleWith(cx.conn_id, db, self.statement()));

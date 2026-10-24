@@ -5,6 +5,7 @@
 //! added by implementing [`Connection`] in `dbman-drivers` (or any other crate).
 
 pub mod admin;
+pub mod aggregation;
 pub mod backup;
 pub mod chart;
 pub mod compare;

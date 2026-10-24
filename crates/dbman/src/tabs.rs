@@ -28,6 +28,7 @@ use crate::files::{self, PendingPath, Pick};
 use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
 use crate::keys_view::KeysView;
+use crate::pipeline_view::PipelineView;
 use crate::pivot_view;
 use crate::query_builder_view::QueryBuilderView;
 use crate::search_view::SearchView;
@@ -62,6 +63,7 @@ pub enum TabKind {
     Dashboard(Box<DashboardView>),
     QueryBuilder(Box<QueryBuilderView>),
     Documents(Box<DocumentsView>),
+    Pipeline(Box<PipelineView>),
 }
 
 /// What a tab can reach while drawing.
@@ -97,6 +99,7 @@ impl Tab {
             TabKind::Search(s) => s.title(),
             TabKind::Keys(k) => k.title(),
             TabKind::Documents(d) => d.title(),
+            TabKind::Pipeline(p) => p.title(),
             TabKind::Dashboard(d) => d.title(),
             TabKind::QueryBuilder(b) => b.title(),
         }
@@ -117,6 +120,7 @@ impl Tab {
             TabKind::Search(s) => &s.database,
             TabKind::Keys(k) => &k.database,
             TabKind::Documents(d) => &d.object.path.database,
+            TabKind::Pipeline(p) => &p.object.path.database,
             TabKind::Dashboard(_) => "",
             TabKind::QueryBuilder(b) => &b.database,
         };
@@ -129,6 +133,7 @@ impl Tab {
             TabKind::Console(c) => Some(c.title()),
             TabKind::Data(d) => Some(d.object.path.name.clone()),
             TabKind::Documents(d) => Some(d.object.path.name.clone()),
+            TabKind::Pipeline(p) => Some(p.object.path.name.clone()),
             TabKind::Object(o) => Some(o.object.path.name.clone()),
             TabKind::TableEditor(e) => e.table().map(str::to_owned),
             TabKind::Diagram(_)
@@ -158,6 +163,7 @@ impl Tab {
             TabKind::Search(s) => s.on_event(ev),
             TabKind::Keys(k) => return k.on_event(ev),
             TabKind::Documents(d) => d.on_event(ev, ctx),
+            TabKind::Pipeline(p) => p.on_event(ev),
             TabKind::Dashboard(d) => d.on_event(ev),
             TabKind::QueryBuilder(b) => b.on_event(ev),
         }
@@ -179,6 +185,7 @@ impl Tab {
             TabKind::Search(s) => s.ui(ui, id, cx),
             TabKind::Keys(k) => k.ui(ui, id, cx),
             TabKind::Documents(d) => d.ui(ui, id, cx),
+            TabKind::Pipeline(p) => p.ui(ui, id, cx),
             TabKind::Dashboard(d) => d.ui(ui, id, cx),
             TabKind::QueryBuilder(b) => b.ui(ui, id, cx),
         }

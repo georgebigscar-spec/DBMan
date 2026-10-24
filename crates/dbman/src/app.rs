@@ -25,6 +25,7 @@ use crate::icons::{self, Icon};
 use crate::jobs::{JobState, Jobs};
 use crate::keys_view::KeysView;
 use crate::palette::{self, Pick};
+use crate::pipeline_view::PipelineView;
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
 use crate::query_builder_view::QueryBuilderView;
 use crate::search_view::SearchView;
@@ -153,6 +154,7 @@ impl DbManApp {
                     | TabKind::Search(_)
                     | TabKind::Keys(_)
                     | TabKind::Documents(_)
+                    | TabKind::Pipeline(_)
                     | TabKind::Dashboard(_)
                     | TabKind::QueryBuilder(_) => {
                         return None;
@@ -546,6 +548,12 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::QueryBuilder(Box::new(QueryBuilderView::new(kind, db, schema)))),
                 }
             }
+            Action::OpenPipeline(id, object, filter) => {
+                if self.conn(id).is_none() {
+                    return;
+                }
+                self.add_tab(id, TabKind::Pipeline(Box::new(PipelineView::new(object, filter))));
+            }
             Action::OpenKeys(id, database) => {
                 let Some(c) = self.conn(id) else { return };
                 let read_only = c.cfg.read_only;
@@ -883,6 +891,15 @@ impl DbManApp {
         let id = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
             TabKind::Documents(d) => Some(d.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The pipeline builder on screen, if the active tab is one.
+    pub fn active_pipeline(&mut self) -> Option<&mut PipelineView> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::Pipeline(p) => Some(p.as_mut()),
             _ => None,
         }
     }
@@ -1247,6 +1264,7 @@ impl DbManApp {
                                         TabKind::Search(_) => Icon::Search,
                                         TabKind::Keys(_) => Icon::Key,
                                         TabKind::Documents(_) => Icon::Table,
+                                        TabKind::Pipeline(_) => Icon::Function,
                                         TabKind::Dashboard(_) => Icon::Info,
                                         TabKind::QueryBuilder(_) => Icon::ForeignKey,
                                     };

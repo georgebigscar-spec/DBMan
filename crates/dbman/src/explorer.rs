@@ -240,6 +240,9 @@ pub enum Action {
     OpenQueryBuilder(Uuid, String, String),
     /// Opens the keys of a Redis database.
     OpenKeys(Uuid, String),
+    /// Opens the aggregation pipeline builder of a MongoDB collection, with
+    /// a first `$match` on a filter.
+    OpenPipeline(Uuid, DbObject, Option<String>),
     /// Opens a table's data with a `WHERE` filter already set.
     OpenDataFiltered(Uuid, DbObject, String),
     /// Opens the users, roles and privileges.
@@ -831,6 +834,12 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         }
         if menu_item(ui, tr("Structure & DDL"), None).clicked() {
             actions.push(Action::OpenObject(id, o.clone()));
+        }
+        if c.cfg.kind == DbKind::MongoDb
+            && o.kind.has_data()
+            && menu_item(ui, tr("Aggregation pipeline"), None).clicked()
+        {
+            actions.push(Action::OpenPipeline(id, o.clone(), None));
         }
         if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Edit table…"), None).clicked() {
             actions.push(Action::EditTable(id, o.path.clone()));
