@@ -29,6 +29,7 @@ pub mod params;
 pub mod paste;
 pub mod pivot;
 pub mod profile;
+pub mod query_builder;
 pub mod redis;
 mod result;
 mod schema;

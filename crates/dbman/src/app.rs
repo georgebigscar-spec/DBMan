@@ -25,6 +25,7 @@ use crate::jobs::{JobState, Jobs};
 use crate::keys_view::KeysView;
 use crate::palette::{self, Pick};
 use crate::prompt::{Prompt, PromptKind, PromptOutcome};
+use crate::query_builder_view::QueryBuilderView;
 use crate::search_view::SearchView;
 use crate::sessions_view::SessionsView;
 use crate::store::{History, SavedTab, Settings, Workspace};
@@ -150,7 +151,8 @@ impl DbManApp {
                     | TabKind::Admin(_)
                     | TabKind::Search(_)
                     | TabKind::Keys(_)
-                    | TabKind::Dashboard(_) => {
+                    | TabKind::Dashboard(_)
+                    | TabKind::QueryBuilder(_) => {
                         return None;
                     }
                 };
@@ -519,6 +521,18 @@ impl DbManApp {
                     None => self.add_tab(id, TabKind::Dashboard(Box::new(DashboardView::new(kind, product)))),
                 }
             }
+            Action::OpenQueryBuilder(id, db, schema) => {
+                let Some(c) = self.conn(id) else { return };
+                let kind = c.cfg.kind;
+                let existing = self.tabs.iter().find(|t| {
+                    t.conn == id
+                        && matches!(&t.kind, TabKind::QueryBuilder(b) if b.database == db && b.schema == schema)
+                });
+                match existing {
+                    Some(t) => self.active = Some(t.id),
+                    None => self.add_tab(id, TabKind::QueryBuilder(Box::new(QueryBuilderView::new(kind, db, schema)))),
+                }
+            }
             Action::OpenKeys(id, database) => {
                 let Some(c) = self.conn(id) else { return };
                 let read_only = c.cfg.read_only;
@@ -838,6 +852,15 @@ impl DbManApp {
         let id = self.active?;
         match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
             TabKind::Dashboard(d) => Some(d.as_mut()),
+            _ => None,
+        }
+    }
+
+    /// The query builder on screen, if the active tab is one.
+    pub fn active_query_builder(&mut self) -> Option<&mut QueryBuilderView> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::QueryBuilder(b) => Some(b.as_mut()),
             _ => None,
         }
     }
@@ -1202,6 +1225,7 @@ impl DbManApp {
                                         TabKind::Search(_) => Icon::Search,
                                         TabKind::Keys(_) => Icon::Key,
                                         TabKind::Dashboard(_) => Icon::Info,
+                                        TabKind::QueryBuilder(_) => Icon::ForeignKey,
                                     };
                                     let color = if active { t.foreground } else { t.muted_foreground };
                                     icons::icon(ui, icon, color);

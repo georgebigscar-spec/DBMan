@@ -2030,3 +2030,72 @@ fn server_dashboard() {
     snapshot(&mut h, "dashboard");
     other.block_on(c.execute(None, "DROP TABLE dashboard_big", 0)).unwrap();
 }
+
+#[test]
+fn visual_query_builder() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    cfg.database = sample_db(dir.path());
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 900.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenQueryBuilder(id, "main".into(), "main".into()), &ctx);
+    settle(&mut h);
+    assert_eq!(h.state().tab_titles(), ["main (query builder)"]);
+
+    // Two tables from the list, joined on their foreign key.
+    click_last(&mut h, "customers");
+    click_last(&mut h, "orders");
+    settle(&mut h);
+    let b = h.state_mut().active_query_builder().unwrap();
+    let names: Vec<&str> = b.query().tables.iter().map(|t| t.alias.as_str()).collect();
+    assert_eq!(names, ["customers", "orders"]);
+    assert_eq!(b.query().joins.len(), 1);
+
+    // A click on a column puts it in the result.
+    let pos = b.column_pos(0, "name");
+    h.event(egui::Event::PointerMoved(pos));
+    h.run_steps(2);
+    for pressed in [true, false] {
+        let button = egui::PointerButton::Primary;
+        h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+    }
+    settle(&mut h);
+    let b = h.state_mut().active_query_builder().unwrap();
+    assert!(b.query().is_output(0, "name"), "{:?}", b.query().outputs);
+
+    // Total spent per customer, the biggest first.
+    let q = b.query_mut();
+    q.toggle_output(1, "total");
+    q.outputs[1].agg = Some(dbman_core::pivot::Agg::Sum);
+    q.outputs[1].alias = "spent".into();
+    q.outputs[1].sort = dbman_core::query_builder::Sort::Desc;
+    let sql = b.sql();
+    assert!(sql.contains("SUM(\"orders\".\"total\") AS \"spent\""), "{sql}");
+    assert!(sql.contains("GROUP BY \"customers\".\"name\""), "{sql}");
+    settle(&mut h);
+    click(&mut h, "▶ Run");
+    settle(&mut h);
+    let r = h.state_mut().active_query_builder().unwrap().result().cloned().expect("query ran");
+    let rows: Vec<(String, f64)> =
+        r.rows.iter().map(|row| (row[0].display().into_owned(), row[1].display().parse().unwrap())).collect();
+    assert_eq!(rows, [("Bob".into(), 310.0), ("Alice".into(), 135.5), ("Dmitry".into(), 42.42)]);
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "query_builder");
+
+    click(&mut h, "Open in console");
+    assert_eq!(h.state().tab_titles().len(), 2);
+}

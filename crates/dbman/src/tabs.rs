@@ -28,6 +28,7 @@ use crate::grid::{self, Grid};
 use crate::i18n::{tr, trf};
 use crate::keys_view::KeysView;
 use crate::pivot_view;
+use crate::query_builder_view::QueryBuilderView;
 use crate::search_view::SearchView;
 use crate::sessions_view::SessionsView;
 use crate::sql_editor;
@@ -58,6 +59,7 @@ pub enum TabKind {
     Search(Box<SearchView>),
     Keys(Box<KeysView>),
     Dashboard(Box<DashboardView>),
+    QueryBuilder(Box<QueryBuilderView>),
 }
 
 /// What a tab can reach while drawing.
@@ -93,6 +95,7 @@ impl Tab {
             TabKind::Search(s) => s.title(),
             TabKind::Keys(k) => k.title(),
             TabKind::Dashboard(d) => d.title(),
+            TabKind::QueryBuilder(b) => b.title(),
         }
     }
 
@@ -111,6 +114,7 @@ impl Tab {
             TabKind::Search(s) => &s.database,
             TabKind::Keys(k) => &k.database,
             TabKind::Dashboard(_) => "",
+            TabKind::QueryBuilder(b) => &b.database,
         };
         (!db.is_empty()).then_some(db)
     }
@@ -128,7 +132,8 @@ impl Tab {
             | TabKind::Admin(_)
             | TabKind::Search(_)
             | TabKind::Keys(_)
-            | TabKind::Dashboard(_) => None,
+            | TabKind::Dashboard(_)
+            | TabKind::QueryBuilder(_) => None,
             TabKind::Copy(c) => c.only().map(str::to_owned),
         }
     }
@@ -148,6 +153,7 @@ impl Tab {
             TabKind::Search(s) => s.on_event(ev),
             TabKind::Keys(k) => return k.on_event(ev),
             TabKind::Dashboard(d) => d.on_event(ev),
+            TabKind::QueryBuilder(b) => b.on_event(ev),
         }
         Vec::new()
     }
@@ -167,6 +173,7 @@ impl Tab {
             TabKind::Search(s) => s.ui(ui, id, cx),
             TabKind::Keys(k) => k.ui(ui, id, cx),
             TabKind::Dashboard(d) => d.ui(ui, id, cx),
+            TabKind::QueryBuilder(b) => b.ui(ui, id, cx),
         }
     }
 }

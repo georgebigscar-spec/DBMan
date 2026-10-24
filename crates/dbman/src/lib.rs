@@ -25,6 +25,7 @@ pub mod palette;
 pub mod pivot_view;
 pub mod profile_view;
 pub mod prompt;
+pub mod query_builder_view;
 pub mod search_view;
 pub mod sessions_view;
 pub mod sql_editor;
