@@ -236,6 +236,8 @@ pub enum Action {
     OpenSearch(Uuid, String, Option<String>),
     /// Opens the server dashboard.
     OpenDashboard(Uuid),
+    /// Opens the visual query builder of a schema (database, schema).
+    OpenQueryBuilder(Uuid, String, String),
     /// Opens the keys of a Redis database.
     OpenKeys(Uuid, String),
     /// Opens a table's data with a `WHERE` filter already set.
@@ -516,6 +518,9 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
                 if menu_item(ui, tr("ER diagram"), None).clicked() {
                     actions.push(Action::OpenDiagram(id, db.clone(), db.clone()));
                 }
+                if menu_item(ui, tr("Query builder"), None).clicked() {
+                    actions.push(Action::OpenQueryBuilder(id, db.clone(), db.clone()));
+                }
                 if menu_item(ui, tr("Compare with…"), None).clicked() {
                     actions.push(Action::OpenCompare(id, db.clone(), db.clone()));
                 }
@@ -607,6 +612,9 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
             new_object_items(ui, c, db, s, actions);
             if menu_item(ui, tr("ER diagram"), None).clicked() {
                 actions.push(Action::OpenDiagram(id, db.to_string(), s.clone()));
+            }
+            if menu_item(ui, tr("Query builder"), None).clicked() {
+                actions.push(Action::OpenQueryBuilder(id, db.to_string(), s.clone()));
             }
             if menu_item(ui, tr("Compare with…"), None).clicked() {
                 actions.push(Action::OpenCompare(id, db.to_string(), s.clone()));

@@ -115,6 +115,8 @@ pub enum TabEvent {
     Admin(Box<crate::admin_view::AdminEvent>),
     Keys(Box<crate::keys_view::KeysEvent>),
     Dashboard(Box<crate::dashboard_view::DashboardEvent>),
+    /// The rows of a query builder's query.
+    Builder(DbResult<dbman_core::QueryResult>),
     /// The profile of a data view's column.
     Profile(String, DbResult<dbman_core::profile::Profile>),
     /// Lists for a target picker.

@@ -167,6 +167,12 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - `Fit` shows everything, and `Keys only` keeps only key columns. Search finds a table and highlights its links, and a double click opens its data.
   - Export to SVG, Mermaid (`erDiagram`) or Graphviz DOT, to a file or the clipboard.
   - The structure is read in a separate session, with progress.
+- **Query builder** (`Query builder` in the schema menu, or the database menu on engines without schemas): a query put together with the mouse.
+  - Drag tables from the list onto the canvas, or click them. A table that references one already there (or is referenced by it) is joined on that foreign key; drag a column onto a column of another table to join them by hand. The badge on a join line switches it between inner, left, right and full.
+  - Click columns to put them in the result. Below, `Columns` sets an aggregate (count, count distinct, sum, average, minimum, maximum; the other columns become the `GROUP BY`), a name in the result, the sort and the order; `Filters` adds conditions (`=`, `<>`, `<`, `LIKE`, `IN`, `IS NULL`…); `Joins` lists the joins with their kind.
+  - `Distinct rows` and `Limit` (`TOP` on SQL Server) in the toolbar. The SQL is shown as it changes; `Run` shows the first 200 rows here, `Open in console` and `Copy SQL` take it further.
+
+![Query builder](crates/dbman/tests/snapshots/query_builder.png)
 - **Schema and data comparison** (`Compare with…` in the schema menu, or the database menu on engines without schemas). The source is compared with a schema on any connection, on the same engine or another server.
   - `Structure` tab: compares the objects themselves.
     - Tables are compared by columns (type, `NULL`, default, auto-increment, comment), primary key, indexes and foreign keys. Views, procedures, functions, triggers, sequences and types are compared by definition.
@@ -339,6 +345,7 @@ crates/
   | SQL editor | `sql_editor.rs` | |
   | Connection dialog | `connection_dialog.rs` | |
   | ER diagram | `er_view.rs` | model, layout and export in `dbman-core::er` |
+  | Query builder | `query_builder_view.rs` | the query and its SQL in `dbman-core::query_builder` |
   | Schema and data comparison | `compare_view.rs` | comparison and scripts in `dbman-core::compare`, reading and running in `dbman-drivers::compare` |
   | Copying between connections | `copy_view.rs` | type and value mapping in `dbman-core::copy`, the copy itself in `dbman-drivers::copy` |
   | Test data dialog | `generate_dialog.rs` | generators in `dbman-core::generate`, inserting in `dbman-drivers::generate` |
