@@ -1863,3 +1863,96 @@ fn pivot_of_a_result() {
     click(&mut h, "Table");
     assert!(h.state_mut().active_console_mut().unwrap().pivot_mut().is_none());
 }
+
+/// Double-clicks like a mouse does: two presses and releases in a row (the
+/// harness's steps must be short enough for egui to count them as one).
+fn double_click(h: &mut Harness<'_, DbManApp>, label: &str) {
+    let pos = h.get_all_by_label(label).next().unwrap_or_else(|| panic!("no node {label}")).rect().center();
+    h.event(egui::Event::PointerMoved(pos));
+    h.run_steps(1);
+    for pressed in [true, false, true, false] {
+        let button = egui::PointerButton::Primary;
+        h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    settle(h);
+}
+
+/// A JSON value as a tree in the value panel: found by a search and edited in place.
+#[test]
+fn json_tree_in_value_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    let db_path = sample_db(dir.path());
+    let c = rusqlite::Connection::open(&db_path).unwrap();
+    c.execute_batch(
+        r#"CREATE TABLE events (id INTEGER PRIMARY KEY, payload TEXT);
+           INSERT INTO events (payload) VALUES
+             ('{"user":{"name":"Alice","age":36,"tags":["admin","berlin"]},"items":[{"sku":"A-1","qty":2},{"sku":"B-7","qty":1}],"paid":true}');"#,
+    )
+    .unwrap();
+    drop(c);
+    cfg.database = db_path.clone();
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    // Short steps, so two clicks are close enough to make a double-click.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 1000.0))
+        .with_step_dt(0.05)
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let events = DbObject {
+        kind: ObjectKind::Table,
+        path: ObjectPath::new("main", "main", "events"),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(id, events), &ctx);
+    settle(&mut h);
+    let cell = h.get_all_by_label_contains("\"user\"").next().unwrap().rect().center();
+    h.event(egui::Event::PointerMoved(cell));
+    h.run_steps(1);
+    for pressed in [true, false] {
+        let button = egui::PointerButton::Primary;
+        h.event(egui::Event::PointerButton { pos: cell, button, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    settle(&mut h);
+    click(&mut h, "Value");
+
+    // The tree: the top levels open, deeper ones closed.
+    assert!(h.query_by_label("user  {3}").is_some());
+    assert!(h.query_by_label("\"Alice\"").is_some());
+    assert!(h.query_by_label("\"A-1\"").is_none(), "items[0] starts closed");
+    // A search opens the way to what it finds.
+    h.state_mut().active_data_view().unwrap().value_panel_mut().search = "b-7".into();
+    settle(&mut h);
+    assert!(h.query_by_label("\"B-7\"").is_some());
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "json_tree");
+
+    // A double-click edits a value; Enter writes it to the cell, keeping its type.
+    h.state_mut().active_data_view().unwrap().value_panel_mut().search.clear();
+    settle(&mut h);
+    double_click(&mut h, "36");
+    // The edit box has the focus, with the cursor after the value.
+    h.event(egui::Event::Text("7".into()));
+    h.run_steps(1);
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    let stmts = h.state_mut().active_data_view().unwrap().statements();
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    assert!(stmts[0].contains(r#""age":367"#), "{}", stmts[0]);
+    // The text view shows the same value indented.
+    click(&mut h, "Text");
+    assert!(h.state_mut().active_data_view().unwrap().value_panel_mut().json_text);
+}

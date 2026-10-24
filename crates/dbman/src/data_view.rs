@@ -70,6 +70,7 @@ enum GridCmd {
     /// A cell was clicked: show it in the value panel.
     Current(usize, usize),
     Profile(usize),
+    SetValue(usize, usize, Cell),
 }
 
 pub struct DataView {
@@ -197,6 +198,10 @@ impl DataView {
             }
             _ => {}
         }
+    }
+
+    pub fn value_panel_mut(&mut self) -> &mut ValuePanel {
+        &mut self.value_panel
     }
 
     /// Opens the profile of column `col`, counted over the rows the filter selects.
@@ -457,6 +462,7 @@ impl DataView {
                 }
             }
             GridCmd::SetNull(row, col) => self.set(row, col, Cell::Null),
+            GridCmd::SetValue(row, col, value) => self.set(row, col, value),
             GridCmd::Revert(row, col) => {
                 if row < base {
                     self.edits.changed.remove(&(row, col));
@@ -722,7 +728,12 @@ impl DataView {
         let shown = value
             .as_ref()
             .and_then(|(row, col, cell)| Some(Current { column: result.columns.get(*col)?, row: *row, cell }));
+        panel.editable = editable && current.is_some_and(|(row, _)| !self.edits.deleted.contains(&row));
         panel.show(ui, egui::Id::new(("data-value", tab)), shown);
+        // A value edited in the JSON tree becomes the cell's new text.
+        if let (Some(text), Some((row, col))) = (panel.edited.take(), current) {
+            cmds.push(GridCmd::SetValue(row, col, Cell::Text(text)));
+        }
         self.value_panel = panel;
         let height = (ui.available_height() - 110.0).max(120.0);
         let display = &self.display;

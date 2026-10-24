@@ -23,6 +23,7 @@ pub mod format;
 pub mod generate;
 pub mod import;
 pub mod infer;
+pub mod json_tree;
 pub mod params;
 pub mod paste;
 pub mod pivot;

@@ -906,5 +906,11 @@
   "Pivot": "Сводная",
   "Count distinct": "Число уникальных",
   "Minimum": "Минимум",
-  "Maximum": "Максимум"
+  "Maximum": "Максимум",
+  "Copy path": "Копировать путь",
+  "Double-click to edit": "Двойной щелчок для правки",
+  "Find in keys and values…": "Найти в ключах и значениях…",
+  "Text": "Текст",
+  "The first {n} rows are shown; the text view has all of it.": "Показаны первые {n} строк; в текстовом виде есть всё.",
+  "Tree": "Дерево"
 }
