@@ -11,6 +11,7 @@ pub mod compare;
 pub mod complete;
 mod config;
 pub mod copy;
+pub mod dashboard;
 pub mod ddl;
 pub mod dml;
 mod driver;

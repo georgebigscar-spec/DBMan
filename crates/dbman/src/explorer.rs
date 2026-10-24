@@ -234,6 +234,8 @@ pub enum Action {
     OpenSessions(Uuid),
     /// Opens a search in a database, or in one of its schemas.
     OpenSearch(Uuid, String, Option<String>),
+    /// Opens the server dashboard.
+    OpenDashboard(Uuid),
     /// Opens the keys of a Redis database.
     OpenKeys(Uuid, String),
     /// Opens a table's data with a `WHERE` filter already set.
@@ -432,6 +434,9 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             }
             if menu_item(ui, tr("Refresh"), None).clicked() {
                 actions.push(Action::Refresh(id));
+            }
+            if dbman_core::dashboard::supported(kind, c.cfg.product) && menu_item(ui, tr("Dashboard"), None).clicked() {
+                actions.push(Action::OpenDashboard(id));
             }
             if dbman_core::sessions::supported(kind) && menu_item(ui, tr("Sessions"), None).clicked() {
                 actions.push(Action::OpenSessions(id));

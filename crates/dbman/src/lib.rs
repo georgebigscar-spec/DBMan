@@ -8,6 +8,7 @@ pub mod chart_view;
 pub mod compare_view;
 pub mod connection_dialog;
 pub mod copy_view;
+pub mod dashboard_view;
 pub mod data_view;
 pub mod er_view;
 pub mod events;

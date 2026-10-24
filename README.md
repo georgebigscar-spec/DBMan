@@ -227,6 +227,14 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
   - A click on a row shows the whole statement below the table. There, and in the row's menu, `Cancel query` stops the statement and keeps the session (`pg_cancel_backend`, `KILL QUERY`, ClickHouse `KILL QUERY WHERE query_id`), and `Kill session…` asks first and then disconnects it, rolling back its open transaction (`pg_terminate_backend`, `KILL CONNECTION`, SQL Server `KILL`). `Open query in a console` and `Copy query` take the statement.
 
 ![Sessions](crates/dbman/tests/snapshots/sessions.png)
+- **Server dashboard** (`Dashboard` in a server connection's menu): the server read every 1, 2, 5 or 10 seconds while `Live` is on, over the last 600 readings.
+  - Tiles: connections, statements running now, throughput, queries running over 5 seconds, and the size of the database.
+  - Line charts of the same over time.
+  - The ten largest tables with their size and approximate row count, read again every minute.
+  - Throughput is transactions per second on PostgreSQL (`pg_stat_database`), statements on MySQL (`Questions`), batch requests on SQL Server and queries on ClickHouse (`system.events`).
+  - Redis shows its clients, commands per second and memory from `INFO`. CockroachDB has no dashboard.
+
+![Dashboard](crates/dbman/tests/snapshots/dashboard.png)
 - **Users and roles** (`Users and roles` in a server connection's menu, shown only when the connected user may manage users: a PostgreSQL superuser or `CREATEROLE` role, a MySQL account with `CREATE USER`, a SQL Server `sysadmin` or a holder of `ALTER ANY LOGIN` and `ALTER ANY USER`, a ClickHouse user with access management). SQLite and DuckDB have no users, so they have no such tab.
   - On the left, the users and roles (PostgreSQL roles that can log in are users; MySQL and MariaDB accounts are `user@host`; on SQL Server the users and roles of one database; ClickHouse users and roles). `Show built-in` adds `pg_*` roles, `mysql.sys`, `dbo`, fixed database roles and the like.
   - On the right, the picked one: its attributes (superuser, can create databases or roles, inherits, replication, row-level security bypass; locked MySQL account; disabled SQL Server login), the roles it belongs to and the members of a role (`×` removes one), and the privileges granted to it directly, with the object, the privilege and whether it may pass it on. On PostgreSQL and SQL Server the privileges are those of the database picked in the toolbar.
