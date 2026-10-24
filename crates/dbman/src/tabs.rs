@@ -20,6 +20,7 @@ use crate::compare_view::CompareView;
 use crate::copy_view::CopyView;
 use crate::dashboard_view::DashboardView;
 use crate::data_view::DataView;
+use crate::documents_view::DocumentsView;
 use crate::er_view::ErView;
 use crate::events::{Event, EventSender, TabEvent, TabId, Tasks, timed};
 use crate::explorer::{Action, ConnState, Load};
@@ -60,6 +61,7 @@ pub enum TabKind {
     Keys(Box<KeysView>),
     Dashboard(Box<DashboardView>),
     QueryBuilder(Box<QueryBuilderView>),
+    Documents(Box<DocumentsView>),
 }
 
 /// What a tab can reach while drawing.
@@ -94,6 +96,7 @@ impl Tab {
             TabKind::Admin(a) => a.title(),
             TabKind::Search(s) => s.title(),
             TabKind::Keys(k) => k.title(),
+            TabKind::Documents(d) => d.title(),
             TabKind::Dashboard(d) => d.title(),
             TabKind::QueryBuilder(b) => b.title(),
         }
@@ -113,6 +116,7 @@ impl Tab {
             TabKind::Admin(a) => &a.database,
             TabKind::Search(s) => &s.database,
             TabKind::Keys(k) => &k.database,
+            TabKind::Documents(d) => &d.object.path.database,
             TabKind::Dashboard(_) => "",
             TabKind::QueryBuilder(b) => &b.database,
         };
@@ -124,6 +128,7 @@ impl Tab {
         match &self.kind {
             TabKind::Console(c) => Some(c.title()),
             TabKind::Data(d) => Some(d.object.path.name.clone()),
+            TabKind::Documents(d) => Some(d.object.path.name.clone()),
             TabKind::Object(o) => Some(o.object.path.name.clone()),
             TabKind::TableEditor(e) => e.table().map(str::to_owned),
             TabKind::Diagram(_)
@@ -152,6 +157,7 @@ impl Tab {
             TabKind::Admin(a) => a.on_event(ev, ctx),
             TabKind::Search(s) => s.on_event(ev),
             TabKind::Keys(k) => return k.on_event(ev),
+            TabKind::Documents(d) => d.on_event(ev, ctx),
             TabKind::Dashboard(d) => d.on_event(ev),
             TabKind::QueryBuilder(b) => b.on_event(ev),
         }
@@ -172,6 +178,7 @@ impl Tab {
             TabKind::Admin(a) => a.ui(ui, id, cx),
             TabKind::Search(s) => s.ui(ui, id, cx),
             TabKind::Keys(k) => k.ui(ui, id, cx),
+            TabKind::Documents(d) => d.ui(ui, id, cx),
             TabKind::Dashboard(d) => d.ui(ui, id, cx),
             TabKind::QueryBuilder(b) => b.ui(ui, id, cx),
         }

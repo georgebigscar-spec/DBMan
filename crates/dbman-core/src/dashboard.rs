@@ -35,6 +35,7 @@ pub fn throughput_label(kind: DbKind) -> &'static str {
         DbKind::Postgres => "Transactions per second",
         DbKind::MsSql => "Batches per second",
         DbKind::Redis => "Commands per second",
+        DbKind::MongoDb => "Operations per second",
         _ => "Queries per second",
     }
 }
@@ -87,6 +88,11 @@ pub fn queries(kind: DbKind, product: Product) -> Vec<String> {
                (SELECT sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase()) AS size"
         )],
         DbKind::Redis => vec!["INFO".into()],
+        DbKind::MongoDb => vec![
+            "db.adminCommand({serverStatus: 1})".into(),
+            format!("db.adminCommand({{currentOp: 1, active: true, secs_running: {{$gte: {s}}}}})"),
+            "db.stats()".into(),
+        ],
         DbKind::Sqlite | DbKind::DuckDb => vec![],
     };
     q
@@ -133,6 +139,9 @@ fn values(results: &[QueryResult]) -> HashMap<String, f64> {
 
 /// A sample from the answers to [`queries`].
 pub fn read(kind: DbKind, results: &[QueryResult]) -> Sample {
+    if kind == DbKind::MongoDb {
+        return mongo_sample(results);
+    }
     let v = values(results);
     let get = |names: &[&str]| names.iter().find_map(|n| v.get(*n).copied());
     match kind {
@@ -158,6 +167,33 @@ pub fn read(kind: DbKind, results: &[QueryResult]) -> Sample {
             slow: get(&["slow"]),
             size: get(&["size"]),
         },
+    }
+}
+
+/// MongoDB: `serverStatus`, the operations running long and `dbStats`, each
+/// one row whose documents are JSON text.
+fn mongo_sample(results: &[QueryResult]) -> Sample {
+    let field = |r: usize, name: &str| -> Option<serde_json::Value> {
+        let r = results.get(r)?;
+        let i = r.columns.iter().position(|c| c.name == name)?;
+        let text = r.rows.first()?.get(i)?.as_text()?.into_owned();
+        Some(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
+    };
+    let num = |v: Option<&serde_json::Value>| -> Option<f64> {
+        let v = v?;
+        v.as_f64().or_else(|| v.as_str()?.parse().ok()).or_else(|| v.get("$numberLong")?.as_str()?.parse().ok())
+    };
+    let conns = field(0, "connections");
+    let ops = field(0, "opcounters");
+    let total = ops.as_ref().and_then(|o| o.as_object()).map(|o| o.values().filter_map(|v| num(Some(v))).sum());
+    let size = [field(2, "storageSize"), field(2, "indexSize")].iter().map(|v| num(v.as_ref())).sum::<Option<f64>>();
+    Sample {
+        connections: num(conns.as_ref().and_then(|c| c.get("current"))),
+        // The dashboard's own command is one of them.
+        active: num(conns.as_ref().and_then(|c| c.get("active"))).map(|n| (n - 1.0).max(0.0)),
+        total_queries: total,
+        slow: field(1, "inprog").map(|p| p.as_array().map_or(0, Vec::len) as f64),
+        size,
     }
 }
 
@@ -189,7 +225,7 @@ pub fn tables_sql(kind: DbKind, product: Product) -> Option<&'static str> {
             "SELECT table AS name, sum(bytes_on_disk) AS bytes, sum(rows) AS row_count FROM system.parts \
              WHERE active AND database = currentDatabase() GROUP BY table ORDER BY bytes DESC LIMIT 10"
         }
-        DbKind::Redis | DbKind::Sqlite | DbKind::DuckDb => return None,
+        DbKind::Redis | DbKind::MongoDb | DbKind::Sqlite | DbKind::DuckDb => return None,
     })
 }
 

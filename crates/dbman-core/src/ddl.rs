@@ -77,7 +77,7 @@ impl Plan {
 /// Frequently used types, offered in the column type picker.
 pub fn common_types(kind: DbKind) -> &'static [&'static str] {
     match kind {
-        DbKind::Redis => &[],
+        DbKind::Redis | DbKind::MongoDb => &[],
         DbKind::Postgres => &[
             "integer",
             "bigint",
@@ -754,7 +754,7 @@ pub fn alter_table(kind: DbKind, old: &TableDef, new: &TableDef) -> Plan {
             DbKind::Sqlite => plan.notes.push("SQLite has no table comments; the comment is not saved.".into()),
             DbKind::MsSql => plan.statements.extend(ms_comment(&new.path, None, oc, nc)),
             DbKind::ClickHouse => unreachable!("handled by ch_alter_table"),
-            DbKind::Redis => {}
+            DbKind::Redis | DbKind::MongoDb => {}
         }
     }
     plan
@@ -801,6 +801,9 @@ pub fn create_database(kind: DbKind, name: &str) -> String {
 }
 
 pub fn drop_database(kind: DbKind, name: &str) -> String {
+    if kind == DbKind::MongoDb {
+        return "db.dropDatabase()".into();
+    }
     format!("DROP DATABASE {}", Dialect(kind).ident(name))
 }
 
@@ -815,6 +818,9 @@ pub fn drop_schema(kind: DbKind, name: &str, cascade: bool) -> String {
 
 /// `DROP …` for any explorer object.
 pub fn drop_object(kind: DbKind, o: &DbObject, cascade: bool) -> String {
+    if kind == DbKind::MongoDb {
+        return format!("{}.drop()", crate::mongo::collection_ref(&o.path.name));
+    }
     let d = Dialect(kind);
     let q = d.qualified(&o.path);
     let cascade = if cascade && kind == DbKind::Postgres { " CASCADE" } else { "" };
@@ -828,6 +834,7 @@ pub fn drop_object(kind: DbKind, o: &DbObject, cascade: bool) -> String {
         ObjectKind::Procedure => "PROCEDURE",
         ObjectKind::Trigger => "TRIGGER",
         ObjectKind::Type => "TYPE",
+        ObjectKind::Collection => "TABLE",
     };
     match (o.kind, kind) {
         (ObjectKind::Table, DbKind::ClickHouse) if o.detail.as_deref() == Some("Dictionary") => {
@@ -850,6 +857,11 @@ pub fn drop_object(kind: DbKind, o: &DbObject, cascade: bool) -> String {
 
 /// Renames a table, view or sequence; `None` if the engine cannot rename this kind.
 pub fn rename(kind: DbKind, o: &DbObject, new_name: &str) -> Option<String> {
+    if kind == DbKind::MongoDb {
+        let to = serde_json::Value::String(new_name.to_string());
+        return (o.kind == ObjectKind::Collection)
+            .then(|| format!("{}.renameCollection({to})", crate::mongo::collection_ref(&o.path.name)));
+    }
     let d = Dialect(kind);
     let q = d.qualified(&o.path);
     let to = d.ident(new_name);
@@ -884,6 +896,9 @@ pub fn rename(kind: DbKind, o: &DbObject, new_name: &str) -> Option<String> {
 
 /// Removes every row of a table.
 pub fn truncate(kind: DbKind, table: &ObjectPath) -> String {
+    if kind == DbKind::MongoDb {
+        return format!("{}.deleteMany({{}})", crate::mongo::collection_ref(&table.name));
+    }
     let q = Dialect(kind).qualified(table);
     match kind {
         DbKind::Sqlite => format!("DELETE FROM {q}"),

@@ -78,7 +78,7 @@ pub fn list_sql(kind: DbKind, product: Product) -> Option<&'static str> {
             "SELECT query_id, user, current_database, toString(address), client_name, 'running', elapsed, \
              '', query, query_id = queryID() FROM system.processes ORDER BY elapsed DESC"
         }
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => return None,
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => return None,
     })
 }
 

@@ -18,8 +18,8 @@ pub struct Param {
 
 /// The parameters of a statement, in order.
 pub fn find(kind: DbKind, sql: &str) -> Vec<Param> {
-    // Redis keys are written `user:1:name`; its commands take no parameters.
-    if kind == DbKind::Redis {
+    // Redis keys are written `user:1:name`, MongoDB documents `{name: 1}`; neither takes parameters.
+    if matches!(kind, DbKind::Redis | DbKind::MongoDb) {
         return Vec::new();
     }
     let tokens = tokenize(sql, kind);

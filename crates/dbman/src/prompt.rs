@@ -85,6 +85,8 @@ impl Prompt {
     /// The database to run the statements in ("" for the connection's default).
     fn database(&self) -> String {
         match &self.kind {
+            // MongoDB drops the database a statement runs in.
+            PromptKind::DropDatabase { db } if self.db_kind == DbKind::MongoDb => db.clone(),
             PromptKind::CreateDatabase | PromptKind::DropDatabase { .. } => String::new(),
             PromptKind::CreateSchema { db } | PromptKind::DropSchema { db, .. } => db.clone(),
             PromptKind::DropObject(o) | PromptKind::Rename(o) | PromptKind::Truncate(o) => o.path.database.clone(),

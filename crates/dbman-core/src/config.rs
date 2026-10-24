@@ -12,10 +12,12 @@ pub enum DbKind {
     ClickHouse,
     /// A key-value store: no SQL; the console runs Redis commands.
     Redis,
+    /// A document store: no SQL; the console runs mongo shell statements.
+    MongoDb,
 }
 
 impl DbKind {
-    pub const ALL: [DbKind; 7] = [
+    pub const ALL: [DbKind; 8] = [
         DbKind::Postgres,
         DbKind::MySql,
         DbKind::MsSql,
@@ -23,6 +25,7 @@ impl DbKind {
         DbKind::Sqlite,
         DbKind::DuckDb,
         DbKind::Redis,
+        DbKind::MongoDb,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -34,12 +37,13 @@ impl DbKind {
             DbKind::MsSql => "SQL Server",
             DbKind::ClickHouse => "ClickHouse",
             DbKind::Redis => "Redis",
+            DbKind::MongoDb => "MongoDB",
         }
     }
 
-    /// Engines that speak SQL; Redis takes commands instead.
+    /// Engines that speak SQL; Redis takes commands and MongoDB shell statements instead.
     pub fn is_sql(self) -> bool {
-        self != DbKind::Redis
+        !matches!(self, DbKind::Redis | DbKind::MongoDb)
     }
 
     pub fn default_port(self) -> Option<u16> {
@@ -50,6 +54,7 @@ impl DbKind {
             // The HTTP interface (8443 with TLS).
             DbKind::ClickHouse => Some(8123),
             DbKind::Redis => Some(6379),
+            DbKind::MongoDb => Some(27017),
             DbKind::Sqlite | DbKind::DuckDb => None,
         }
     }
@@ -61,7 +66,7 @@ impl DbKind {
             DbKind::MsSql => "sa",
             DbKind::ClickHouse => "default",
             // Without ACL users, Redis takes only a password.
-            DbKind::Redis | DbKind::Sqlite | DbKind::DuckDb => "",
+            DbKind::Redis | DbKind::MongoDb | DbKind::Sqlite | DbKind::DuckDb => "",
         }
     }
 
@@ -90,7 +95,7 @@ pub enum Product {
 
 impl Product {
     /// The choices of the connection dialog, each engine followed by the products on its protocol.
-    pub const CHOICES: [(DbKind, Product); 15] = [
+    pub const CHOICES: [(DbKind, Product); 16] = [
         (DbKind::Postgres, Product::Native),
         (DbKind::Postgres, Product::CockroachDb),
         (DbKind::Postgres, Product::YugabyteDb),
@@ -106,6 +111,7 @@ impl Product {
         (DbKind::Sqlite, Product::Native),
         (DbKind::DuckDb, Product::Native),
         (DbKind::Redis, Product::Native),
+        (DbKind::MongoDb, Product::Native),
     ];
 
     /// The engine whose driver the product uses; `None` for `Native`.
@@ -144,6 +150,7 @@ impl Product {
                 DbKind::MsSql => "MS",
                 DbKind::ClickHouse => "CH",
                 DbKind::Redis => "RD",
+                DbKind::MongoDb => "MG",
             },
             Product::CockroachDb => "CR",
             Product::YugabyteDb => "YB",

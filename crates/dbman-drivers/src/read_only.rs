@@ -70,4 +70,16 @@ impl Connection for ReadOnly {
         }
         self.inner.command(database, args).await
     }
+
+    async fn mongo(
+        &self,
+        database: Option<&str>,
+        statement: &dbman_core::mongo::Shell,
+        max_docs: usize,
+    ) -> DbResult<dbman_core::mongo::Reply> {
+        if !dbman_core::mongo::is_read_only(statement) {
+            return Err(refused());
+        }
+        self.inner.mongo(database, statement, max_docs).await
+    }
 }

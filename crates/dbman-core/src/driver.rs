@@ -62,4 +62,16 @@ pub trait Connection: Send + Sync {
     async fn command(&self, _database: Option<&str>, _args: &[String]) -> DbResult<crate::redis::Reply> {
         Err(crate::DbError::new("This connection does not take Redis commands."))
     }
+
+    /// Runs one mongo shell statement in `database` (the connection's own if
+    /// `None`), fetching at most `max_docs` documents. Only MongoDB
+    /// connections take them.
+    async fn mongo(
+        &self,
+        _database: Option<&str>,
+        _statement: &crate::mongo::Shell,
+        _max_docs: usize,
+    ) -> DbResult<crate::mongo::Reply> {
+        Err(crate::DbError::new("This connection does not take MongoDB statements."))
+    }
 }

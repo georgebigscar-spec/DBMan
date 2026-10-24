@@ -15,6 +15,7 @@ pub mod copy;
 pub mod duckdb;
 pub mod files;
 pub mod generate;
+pub mod mongo;
 pub mod mssql;
 pub mod mysql;
 pub mod postgres;
@@ -44,6 +45,7 @@ async fn connect_direct(cfg: &ConnectionConfig) -> DbResult<Arc<dyn Connection>>
         DbKind::MsSql => Arc::new(mssql::MsSqlConnection::connect(cfg).await?),
         DbKind::ClickHouse => Arc::new(clickhouse::ClickHouseConnection::connect(cfg).await?),
         DbKind::Redis => Arc::new(redis::RedisConnection::connect(cfg).await?),
+        DbKind::MongoDb => Arc::new(mongo::MongoConnection::connect(cfg).await?),
     })
 }
 

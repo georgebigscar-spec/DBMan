@@ -25,6 +25,7 @@ pub mod generate;
 pub mod import;
 pub mod infer;
 pub mod json_tree;
+pub mod mongo;
 pub mod params;
 pub mod paste;
 pub mod pivot;

@@ -177,7 +177,7 @@ fn rank(kind: ObjectKind) -> u8 {
     match kind {
         ObjectKind::Type => 0,
         ObjectKind::Sequence => 1,
-        ObjectKind::Table | ObjectKind::ForeignTable => 2,
+        ObjectKind::Table | ObjectKind::ForeignTable | ObjectKind::Collection => 2,
         ObjectKind::Function => 3,
         ObjectKind::Procedure => 4,
         ObjectKind::View => 5,

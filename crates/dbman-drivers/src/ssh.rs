@@ -271,6 +271,15 @@ impl Connection for Tunneled {
     async fn command(&self, database: Option<&str>, args: &[String]) -> DbResult<dbman_core::redis::Reply> {
         self.inner.command(database, args).await
     }
+
+    async fn mongo(
+        &self,
+        database: Option<&str>,
+        statement: &dbman_core::mongo::Shell,
+        max_docs: usize,
+    ) -> DbResult<dbman_core::mongo::Reply> {
+        self.inner.mongo(database, statement, max_docs).await
+    }
 }
 
 #[cfg(test)]

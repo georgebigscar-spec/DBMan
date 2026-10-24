@@ -239,10 +239,15 @@ impl DashboardView {
         });
         if self.kind != DbKind::Redis {
             ui.add_space(8.0);
-            ui.columns(2, |cols| {
-                chart(&mut cols[0], &trf("Queries running over {n} s", &[("n", &dashboard::SLOW_SECONDS)]), &slow);
-                self.tables_ui(&mut cols[1], tab);
-            });
+            let slow_title = trf("Queries running over {n} s", &[("n", &dashboard::SLOW_SECONDS)]);
+            if dashboard::tables_sql(self.kind, self.product).is_some() {
+                ui.columns(2, |cols| {
+                    chart(&mut cols[0], &slow_title, &slow);
+                    self.tables_ui(&mut cols[1], tab);
+                });
+            } else {
+                ui.columns(2, |cols| chart(&mut cols[0], &slow_title, &slow));
+            }
         }
     }
 
