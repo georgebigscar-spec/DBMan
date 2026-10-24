@@ -1712,3 +1712,84 @@ fn redis_keys() {
     assert_eq!(keys.len(), 5);
     assert!(!keys.contains(&"greeting".to_string()));
 }
+
+/// The profile of a column: counts, range, the most frequent values and a
+/// histogram, over the rows the WHERE filter selects.
+#[test]
+fn column_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let mut cfg = ConnectionConfig::new(DbKind::Sqlite);
+    cfg.name = "shop".into();
+    let db_path = sample_db(dir.path());
+    // 200 more orders with the even totals from 0 to 398, in a shuffled order.
+    let c = rusqlite::Connection::open(&db_path).unwrap();
+    for i in 0..200 {
+        let total = (i * 37 % 200) * 2;
+        c.execute("INSERT INTO orders (customer_id, total) VALUES (?1, ?2)", (i % 4 + 1, total)).unwrap();
+    }
+    drop(c);
+    cfg.database = db_path;
+    let id = cfg.id;
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 800.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let table = |name: &str| DbObject {
+        kind: ObjectKind::Table,
+        path: ObjectPath::new("main", "main", name),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(id, table("customers")), &ctx);
+    settle(&mut h);
+
+    // A text column: one NULL, every value distinct, no histogram.
+    click(&mut h, "Berlin");
+    press_and_release(&mut h, "Profile");
+    settle(&mut h);
+    let p = h.state_mut().active_data_view().unwrap().profile.as_ref().unwrap().result.ready().cloned().unwrap();
+    assert_eq!((p.rows, p.non_null, p.distinct), (4, 3, Some(3)));
+    assert_eq!((p.min.as_deref(), p.max.as_deref()), (Some("Berlin"), Some("Moscow")));
+    assert_eq!(p.top.len(), 4);
+    assert!(p.histogram.is_empty() && p.avg.is_none());
+    click_last(&mut h, "Close");
+    assert!(h.state_mut().active_data_view().unwrap().profile.is_none());
+
+    // A numeric column: average and histogram over all 204 rows.
+    h.state_mut().handle(Action::OpenData(id, table("orders")), &ctx);
+    settle(&mut h);
+    click(&mut h, "120.5");
+    press_and_release(&mut h, "Profile");
+    settle(&mut h);
+    let p = match &h.state_mut().active_data_view().unwrap().profile.as_ref().unwrap().result {
+        dbman::explorer::Load::Ready(p) => p.clone(),
+        dbman::explorer::Load::Failed(e) => panic!("{e}"),
+        _ => panic!("still loading"),
+    };
+    assert_eq!((p.rows, p.non_null), (204, 204));
+    assert_eq!(p.max.as_deref(), Some("398"));
+    assert_eq!(p.histogram.len(), dbman_core::profile::BUCKETS);
+    assert_eq!(p.histogram.iter().map(|b| b.2).sum::<i64>(), 204);
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "column_profile");
+    click_last(&mut h, "Close");
+
+    // The WHERE filter narrows the rows profiled.
+    h.state_mut().active_data_view().unwrap().set_filter("total > 300".into());
+    click(&mut h, "⟳ Refresh");
+    click(&mut h, "310");
+    press_and_release(&mut h, "Profile");
+    settle(&mut h);
+    let p = h.state_mut().active_data_view().unwrap().profile.as_ref().unwrap().result.ready().cloned().unwrap();
+    assert_eq!(p.rows, 1 + 49);
+}

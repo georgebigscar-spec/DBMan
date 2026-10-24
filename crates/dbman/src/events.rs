@@ -114,6 +114,8 @@ pub enum TabEvent {
     Search(Box<crate::search_view::SearchEvent>),
     Admin(Box<crate::admin_view::AdminEvent>),
     Keys(Box<crate::keys_view::KeysEvent>),
+    /// The profile of a data view's column.
+    Profile(String, DbResult<dbman_core::profile::Profile>),
     /// Lists for a target picker.
     Picker(crate::target_picker::PickerEvent),
 }

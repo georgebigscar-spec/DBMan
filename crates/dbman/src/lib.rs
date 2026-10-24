@@ -21,6 +21,7 @@ pub mod icons;
 pub mod jobs;
 pub mod keys_view;
 pub mod palette;
+pub mod profile_view;
 pub mod prompt;
 pub mod search_view;
 pub mod sessions_view;

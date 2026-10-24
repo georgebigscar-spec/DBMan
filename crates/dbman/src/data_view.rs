@@ -22,6 +22,7 @@ use crate::exec;
 use crate::explorer::{Action, ConnState, Load};
 use crate::grid;
 use crate::i18n::{tr, trf};
+use crate::profile_view::ProfileDialog;
 use crate::sql_editor;
 use crate::tabs::{TabCtx, error_alert, format_elapsed, not_connected, outcome_summary, toolbar_button};
 use crate::value_panel::{Current, ValuePanel};
@@ -68,6 +69,7 @@ enum GridCmd {
     Copy(String),
     /// A cell was clicked: show it in the value panel.
     Current(usize, usize),
+    Profile(usize),
 }
 
 pub struct DataView {
@@ -103,6 +105,9 @@ pub struct DataView {
     value_panel: ValuePanel,
     /// One row at a time, its columns down the screen.
     pub record: bool,
+    pub profile: Option<ProfileDialog>,
+    /// "Profile column" was picked in a cell's menu: the column to profile.
+    profile_asked: Option<usize>,
 }
 
 impl DataView {
@@ -143,6 +148,8 @@ impl DataView {
             cells: grid::CellSelection::default(),
             value_panel: ValuePanel::default(),
             record: false,
+            profile: None,
+            profile_asked: None,
         }
     }
 
@@ -172,6 +179,11 @@ impl DataView {
                 self.rebuild();
             }
             TabEvent::Details(r) => self.details = Load::from_result(r),
+            TabEvent::Profile(column, r) => {
+                if let Some(p) = self.profile.as_mut().filter(|p| p.column == column) {
+                    p.result = Load::from_result(r);
+                }
+            }
             TabEvent::Submitted(r) => {
                 self.submitting = false;
                 match r {
@@ -185,6 +197,18 @@ impl DataView {
             }
             _ => {}
         }
+    }
+
+    /// Opens the profile of column `col`, counted over the rows the filter selects.
+    pub fn open_profile(&mut self, tasks: &Tasks, tab: TabId, session: Arc<dyn Connection>, col: usize) {
+        let Some(meta) = self.rows.ready().and_then(|r| r.columns.get(col)) else { return };
+        let (column, numeric) = (meta.name.clone(), meta.numeric);
+        self.profile = Some(ProfileDialog::new(column.clone()));
+        let (path, filter) = (self.object.path.clone(), self.filter.clone());
+        tasks.spawn(async move {
+            let result = dbman_core::profile::run(session.as_ref(), &path, &column, numeric, &filter).await;
+            Event::Tab { tab, event: TabEvent::Profile(column, result) }
+        });
     }
 
     /// The whole table, or the rows the filter and ordering select.
@@ -442,6 +466,7 @@ impl DataView {
             }
             GridCmd::Delete(row) => self.toggle_deleted(&[row]),
             GridCmd::Copy(text) => ctx.copy_text(text),
+            GridCmd::Profile(col) => self.profile_asked = Some(col),
         }
         self.rebuild();
     }
@@ -490,6 +515,7 @@ impl DataView {
         }
         let dirty = !self.edits.is_empty();
         let mut reload = false;
+        let mut profile = None;
         ui.horizontal(|ui| {
             if ui.add_enabled(!dirty, Button::outline(tr("⟳ Refresh")).size(ButtonSize::Sm)).clicked() {
                 reload = true;
@@ -528,9 +554,22 @@ impl DataView {
                 if !self.record {
                     grid::value_button(ui, &mut self.value_panel.open);
                 }
+                let col = self.current.map(|(_, c)| c);
+                if ui
+                    .add_enabled(col.is_some(), Button::outline(tr("Profile")).size(ButtonSize::Sm))
+                    .tooltip(tr(
+                        "Nulls, distinct values, range and the most frequent values of the clicked cell's column",
+                    ))
+                    .clicked()
+                    && let Some(col) = col
+                {
+                    profile = Some(col);
+                }
             }
+            // The summary gives way to the buttons when the window is narrow.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(&self.summary).color(t.muted_foreground));
+                let summary = egui::Label::new(RichText::new(&self.summary).color(t.muted_foreground));
+                ui.add(summary.truncate().selectable(false));
             });
         });
 
@@ -617,7 +656,7 @@ impl DataView {
             ui.add_space(6.0);
         }
         if reload {
-            self.load(cx.tasks, tab, &cfg, session, cx.page_size);
+            self.load(cx.tasks, tab, &cfg, session.clone(), cx.page_size);
         }
         let mut stop = false;
         match &self.rows {
@@ -639,6 +678,12 @@ impl DataView {
         }
         if stop {
             self.stop(cx.tasks);
+        }
+        if let Some(col) = profile.or(self.profile_asked.take()) {
+            self.open_profile(cx.tasks, tab, session, col);
+        }
+        if self.profile.as_ref().is_some_and(|p| !p.show(ui.ctx())) {
+            self.profile = None;
         }
         self.preview_dialog(ui.ctx());
     }
@@ -759,6 +804,9 @@ impl DataView {
                         && menu_item(ui, tr("Copy value"), None).clicked()
                     {
                         cmds.push(GridCmd::Copy(v.into_owned()));
+                    }
+                    if menu_item(ui, tr("Profile column"), None).clicked() {
+                        cmds.push(GridCmd::Profile(col));
                     }
                     if editable && !deleted {
                         menu_separator(ui);
@@ -914,6 +962,9 @@ impl DataView {
                         && menu_item(ui, tr("Copy value"), None).clicked()
                     {
                         cmds.push(GridCmd::Copy(v.into_owned()));
+                    }
+                    if menu_item(ui, tr("Profile column"), None).clicked() {
+                        cmds.push(GridCmd::Profile(field));
                     }
                     if editable && !deleted {
                         menu_separator(ui);
