@@ -15,6 +15,7 @@ use crate::connection_dialog::{ConnectionDialog, DialogOutcome};
 use crate::copy_view::CopyView;
 use crate::dashboard_view::DashboardView;
 use crate::data_view::DataView;
+use crate::documents_view::DocumentsView;
 use crate::er_view::ErView;
 use crate::events::{Event, JobEvent, TabId, Tasks};
 use crate::exec;
@@ -151,6 +152,7 @@ impl DbManApp {
                     | TabKind::Admin(_)
                     | TabKind::Search(_)
                     | TabKind::Keys(_)
+                    | TabKind::Documents(_)
                     | TabKind::Dashboard(_)
                     | TabKind::QueryBuilder(_) => {
                         return None;
@@ -438,6 +440,17 @@ impl DbManApp {
             Action::OpenData(id, object) => {
                 let Some(c) = self.conn(id) else { return };
                 let (kind, read_only) = (c.cfg.kind, c.cfg.read_only);
+                if kind == DbKind::MongoDb {
+                    let existing = self
+                        .tabs
+                        .iter()
+                        .find(|t| t.conn == id && matches!(&t.kind, TabKind::Documents(d) if d.object == object));
+                    match existing {
+                        Some(t) => self.active = Some(t.id),
+                        None => self.add_tab(id, TabKind::Documents(Box::new(DocumentsView::new(object, read_only)))),
+                    }
+                    return;
+                }
                 let existing = self
                     .tabs
                     .iter()
@@ -865,6 +878,15 @@ impl DbManApp {
         }
     }
 
+    /// The documents tab on screen, if the active tab is one.
+    pub fn active_documents(&mut self) -> Option<&mut DocumentsView> {
+        let id = self.active?;
+        match &mut self.tabs.iter_mut().find(|t| t.id == id)?.kind {
+            TabKind::Documents(d) => Some(d.as_mut()),
+            _ => None,
+        }
+    }
+
     /// The keys tab on screen, if the active tab is one.
     pub fn active_keys(&mut self) -> Option<&mut KeysView> {
         let id = self.active?;
@@ -1224,6 +1246,7 @@ impl DbManApp {
                                         TabKind::Admin(_) => Icon::Key,
                                         TabKind::Search(_) => Icon::Search,
                                         TabKind::Keys(_) => Icon::Key,
+                                        TabKind::Documents(_) => Icon::Table,
                                         TabKind::Dashboard(_) => Icon::Info,
                                         TabKind::QueryBuilder(_) => Icon::ForeignKey,
                                     };

@@ -105,7 +105,7 @@ pub fn check_sql(kind: DbKind) -> Option<&'static str> {
         }
         // Reading the users takes the access management rights.
         DbKind::ClickHouse => "SELECT count() FROM system.users",
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => return None,
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => return None,
     })
 }
 
@@ -152,7 +152,7 @@ pub fn principals_sql(kind: DbKind) -> &'static [&'static str] {
              UNION ALL SELECT name, '1' AS is_role, '' AS options, '' AS host, '' AS login, \
              concat('storage ', storage) AS note, '0' AS is_system FROM system.roles) \
              ORDER BY name"],
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => &[],
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => &[],
     }
 }
 
@@ -202,7 +202,7 @@ pub fn memberships_sql(kind: DbKind) -> &'static [&'static str] {
              JOIN sys.database_principals m ON m.principal_id = rm.member_principal_id"],
         DbKind::ClickHouse => &["SELECT granted_role_name, ifNull(user_name, role_name), with_admin_option \
              FROM system.role_grants"],
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => &[],
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => &[],
     }
 }
 
@@ -265,7 +265,7 @@ pub fn scopes(kind: DbKind) -> &'static [Scope] {
         }
         DbKind::MySql | DbKind::ClickHouse => &[Scope::Table, Scope::Database, Scope::Server],
         DbKind::MsSql => &[Scope::Table, Scope::Schema, Scope::Database],
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => &[],
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => &[],
     }
 }
 
@@ -512,7 +512,7 @@ pub fn grants_sql(kind: DbKind, p: &Principal) -> Option<String> {
                 name = s(&p.name),
             )
         }
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => return None,
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => return None,
     })
 }
 
@@ -653,7 +653,7 @@ pub fn create(kind: DbKind, e: &Edit) -> Vec<String> {
             Some(pw) => vec![format!("CREATE {what} {acct} IDENTIFIED BY {pw}")],
             None => vec![format!("CREATE {what} {acct}")],
         },
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => Vec::new(),
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => Vec::new(),
     }
 }
 
@@ -723,7 +723,7 @@ pub fn alter(kind: DbKind, old: &Principal, e: &Edit) -> Vec<String> {
                 out.push(format!("ALTER {what} {acct} RENAME TO {}", account(kind, &new)));
             }
         }
-        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => {}
+        DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => {}
     }
     out
 }

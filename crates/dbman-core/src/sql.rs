@@ -300,6 +300,9 @@ pub fn split_statements(sql: &str, kind: DbKind) -> Vec<Range<usize>> {
     if kind == DbKind::Redis {
         return crate::redis::split(sql);
     }
+    if kind == DbKind::MongoDb {
+        return crate::mongo::split(sql);
+    }
     let mut out = Vec::new();
     let mut first: Option<usize> = None;
     let mut last = 0;
@@ -347,7 +350,7 @@ pub fn begin_statement(kind: DbKind) -> Option<&'static str> {
         DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb => Some("BEGIN"),
         DbKind::MySql => Some("START TRANSACTION"),
         DbKind::MsSql => Some("BEGIN TRANSACTION"),
-        DbKind::ClickHouse | DbKind::Redis => None,
+        DbKind::ClickHouse | DbKind::Redis | DbKind::MongoDb => None,
     }
 }
 
@@ -392,6 +395,9 @@ pub fn is_read_only(kind: DbKind, sql: &str) -> bool {
     if kind == DbKind::Redis {
         return crate::redis::parse(sql).is_ok_and(|args| crate::redis::is_read_only(&args));
     }
+    if kind == DbKind::MongoDb {
+        return crate::mongo::script_is_read_only(sql);
+    }
     let tokens: Vec<Token> = tokenize(sql, kind)
         .into_iter()
         .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Comment | TokenKind::Semicolon))
@@ -432,7 +438,7 @@ impl Dialect {
             DbKind::MySql => format!("`{}`", name.replace('`', "``")),
             DbKind::MsSql => format!("[{}]", name.replace(']', "]]")),
             DbKind::ClickHouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
-            DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => {
+            DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
         }
@@ -451,7 +457,7 @@ impl Dialect {
         match self.0 {
             DbKind::MySql | DbKind::ClickHouse => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
             DbKind::MsSql => format!("N'{}'", value.replace('\'', "''")),
-            DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis => {
+            DbKind::Postgres | DbKind::Sqlite | DbKind::DuckDb | DbKind::Redis | DbKind::MongoDb => {
                 format!("'{}'", value.replace('\'', "''"))
             }
         }

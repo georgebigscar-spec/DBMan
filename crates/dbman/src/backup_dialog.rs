@@ -273,7 +273,7 @@ impl BackupDialog {
         }
         let db = &self.scope.database;
         match (self.kind(), self.mode) {
-            (DbKind::Redis, _) => Err(tr("Redis backups are not supported.").into()),
+            (DbKind::Redis | DbKind::MongoDb, _) => Err(tr("Redis backups are not supported.").into()),
             (DbKind::Postgres, Mode::Backup) => {
                 let (_, program) = self.pick_tool(&[Tool::PgDump])?;
                 let mut o = self.pg_dump.clone();
@@ -443,7 +443,7 @@ impl BackupDialog {
                 DbKind::DuckDb => (tr("DuckDB databases"), &["duckdb", "ddb", "db"]),
                 DbKind::MsSql => (tr("SQL Server backups"), &["bak", "trn"]),
                 DbKind::ClickHouse => (tr("ClickHouse backups"), &["zip", "tar"]),
-                DbKind::Redis => (tr("All files"), &["*"]),
+                DbKind::Redis | DbKind::MongoDb => (tr("All files"), &["*"]),
             };
             d = d.add_filter(name, exts).add_filter(tr("All files"), &["*"]);
         }
@@ -472,7 +472,7 @@ impl BackupDialog {
             (Mode::Restore, DbKind::ClickHouse) => tr("Runs RESTORE on the server in the background."),
             (Mode::Backup, DbKind::DuckDb) => tr("Exports the database in the background; it stays usable meanwhile."),
             (Mode::Restore, DbKind::DuckDb) => tr("Loads an export folder or a database file in the background."),
-            (_, DbKind::Redis) => tr("Redis backups are not supported."),
+            (_, DbKind::Redis | DbKind::MongoDb) => tr("Redis backups are not supported."),
         };
         let r = Dialog::new(("backup-dialog", self.conn), self.title()).description(description).width(620.0).show(
             ctx,
@@ -493,7 +493,7 @@ impl BackupDialog {
                         (DbKind::ClickHouse, Mode::Restore) => self.ch_restore_ui(ui),
                         (DbKind::DuckDb, Mode::Backup) => self.duck_backup_ui(ui),
                         (DbKind::DuckDb, Mode::Restore) => self.duck_restore_ui(ui),
-                        (DbKind::Redis, _) => {}
+                        (DbKind::Redis | DbKind::MongoDb, _) => {}
                     }
                     // SQL Server runs BACKUP itself; no client tools.
                     if !self.kind().is_file_based() && !matches!(self.kind(), DbKind::MsSql | DbKind::ClickHouse) {

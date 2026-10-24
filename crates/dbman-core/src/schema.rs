@@ -10,6 +10,8 @@ pub enum ObjectKind {
     Procedure,
     Trigger,
     Type,
+    /// A MongoDB collection of documents.
+    Collection,
 }
 
 impl ObjectKind {
@@ -25,6 +27,7 @@ impl ObjectKind {
             ObjectKind::Procedure => "procedures",
             ObjectKind::Trigger => "triggers",
             ObjectKind::Type => "types",
+            ObjectKind::Collection => "collections",
         }
     }
 
@@ -39,12 +42,20 @@ impl ObjectKind {
             ObjectKind::Procedure => "procedure",
             ObjectKind::Trigger => "trigger",
             ObjectKind::Type => "type",
+            ObjectKind::Collection => "collection",
         }
     }
 
     /// Objects whose rows can be browsed.
     pub fn has_data(self) -> bool {
-        matches!(self, ObjectKind::Table | ObjectKind::View | ObjectKind::MaterializedView | ObjectKind::ForeignTable)
+        matches!(
+            self,
+            ObjectKind::Table
+                | ObjectKind::View
+                | ObjectKind::MaterializedView
+                | ObjectKind::ForeignTable
+                | ObjectKind::Collection
+        )
     }
 
     /// Objects that have columns, indexes and keys.

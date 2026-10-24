@@ -52,6 +52,12 @@ jobs:
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+      mongodb:
+        image: mongo:8
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'" --health-interval 5s --health-timeout 5s
+          --health-retries 20
     env:
       DBMAN_TEST_POSTGRES: postgres://postgres:dbman@127.0.0.1:5432/postgres
       DBMAN_TEST_MYSQL: mysql://root:dbman@127.0.0.1:3306/dbman_test
@@ -60,6 +66,7 @@ jobs:
       DBMAN_TEST_COCKROACH: postgres://root@127.0.0.1:26257/dbman_test
       DBMAN_TEST_TIDB: mysql://root@127.0.0.1:4000/dbman_test
       DBMAN_TEST_REDIS: redis://127.0.0.1:6379
+      DBMAN_TEST_MONGODB: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

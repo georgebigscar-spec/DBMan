@@ -150,7 +150,7 @@ pub fn render(kind: DbKind, g: Generic, keyed: bool) -> String {
             Generic::Binary if keyed => "varbinary(255)".into(),
             Generic::Binary => "longblob".into(),
         },
-        DbKind::Sqlite | DbKind::Redis => match g {
+        DbKind::Sqlite | DbKind::Redis | DbKind::MongoDb => match g {
             Generic::Bool | Generic::Int16 | Generic::Int32 | Generic::Int64 => "INTEGER".into(),
             Generic::Decimal(_) => "NUMERIC".into(),
             Generic::Float32 | Generic::Float64 => "REAL".into(),

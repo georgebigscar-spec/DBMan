@@ -900,6 +900,7 @@ pub fn default_file_name(kind: DbKind, database: &str, stamp: &str, pg_format: P
         DbKind::MsSql => format!("{base}_{stamp}.bak"),
         DbKind::ClickHouse => format!("{base}_{stamp}.zip"),
         DbKind::Redis => format!("{base}_{stamp}.rdb"),
+        DbKind::MongoDb => format!("{base}_{stamp}.archive.gz"),
     }
 }
 

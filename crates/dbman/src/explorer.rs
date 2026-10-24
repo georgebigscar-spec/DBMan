@@ -267,6 +267,7 @@ pub fn kind_color(kind: DbKind, product: Product) -> Color32 {
             DbKind::MsSql => Color32::from_rgb(0xa9, 0x1d, 0x22),
             DbKind::ClickHouse => Color32::from_rgb(0xc8, 0x9b, 0x00),
             DbKind::Redis => Color32::from_rgb(0xd8, 0x2c, 0x20),
+            DbKind::MongoDb => Color32::from_rgb(0x00, 0x84, 0x4a),
         },
         Product::CockroachDb => Color32::from_rgb(0x69, 0x33, 0xff),
         Product::YugabyteDb => Color32::from_rgb(0xe8, 0x4c, 0x2a),
@@ -295,7 +296,7 @@ pub fn kind_badge(ui: &mut Ui, kind: DbKind, product: Product) {
 
 pub fn object_icon(kind: ObjectKind) -> Icon {
     match kind {
-        ObjectKind::Table | ObjectKind::ForeignTable => Icon::Table,
+        ObjectKind::Table | ObjectKind::ForeignTable | ObjectKind::Collection => Icon::Table,
         ObjectKind::View | ObjectKind::MaterializedView => Icon::View,
         ObjectKind::Sequence => Icon::Sequence,
         ObjectKind::Function | ObjectKind::Procedure => Icon::Function,
@@ -431,7 +432,11 @@ fn connection(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Acti
             actions.push(Action::OpenConsole(id, None));
         }
         if connected {
-            if !c.cfg.read_only && !kind.is_file_based() && menu_item(ui, tr("New database…"), None).clicked() {
+            if !c.cfg.read_only
+                && !kind.is_file_based()
+                && kind.is_sql()
+                && menu_item(ui, tr("New database…"), None).clicked()
+            {
                 actions.push(Action::NewDatabase(id));
             }
             if menu_item(ui, tr("Refresh"), None).clicked() {
@@ -503,10 +508,15 @@ fn databases(tree: &mut TreeUi<'_, Node>, c: &ConnState, actions: &mut Vec<Actio
             if menu_item(ui, tr("New console"), None).clicked() {
                 actions.push(Action::OpenConsole(id, Some(db.clone())));
             }
-            if menu_item(ui, tr("Search…"), None).clicked() {
+            let sql = c.cfg.kind.is_sql();
+            if sql && menu_item(ui, tr("Search…"), None).clicked() {
                 actions.push(Action::OpenSearch(id, db.clone(), None));
             }
-            if c.has_schemas() {
+            if !sql {
+                if menu_item(ui, tr("Refresh"), None).clicked() {
+                    actions.push(Action::RefreshObjects(id, db.clone(), db.clone()));
+                }
+            } else if c.has_schemas() {
                 if !c.cfg.read_only && menu_item(ui, tr("New schema…"), None).clicked() {
                     actions.push(Action::NewSchema(id, db.clone()));
                 }
@@ -648,7 +658,7 @@ fn schemas(tree: &mut TreeUi<'_, Node>, c: &ConnState, db: &str, actions: &mut V
 fn backup_items(ui: &mut Ui, c: &ConnState, scope: Scope, actions: &mut Vec<Action>) {
     let id = c.cfg.id;
     // A folder's database lives only in memory; its files are the data.
-    if !c.cfg.product.supports_backup() || c.cfg.is_folder() {
+    if !c.cfg.product.supports_backup() || c.cfg.is_folder() || !c.cfg.kind.is_sql() {
         return;
     }
     if menu_item(ui, tr("Back up…"), None).clicked() {
@@ -661,7 +671,7 @@ fn backup_items(ui: &mut Ui, c: &ConnState, scope: Scope, actions: &mut Vec<Acti
 
 /// "New table / view / routine…" menu entries for a schema.
 fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions: &mut Vec<Action>) {
-    if c.cfg.read_only {
+    if c.cfg.read_only || !c.cfg.kind.is_sql() {
         return;
     }
     let id = c.cfg.id;
@@ -672,7 +682,7 @@ fn new_object_items(ui: &mut Ui, c: &ConnState, db: &str, schema: &str, actions:
         actions.push(Action::ImportNewTable(id, db.to_string(), schema.to_string()));
     }
     let kinds: &[(ObjectKind, &str)] = match c.cfg.kind {
-        DbKind::Redis => &[],
+        DbKind::Redis | DbKind::MongoDb => &[],
         DbKind::Postgres => &[
             (ObjectKind::View, "New view…"),
             (ObjectKind::MaterializedView, "New materialized view…"),
@@ -773,7 +783,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
     let id = c.cfg.id;
     let t = Theme::get(tree.ui().ctx());
     let color = match o.kind {
-        ObjectKind::Table | ObjectKind::ForeignTable => Color32::from_rgb(0x3b, 0x82, 0xf6),
+        ObjectKind::Table | ObjectKind::ForeignTable | ObjectKind::Collection => Color32::from_rgb(0x3b, 0x82, 0xf6),
         ObjectKind::View | ObjectKind::MaterializedView => Color32::from_rgb(0x8b, 0x5c, 0xf6),
         ObjectKind::Function | ObjectKind::Procedure => Color32::from_rgb(0x10, 0xb9, 0x81),
         ObjectKind::Trigger => Color32::from_rgb(0xf5, 0x9e, 0x0b),
@@ -829,7 +839,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         if menu_item(ui, tr("Copy name"), None).clicked() {
             actions.push(Action::CopyText(o.path.name.clone()));
         }
-        if menu_item(ui, tr("Copy qualified name"), None).clicked() {
+        if c.cfg.kind.is_sql() && menu_item(ui, tr("Copy qualified name"), None).clicked() {
             actions.push(Action::CopyText(dbman_core::sql::Dialect(c.cfg.kind).qualified(&o.path)));
         }
         menu_separator(ui);
@@ -839,7 +849,7 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
         {
             actions.push(Action::RenameObject(id, o.clone()));
         }
-        if o.kind.has_data() && menu_item(ui, tr("Export data…"), None).clicked() {
+        if o.kind.has_data() && c.cfg.kind.is_sql() && menu_item(ui, tr("Export data…"), None).clicked() {
             actions.push(Action::ExportData(id, dbman_drivers::transfer::ExportSource::Table(o.path.clone())));
         }
         if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Import data…"), None).clicked() {
@@ -853,7 +863,8 @@ fn object(tree: &mut TreeUi<'_, Node>, c: &ConnState, o: &DbObject, actions: &mu
             let p = &o.path;
             actions.push(Action::OpenCopy(id, p.database.clone(), p.schema.clone(), Some(p.name.clone())));
         }
-        if !c.cfg.read_only && o.kind == ObjectKind::Table && menu_item(ui, tr("Truncate…"), None).clicked() {
+        let emptied = matches!(o.kind, ObjectKind::Table | ObjectKind::Collection);
+        if !c.cfg.read_only && emptied && menu_item(ui, tr("Truncate…"), None).clicked() {
             actions.push(Action::Truncate(id, o.clone()));
         }
         if o.kind == ObjectKind::Table

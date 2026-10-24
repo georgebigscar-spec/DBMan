@@ -384,7 +384,7 @@ impl Connection for PgConnection {
             rows.first().map(|r| r.get::<_, String>(0)).ok_or_else(|| DbError::new(format!("{} not found", q)))
         };
         match o.kind {
-            ObjectKind::Table | ObjectKind::ForeignTable => {
+            ObjectKind::Table | ObjectKind::ForeignTable | ObjectKind::Collection => {
                 let details = self.table_details(p).await?;
                 let mut lines: Vec<String> = details
                     .columns

@@ -1713,6 +1713,110 @@ fn redis_keys() {
     assert!(!keys.contains(&"greeting".to_string()));
 }
 
+/// The documents tab of a MongoDB collection (needs `DBMAN_TEST_MONGODB`):
+/// a page of documents, a filter, a document edited and saved, and one deleted.
+#[test]
+fn mongo_documents() {
+    let Some(url) = std::env::var("DBMAN_TEST_MONGODB").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("DBMAN_TEST_MONGODB not set, skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+    let (auth, addr) = rest.rsplit_once('@').unwrap_or(("", rest));
+    let (user, password) = auth.split_once(':').unwrap_or((auth, ""));
+    let (host, port) = addr.trim_end_matches('/').split_once(':').unwrap_or((addr, "27017"));
+    let mut cfg = ConnectionConfig::new(DbKind::MongoDb);
+    cfg.name = "docs".into();
+    cfg.host = host.into();
+    cfg.port = port.parse().unwrap();
+    cfg.user = user.into();
+    cfg.password = password.into();
+    cfg.database = "dbman_ui".into();
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let id = cfg.id;
+
+    // The test's own connection, on a runtime of its own.
+    let other = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let c = other.block_on(dbman_drivers::connect(&cfg)).unwrap();
+    let run = |s: &str| other.block_on(c.execute(Some("dbman_ui"), s, 100)).unwrap();
+    run("db.dropDatabase()");
+    run("db.people.insertMany([
+        {_id: 1, name: 'Ann', age: 31, city: 'Berlin', tags: ['admin', 'dev']},
+        {_id: 2, name: 'Bob', age: 25, city: 'Paris', address: {zip: '75001', street: 'Rue de Rivoli'}},
+        {_id: 3, name: 'Cid', age: 40, city: 'Berlin', joined: ISODate('2024-05-01T10:00:00Z')}
+    ])");
+
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 640.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    assert!(h.query_all_by_label("dbman_ui").next().is_some(), "the databases are listed");
+    let people = DbObject {
+        kind: ObjectKind::Collection,
+        path: ObjectPath::new("dbman_ui", "dbman_ui", "people"),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenData(id, people), &ctx);
+    let wait = |h: &mut Harness<'_, DbManApp>| {
+        for _ in 0..20 {
+            settle(h);
+            if !h.state_mut().active_documents().unwrap().is_busy() {
+                break;
+            }
+        }
+    };
+    wait(&mut h);
+    assert_eq!(h.state().tab_titles(), ["people"]);
+    let view = h.state_mut().active_documents().unwrap();
+    assert_eq!((view.documents().len(), view.count()), (3, Some(3)));
+    snapshot(&mut h, "mongo_documents");
+
+    // A filter typed as in the shell.
+    h.state_mut().active_documents().unwrap().filter = "{city: 'Berlin', age: {$gt: 35}}".into();
+    click(&mut h, "Find");
+    wait(&mut h);
+    let view = h.state_mut().active_documents().unwrap();
+    assert_eq!(view.documents().len(), 1);
+    assert_eq!(view.documents()[0]["name"], "Cid");
+    assert_eq!(view.count(), Some(1));
+
+    // The document is edited and saved, then read back from the server.
+    let view = h.state_mut().active_documents().unwrap();
+    view.edit(Some(0));
+    let text = view.editor_text().unwrap();
+    assert!(text.contains("ISODate(\"2024-05-01T10:00:00"), "{text}");
+    assert!(text.contains("\"age\": 40"), "{text}");
+    *text = text.replace("\"age\": 40", "\"age\": 41");
+    settle(&mut h);
+    click_last(&mut h, "Save");
+    wait(&mut h);
+    let dbman_core::StatementOutcome::Rows(r) = run("db.people.find({_id: 3}, {age: 1, _id: 0})") else { panic!() };
+    assert_eq!(r.rows, [[Cell::Text("41".into())]]);
+
+    // Deleting asks first.
+    h.state_mut().active_documents().unwrap().filter.clear();
+    click(&mut h, "Find");
+    wait(&mut h);
+    click(&mut h, "Bob");
+    click(&mut h, "Delete");
+    click_last(&mut h, "Delete");
+    wait(&mut h);
+    let view = h.state_mut().active_documents().unwrap();
+    assert_eq!((view.documents().len(), view.count()), (2, Some(2)));
+    assert!(view.documents().iter().all(|d| d["name"] != "Bob"));
+    run("db.dropDatabase()");
+}
+
 /// The profile of a column: counts, range, the most frequent values and a
 /// histogram, over the rows the WHERE filter selects.
 #[test]

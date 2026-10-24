@@ -341,7 +341,12 @@ impl ConnectionDialog {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             field(ui, "Host", |ui| {
-                                ui.add(Input::new(&mut self.cfg.host).placeholder("localhost").width(full - 130.0));
+                                let hint = if self.cfg.kind == DbKind::MongoDb {
+                                    tr("localhost, or a mongodb:// or mongodb+srv:// URI")
+                                } else {
+                                    "localhost"
+                                };
+                                ui.add(Input::new(&mut self.cfg.host).placeholder(hint).width(full - 130.0));
                             });
                         });
                         ui.vertical(|ui| {
@@ -379,6 +384,7 @@ impl ConnectionDialog {
                         let hint = match self.cfg.product.default_database() {
                             "" if self.cfg.kind == DbKind::Postgres => "postgres",
                             "" if self.cfg.kind == DbKind::Redis => "db0",
+                            "" if self.cfg.kind == DbKind::MongoDb => "test",
                             "" => tr("(none)"),
                             d => d,
                         };
