@@ -25,6 +25,7 @@ pub mod import;
 pub mod infer;
 pub mod params;
 pub mod paste;
+pub mod profile;
 pub mod redis;
 mod result;
 mod schema;

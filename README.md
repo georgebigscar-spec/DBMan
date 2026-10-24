@@ -127,6 +127,9 @@ It supports **PostgreSQL**, **MySQL / MariaDB**, **SQL Server**, **ClickHouse**,
 - **Record view**: `Record` above table data shows the clicked row with its columns down the screen, with their types; `‹` and `›` step through the rows, and values are edited as in the grid.
 
 ![Record view](crates/dbman/tests/snapshots/record_view.png)
+- **Column profile**: `Profile` above table data (or `Profile column` in a cell's menu) describes the clicked cell's column over all the rows the `WHERE` filter selects, not just the page: the number of rows, NULL and non-NULL values, distinct values, the smallest, largest and average, the 10 most frequent values with bars, and for numbers a histogram of 20 ranges. Each figure is its own query, so a type the database cannot compare or count (PostgreSQL `json`, say) only loses that figure.
+
+![Column profile](crates/dbman/tests/snapshots/column_profile.png)
 - **Export** of the rows on screen to CSV, TSV, JSON, JSON Lines, SQL `INSERT` or Markdown, to the clipboard or a file, and to Excel or Parquet files.
   - Excel (`.xlsx`): numbers, dates, timestamps and booleans keep their cell types, the header row is bold and frozen with a filter, and past 1,048,575 rows a new sheet begins. The workbook is written as rows arrive.
   - Parquet: rows are gathered in a temporary DuckDB file and written with zstd. Columns keep their types (integers, decimals, dates, timestamps, booleans, UUIDs, bytes) wherever every value fits, and become text otherwise.

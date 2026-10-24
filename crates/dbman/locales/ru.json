@@ -880,5 +880,21 @@
   "\"{key}\" and its value will be deleted from {db}.": "«{key}» и его значение будут удалены из {db}.",
   "length {n}": "длина {n}",
   "no expiry": "без срока",
-  "{n} keys shown": "Показано ключей: {n}"
+  "{n} keys shown": "Показано ключей: {n}",
+  "Nulls, distinct values, range and the most frequent values of the clicked cell's column": "NULL, уникальные значения, диапазон и самые частые значения колонки выбранной ячейки",
+  "Profile column": "Профиль колонки",
+  "Profile": "Профиль",
+  "Counted over the rows the WHERE filter selects, not only the page on screen.": "Подсчитано по всем строкам, которые выбирает фильтр WHERE, а не только по странице на экране.",
+  "Distinct": "Уникальных",
+  "Distribution": "Распределение",
+  "Largest": "Наибольшее",
+  "Most frequent values": "Самые частые значения",
+  "NULL": "NULL",
+  "Not NULL": "Не NULL",
+  "Profile of {column}": "Профиль колонки {column}",
+  "Reading the column…": "Читаю колонку…",
+  "Smallest": "Наименьшее",
+  "Some figures are missing: the database cannot compute them for this type.": "Некоторых показателей нет: база не умеет считать их для этого типа.",
+  "The profile could not be read": "Не удалось получить профиль",
+  "{lo} to {hi}: {n}": "от {lo} до {hi}: {n}"
 }
