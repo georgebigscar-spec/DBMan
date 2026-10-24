@@ -23,6 +23,7 @@ pub mod icons;
 pub mod jobs;
 pub mod keys_view;
 pub mod palette;
+pub mod pipeline_view;
 pub mod pivot_view;
 pub mod profile_view;
 pub mod prompt;

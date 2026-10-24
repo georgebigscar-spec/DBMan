@@ -1817,6 +1817,147 @@ fn mongo_documents() {
     run("db.dropDatabase()");
 }
 
+/// The aggregation pipeline builder (needs `DBMAN_TEST_MONGODB`): stages
+/// with a preview after each, a stage turned off, an operator inserted, and
+/// the pipeline exported as code.
+#[test]
+fn mongo_pipeline() {
+    let Some(url) = std::env::var("DBMAN_TEST_MONGODB").ok().filter(|u| !u.is_empty()) else {
+        eprintln!("DBMAN_TEST_MONGODB not set, skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("DBMAN_CONFIG", dir.path().join("settings.json")) };
+    unsafe { std::env::set_var("DBMAN_KEYCHAIN", "off") };
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+    let (auth, addr) = rest.rsplit_once('@').unwrap_or(("", rest));
+    let (user, password) = auth.split_once(':').unwrap_or((auth, ""));
+    let (host, port) = addr.trim_end_matches('/').split_once(':').unwrap_or((addr, "27017"));
+    let mut cfg = ConnectionConfig::new(DbKind::MongoDb);
+    cfg.name = "docs".into();
+    cfg.host = host.into();
+    cfg.port = port.parse().unwrap();
+    cfg.user = user.into();
+    cfg.password = password.into();
+    cfg.database = "dbman_pipeline".into();
+    cfg.ssl_mode = dbman_core::SslMode::Disable;
+    let id = cfg.id;
+
+    let other = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let c = other.block_on(dbman_drivers::connect(&cfg)).unwrap();
+    let run = |s: &str| other.block_on(c.execute(Some("dbman_pipeline"), s, 100)).unwrap();
+    run("db.dropDatabase()");
+    run("db.orders.insertMany([
+        {_id: 1, customer: 'Ann', city: 'Berlin', total: 120, items: ['pen', 'ink']},
+        {_id: 2, customer: 'Bob', city: 'Paris', total: 80, items: ['book']},
+        {_id: 3, customer: 'Ann', city: 'Berlin', total: 45, items: ['pen']},
+        {_id: 4, customer: 'Cid', city: 'Berlin', total: 300, items: ['desk', 'lamp', 'pen']}
+    ])");
+
+    let settings = Settings { connections: vec![cfg], dark: true, page_size: 500, ..Default::default() };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let app = DbManApp::with_settings(&ctx, runtime, settings);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 900.0))
+        .build_ui_state(|ui, app: &mut DbManApp| app.ui(ui), app);
+    settle(&mut h);
+    click(&mut h, &id.to_string());
+    let orders = DbObject {
+        kind: ObjectKind::Collection,
+        path: ObjectPath::new("dbman_pipeline", "dbman_pipeline", "orders"),
+        detail: None,
+        comment: None,
+    };
+    let ctx = h.ctx.clone();
+    h.state_mut().handle(Action::OpenPipeline(id, orders, Some("{ city: 'Berlin' }".into())), &ctx);
+    let wait = |h: &mut Harness<'_, DbManApp>| {
+        for _ in 0..30 {
+            settle(h);
+            if !h.state_mut().active_pipeline().unwrap().is_busy() {
+                break;
+            }
+        }
+    };
+    wait(&mut h);
+    assert_eq!(h.state().tab_titles(), ["Pipeline on orders"]);
+    assert_eq!(
+        h.state_mut().active_pipeline().unwrap().preview_docs(0).unwrap().len(),
+        3,
+        "the $match from the filter"
+    );
+
+    // A $group after it, previewed on its own.
+    let p = h.state_mut().active_pipeline().unwrap();
+    p.add_stage("$group");
+    p.set_body(1, "{ _id: '$customer', spent: {}, orders: { $sum: 1 } }");
+    p.add_stage("$sort");
+    p.set_body(2, "{ spent: -1 }");
+    wait(&mut h);
+    let p = h.state_mut().active_pipeline().unwrap();
+    assert!(p.preview_error(1).is_some_and(|e| e.contains("spent")), "{:?}", p.preview_error(1));
+    assert_eq!(p.preview_error(1), Some("The field 'spent' must be an accumulator object (Location40234)"));
+    assert!(p.preview_error(2).is_some());
+
+    // A stage that does not parse names itself to the stages after it.
+    p.set_body(0, "{ city: ");
+    wait(&mut h);
+    let p = h.state_mut().active_pipeline().unwrap();
+    assert!(p.preview_error(0).is_some());
+    assert_eq!(p.preview_error(2), Some("Stage 1 has an error."));
+    p.set_body(0, "{ city: 'Berlin' }");
+
+    // An operator goes in at the cursor.
+    p.focused = Some(1);
+    p.operator_query = "sum".into();
+    let body = "{ _id: '$customer', spent: , orders: { $sum: 1 } }";
+    p.set_body(1, body);
+    let at = body.find(", orders").unwrap();
+    p.place_cursor(&ctx, 1, at);
+    settle(&mut h);
+    click_last(&mut h, "$sum");
+    let p = h.state_mut().active_pipeline().unwrap();
+    assert_eq!(p.stages[1].stage.body, "{ _id: '$customer', spent: { $sum: \"$x\" }, orders: { $sum: 1 } }");
+    p.set_body(1, "{ _id: '$customer', spent: { $sum: '$total' }, orders: { $sum: 1 } }");
+    wait(&mut h);
+    let p = h.state_mut().active_pipeline().unwrap();
+    let docs = p.preview_docs(2).unwrap();
+    assert_eq!(docs.len(), 2);
+    assert_eq!((docs[0]["_id"].as_str(), docs[0]["spent"].as_i64()), (Some("Cid"), Some(300)));
+    assert_eq!(
+        (docs[1]["_id"].as_str(), docs[1]["spent"].as_i64(), docs[1]["orders"].as_i64()),
+        (Some("Ann"), Some(165), Some(2))
+    );
+    snapshot(&mut h, "mongo_pipeline");
+
+    // With the $match off, Bob's order counts too.
+    h.state_mut().active_pipeline().unwrap().set_enabled(0, false);
+    wait(&mut h);
+    let p = h.state_mut().active_pipeline().unwrap();
+    assert_eq!(p.preview_docs(2).unwrap().len(), 3);
+    p.set_enabled(0, true);
+
+    // The pipeline as code.
+    let python = p.code(dbman_core::aggregation::Lang::Python, "mongodb://localhost:27017").unwrap();
+    assert!(python.contains("{ \"$match\": { \"city\": \"Berlin\" } }"), "{python}");
+    assert!(python.contains("collection = client[\"dbman_pipeline\"][\"orders\"]"), "{python}");
+    p.open_export(dbman_core::aggregation::Lang::Go);
+    settle(&mut h);
+    assert!(h.query_all_by_label("Export pipeline to code").next().is_some());
+    snapshot(&mut h, "mongo_pipeline_export");
+    click_last(&mut h, "Close");
+
+    // A pipeline typed as text replaces the stages.
+    let p = h.state_mut().active_pipeline().unwrap();
+    p.import_text("[{ $unwind: '$items' }, { $sortByCount: '$items' }, { $limit: 1 }]").unwrap();
+    wait(&mut h);
+    let p = h.state_mut().active_pipeline().unwrap();
+    assert_eq!(p.stages.len(), 3);
+    assert_eq!(p.preview_docs(0).unwrap().len(), 7);
+    assert_eq!(p.preview_docs(2).unwrap()[0]["_id"], "pen");
+    run("db.dropDatabase()");
+}
+
 /// The profile of a column: counts, range, the most frequent values and a
 /// histogram, over the rows the WHERE filter selects.
 #[test]

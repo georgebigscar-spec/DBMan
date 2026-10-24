@@ -666,7 +666,7 @@ fn numeric_type(t: &str) -> bool {
 }
 
 /// A wrapped scalar (`{"$oid": …}`, `{"$date": …}`) as plain text.
-fn special_text(o: &Map<String, Value>) -> Option<String> {
+pub(crate) fn special_text(o: &Map<String, Value>) -> Option<String> {
     if o.len() != 1 {
         return None;
     }
